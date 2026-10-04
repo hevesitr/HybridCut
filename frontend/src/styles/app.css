@@ -154,11 +154,24 @@ input {
   gap: 0.4rem;
 }
 
+.action-help {
+  margin: 0.55rem 0 0;
+  font-size: 0.78rem;
+  color: var(--mist);
+  letter-spacing: 0.01em;
+  line-height: 1.35;
+}
+
+.preview-stage.source-solid {
+  background: #0c1411;
+}
+
 .wipe-controls {
   display: flex;
   flex-wrap: wrap;
   gap: 0.35rem;
   align-items: center;
+  margin: 0 0 0.55rem;
 }
 
 .wipe-compare {

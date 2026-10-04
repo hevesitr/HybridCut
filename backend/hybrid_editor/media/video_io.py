@@ -17,7 +17,10 @@ CHECKER_DARK = 0x2A  # #2a2a2a
 CHECKER_LIGHT = 0x35  # #353535
 # Empty / useless matte: max alpha below this OR almost no opaque coverage.
 EMPTY_ALPHA_MAX = 0.05
-EMPTY_ALPHA_COVER = 0.002  # fraction of pixels with a > 0.15
+EMPTY_ALPHA_COVER = 0.04  # fraction of pixels with a > 0.15 (was 0.002 — feet-only noise hid video)
+EMPTY_ALPHA_MEAN = 0.03  # mean alpha below this ⇒ treat as empty / weak
+# Weak-but-not-empty: still prefer source underlay over checker domination.
+WEAK_ALPHA_COVER = 0.08
 # When matte is empty, keep source nearly full brightness (optional slight dim).
 EMPTY_SOURCE_DIM = 0.92
 
@@ -118,8 +121,10 @@ def is_matte_empty(alpha: np.ndarray) -> bool:
         return True
     if float(a.max()) < EMPTY_ALPHA_MAX:
         return True
-    # Tiny speck / noise must not hide the source under checker.
+    # Tiny speck / noise / feet-only scraps must not hide the source under checker.
     if float((a > 0.15).mean()) < EMPTY_ALPHA_COVER:
+        return True
+    if float(a.mean()) < EMPTY_ALPHA_MEAN:
         return True
     return False
 
@@ -196,7 +201,12 @@ def composite_cutout_over_checker(
     if is_matte_empty(a):
         # Utána / default cutout with no matte yet: show the video (source × ~1).
         return source_visible_bgr(bgr, dim=1.0)
-    bg = make_checkerboard(h, w, tile=tile, dark=dark, light=light)
+    cover = float((a > 0.15).mean())
+    if cover < WEAK_ALPHA_COVER:
+        # Weak matte: keep source visible as underlay (never mostly-checker).
+        bg = source_visible_bgr(bgr, dim=0.94)
+    else:
+        bg = make_checkerboard(h, w, tile=tile, dark=dark, light=light)
     a3 = a[..., None]
     return (bgr.astype(np.float32) * a3 + bg.astype(np.float32) * (1.0 - a3)).astype(np.uint8)
 

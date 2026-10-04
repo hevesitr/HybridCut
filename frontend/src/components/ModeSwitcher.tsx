@@ -13,10 +13,11 @@ export function ModeSwitcher({ mode, disabled, onChange }: Props) {
         role="radio"
         aria-checked={mode === "gyors"}
         disabled={disabled}
+        title="Gyors mód: élő előnézet scrub közben, MaszkTár és proxy gyorsítótárral."
         onClick={() => onChange("gyors")}
       >
-        <strong>Gyors</strong>
-        <span>Élő scrub · MaskStore · proxy HOT</span>
+        <strong>Gyors mód</strong>
+        <span>Élő előnézet · MaszkTár · proxy</span>
         <em>ORT RVM — előnézet FPS</em>
       </button>
       <button
@@ -25,10 +26,11 @@ export function ModeSwitcher({ mode, disabled, onChange }: Props) {
         role="radio"
         aria-checked={mode === "max"}
         disabled={disabled}
+        title="Max minőség: kézi maszk festés + minőségi export (hanggal)."
         onClick={() => onChange("max")}
       >
-        <strong>Max</strong>
-        <span>Seed paint · quality bake</span>
+        <strong>Max minőség</strong>
+        <span>Kézi maszk · minőségi export</span>
         <em>Pipeline / MatAnyone2 — export</em>
       </button>
     </div>

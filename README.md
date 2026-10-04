@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-04-source-visible` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-04-hu-ux` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-04-source-visible
+# expect: 2026-10-04-hu-ux
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA+cuDNN: .\hybrid_cut\start_hybrid_cuda.ps1
@@ -70,6 +70,14 @@ cd $env:USERPROFILE\Documents\Videoeditor
 ```
 
 ---
+
+## Hungarian UX + Forrás default (this stamp)
+
+- Preview default: **Forrás** (full source RGB) on load/scrub — not 50% wipe / alpha-only
+- View toggle: **Forrás | Maszk | Cutout | Összehasonlítás** (compare wipe starts at Utána=100%)
+- Weak/empty matte → source underlay + status „Maszk üres — forrás látszik”
+- All control buttons/chips: short Hungarian labels + `title` tooltips
+- Help line: `1) Videó betöltése 2) Előnézet 3) Exportálás`
 
 ## Phase 5 + cuDNN PATH (this stamp)
 

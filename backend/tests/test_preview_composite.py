@@ -78,6 +78,21 @@ def test_near_empty_speck_still_shows_source():
     assert abs(float(out[20, 20, 1]) - 160) < 3
 
 
+def test_feet_only_weak_matte_shows_source():
+    """Small lower-frame scrap (≈ feet) must not leave a mostly-checker preview."""
+    bgr = np.full((80, 120, 3), (40, 150, 90), np.uint8)
+    cv2.rectangle(bgr, (30, 10), (90, 70), (30, 50, 210), -1)
+    alpha = np.zeros((80, 120), np.float32)
+    # ~2.5% coverage in the bottom — typical weak/partial matte.
+    alpha[72:80, 40:80] = 0.7
+    assert float((alpha > 0.15).mean()) < 0.04
+    assert is_matte_empty(alpha)
+    out = composite_cutout_over_checker(bgr, alpha)
+    err = float(np.mean(np.abs(out.astype(np.float32) - bgr.astype(np.float32))))
+    assert err < 4.0
+    assert float(out.mean()) > 70
+
+
 def test_empty_alpha_vis_shows_source_with_nincs_maszk():
     bgr = np.full((64, 96, 3), (40, 90, 180), np.uint8)
     alpha = np.zeros((64, 96), np.float32)

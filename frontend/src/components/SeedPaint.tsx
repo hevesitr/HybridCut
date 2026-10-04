@@ -259,6 +259,7 @@ export function SeedPaint({
           type="button"
           className={`btn ${tool === "brush" ? "primary" : ""}`}
           disabled={disabled}
+          title="Ecset: alany hozzáadása a kézi maszkhoz."
           onClick={() => setTool("brush")}
         >
           Ecset
@@ -267,6 +268,7 @@ export function SeedPaint({
           type="button"
           className={`btn ${tool === "erase" ? "primary" : ""}`}
           disabled={disabled}
+          title="Radír: téves maszkterület törlése."
           onClick={() => setTool("erase")}
         >
           Radír
@@ -275,11 +277,12 @@ export function SeedPaint({
           type="button"
           className={`btn ${tool === "lasso" ? "primary" : ""}`}
           disabled={disabled}
+          title="Lasszó: zárt terület kijelölése a maszkhoz."
           onClick={() => setTool("lasso")}
         >
-          Lasso
+          Lasszó
         </button>
-        <label className="brush-size">
+        <label className="brush-size" title="Ecset / radír mérete.">
           Méret
           <input
             type="range"
@@ -300,19 +303,32 @@ export function SeedPaint({
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerLeave={onPointerUp}
+          title="Fesd a kézi maszkot a forrás képkockára."
         />
       </div>
       <div className="seed-actions">
-        <button type="button" className="btn accent" disabled={disabled || !ready} onClick={commit}>
-          Seed mentése
+        <button
+          type="button"
+          className="btn accent"
+          disabled={disabled || !ready}
+          onClick={commit}
+          title="Kézi maszk mentése a szerverre (scrub után is megmarad)."
+        >
+          Maszk mentése
         </button>
-        <button type="button" className="btn" disabled={disabled} onClick={localClear}>
-          Seed törlése
+        <button
+          type="button"
+          className="btn"
+          disabled={disabled}
+          onClick={localClear}
+          title="Kézi maszk törlése."
+        >
+          Maszk törlése
         </button>
       </div>
       <p className="seed-hint">
-        Videókép a maszk alatt · finom sakktábla csak az átlátszó részen. Seed scrub után is megmarad
-        (disk + overlay). Bake → MaxQuality / MatAnyone2.
+        Forrás a maszk alatt. A kézi maszk scrub után is megmarad. Export → Max minőség /
+        MatAnyone2.
       </p>
     </div>
   );

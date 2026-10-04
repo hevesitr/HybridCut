@@ -4,6 +4,9 @@ import { SeedPaint } from "./components/SeedPaint";
 import { TimelineTrack } from "./components/TimelineTrack";
 import { api, type AssistStatus, type EditorStatus, type PreviewResult } from "./lib/api";
 
+/** Előnézet nézet: alapból Forrás (teljes RGB), nem wipe / nem csak alpha. */
+type ViewMode = "source" | "mask" | "cutout" | "compare";
+
 function rvmChip(status: EditorStatus | null) {
   const rvm = status?.rvm;
   const backend = (status?.backend || rvm?.engine_backend || "").toLowerCase();
@@ -11,15 +14,39 @@ function rvmChip(status: EditorStatus | null) {
   const liveCuda = backend.includes("cuda");
   const onnx = !!rvm?.onnx_found || backend.startsWith("ort-rvm");
   if (liveCuda || (ortCuda && onnx)) {
-    return { key: "rvm", label: onnx ? "RVM CUDA" : "CUDA EP", on: true, warn: false };
+    return {
+      key: "rvm",
+      label: onnx ? "RVM CUDA" : "CUDA EP",
+      on: true,
+      warn: false,
+      title: "Háttéreltávolító GPU-n fut (CUDA).",
+    };
   }
   if (onnx && rvm?.ort_available) {
-    return { key: "rvm", label: "RVM CPU", on: true, warn: true };
+    return {
+      key: "rvm",
+      label: "RVM CPU",
+      on: true,
+      warn: true,
+      title: "RVM CPU-n fut — lassabb, mint CUDA.",
+    };
   }
   if (onnx) {
-    return { key: "rvm", label: "RVM (no ORT)", on: false, warn: true };
+    return {
+      key: "rvm",
+      label: "RVM (nincs ORT)",
+      on: false,
+      warn: true,
+      title: "ONNX megvan, de az ONNX Runtime hiányzik.",
+    };
   }
-  return { key: "rvm", label: "RVM —", on: false, warn: false };
+  return {
+    key: "rvm",
+    label: "RVM —",
+    on: false,
+    warn: false,
+    title: "Nincs betöltött RVM modell.",
+  };
 }
 
 function intelFromPreview(preview: PreviewResult | null, status: EditorStatus | null) {
@@ -32,40 +59,68 @@ function intelFromPreview(preview: PreviewResult | null, status: EditorStatus | 
   return [
     {
       key: "mode",
-      label: status?.mode === "max" ? "Max bake" : "Gyors scrub",
+      label: status?.mode === "max" ? "Max minőség" : "Gyors mód",
       on: true,
       warn: status?.mode === "max",
+      title:
+        status?.mode === "max"
+          ? "Max: kézi maszk + minőségi export."
+          : "Gyors: élő előnézet scrub közben.",
     },
     rvmChip(status),
-    { key: "mask", label: meta.mask_store ? "MaskStore hit" : "MaskStore", on: !!meta.mask_store },
-    { key: "prefetch", label: `Prefetch ×${meta.prefetch_ahead ?? 8}`, on: true },
-    { key: "proxy", label: hot > 0 ? `Proxy HOT ${hot}` : "Proxy lanes", on: hot > 0 },
+    {
+      key: "mask",
+      label: meta.mask_store ? "MaszkTár talált" : "MaszkTár",
+      on: !!meta.mask_store,
+      title: "Előre számolt maszkok tárolója — gyorsítja a scrubot.",
+    },
+    {
+      key: "prefetch",
+      label: `Előtöltés ×${meta.prefetch_ahead ?? 8}`,
+      on: true,
+      title: "Következő képkockák előre betöltése sima scrubhoz.",
+    },
+    {
+      key: "proxy",
+      label: hot > 0 ? `Proxy HOT ${hot}` : "Proxy sávok",
+      on: hot > 0,
+      title: "Kis felbontású gyorsítótár az élő előnézethez.",
+    },
     {
       key: "seed",
-      label: status?.seed_mask || meta.user_seed ? "Seed ✓" : "Seed",
+      label: status?.seed_mask || meta.user_seed ? "Kézi maszk ✓" : "Kézi maszk",
       on: !!status?.seed_mask || !!meta.user_seed,
       warn: !!status?.seed_mask,
+      title: "Kézzel festett magmaszk a Max minőséghez.",
     },
     {
       key: "broll",
       label: overlays > 0 ? `B-roll ×${overlays}` : status?.intelligence?.broll_track ? "B-roll" : "V1",
       on: overlays > 0 || !!status?.intelligence?.broll_track,
+      title: "Második videosáv (B-roll) állapota.",
     },
-    { key: "audio", label: audio ? "Audio AAC" : "Audio", on: audio },
+    {
+      key: "audio",
+      label: audio ? "Hang AAC" : "Hang",
+      on: audio,
+      title: "Export hangcsatorna (AAC) állapota.",
+    },
     {
       key: "queue",
-      label: q > 0 ? `Bake sor ${q}` : "Bake sor",
+      label: q > 0 ? `Export sor ${q}` : "Export sor",
       on: q > 0 || !!status?.bake_running,
+      title: "Várakozó vagy futó export (bake) feladatok.",
     },
     {
       key: "analyse",
       label:
         (status?.analyse_masks ?? 0) > 0
-          ? `Analyse ${status?.analyse_masks}`
+          ? `Elemzés ${status?.analyse_masks}`
           : status?.analyse_running
-            ? "Analyse…"
-            : "Analyse",
+            ? "Elemzés…"
+            : "Elemzés",
       on: (status?.analyse_masks ?? 0) > 0 || !!status?.analyse_running,
+      title: "Ritka maszk-elemzés a timeline mentén.",
     },
   ];
 }
@@ -75,11 +130,13 @@ function smartStatusLine(
   note: string,
   busy: boolean,
   error: string | null,
+  matteEmpty: boolean,
 ): string {
   if (error) return error;
-  if (status?.bake_running) return status.bake_status || "Bake fut…";
-  if (status?.analyse_running) return status.analyse_status || "Analyse fut…";
+  if (status?.bake_running) return status.bake_status || "Export fut…";
+  if (status?.analyse_running) return status.analyse_status || "Elemzés fut…";
   if (busy) return "Dolgozom…";
+  if (matteEmpty) return "Maszk üres — forrás látszik";
   const fallback = status?.rvm?.cuda_fallback || status?.detail || "";
   if (fallback && /CUDA|cuDNN|cudnn/i.test(fallback)) {
     return fallback.length > 220 ? `${fallback.slice(0, 220)}…` : fallback;
@@ -88,7 +145,7 @@ function smartStatusLine(
     return status.rvm.cudnn_detail;
   }
   const mode = status?.mode === "max" ? "Max" : "Gyors";
-  const seed = status?.seed_mask ? " · seed ✓" : "";
+  const seed = status?.seed_mask ? " · kézi maszk ✓" : "";
   const clips = status?.timeline?.clips?.length ?? 0;
   const broll = status?.timeline?.clips?.filter((c) => (c.track ?? 0) >= 1).length ?? 0;
   const tl = clips ? ` · ${clips} klip${broll ? ` (${broll} B-roll)` : ""}` : "";
@@ -107,8 +164,9 @@ export default function App() {
   const [note, setNote] = useState("Nyiss meg egy videót, vagy tölts be mintát.");
   const [showSeed, setShowSeed] = useState(false);
   const [seedPng, setSeedPng] = useState<string | null>(null);
+  /** Alapnézet: teljes forrás RGB — nem 50% wipe, nem alpha-only. */
+  const [viewMode, setViewMode] = useState<ViewMode>("source");
   const [wipe, setWipe] = useState(100);
-  const [showWipe, setShowWipe] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [assist, setAssist] = useState<AssistStatus | null>(null);
   const [pending, startTransition] = useTransition();
@@ -147,10 +205,10 @@ export default function App() {
   useEffect(() => {
     refresh()
       .then((st) => {
-        // Auto-fetch preview after reload if media/timeline already open.
         if (st?.media || st?.timeline?.clips?.length) {
           const t = st.timeline?.playhead_sec ?? 0;
           setTSec(t);
+          setViewMode("source");
           void runPreview(t, st);
         }
       })
@@ -203,7 +261,7 @@ export default function App() {
       if (p.bake_status) setNote(p.bake_status);
       if (!p.bake_running && p.last_bake?.ok) {
         const st = await refresh();
-        setNote(p.last_bake.message || "Bake kész · audio a preview.mp4-ben");
+        setNote(p.last_bake.message || "Export kész · hang a preview.mp4-ben");
         if (st.media) await runPreview(tSec, st, p.last_bake.message);
       }
     } catch {
@@ -260,9 +318,9 @@ export default function App() {
       await api.setTimeline({ playhead_sec: t });
       const frame = await api.preview(t);
       setPreview(frame);
-      const storeHit = frame.meta?.mask_store ? " · MaskStore" : "";
-      const seedHit = frame.meta?.user_seed ? " · seed ✓" : "";
-      const emptyHit = frame.meta?.matte_empty ? " · nincs maszk (forrás)" : "";
+      const storeHit = frame.meta?.mask_store ? " · MaszkTár" : "";
+      const seedHit = frame.meta?.user_seed ? " · kézi maszk ✓" : "";
+      const emptyHit = frame.meta?.matte_empty ? " · Maszk üres — forrás látszik" : "";
       const failHit = frame.meta?.source_fallback ? " · RVM soft-fail" : "";
       const ov = (frame.meta?.overlay_layers as unknown[] | undefined)?.length ?? 0;
       const ovHit = ov ? ` · B-roll ×${ov}` : "";
@@ -276,7 +334,6 @@ export default function App() {
       setStatus(refreshed);
       syncTrimFromStatus(refreshed);
     } catch (e) {
-      // Soft-fail UI: keep prior source frame if any; never leave a blank checker as the only state.
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
@@ -301,8 +358,8 @@ export default function App() {
           setStatus(st);
           setNote(
             mode === "gyors"
-              ? "Gyors: élő scrub · MaskStore · proxy HOT"
-              : "Max: seed paint + quality bake (export)",
+              ? "Gyors mód: élő scrub · MaszkTár · proxy"
+              : "Max minőség: kézi maszk + export hanggal",
           );
           if (mode === "max") {
             setShowSeed(true);
@@ -322,6 +379,7 @@ export default function App() {
       const st = await api.loadSample();
       setStatus(st);
       setTSec(0);
+      setViewMode("source");
       syncTrimFromStatus(st);
       await refreshSeed();
       await runPreview(0, st);
@@ -339,7 +397,10 @@ export default function App() {
     try {
       const st = await api.upload(file, append, asBroll);
       setStatus(st);
-      if (!append && !asBroll) setTSec(0);
+      if (!append && !asBroll) {
+        setTSec(0);
+        setViewMode("source");
+      }
       syncTrimFromStatus(st);
       await runPreview(append || asBroll ? (st.timeline?.playhead_sec ?? 0) : 0, st);
       setNote(
@@ -347,7 +408,7 @@ export default function App() {
           ? "B-roll a V2 sávon"
           : append
             ? "Klip hozzáadva (V1)"
-            : "Videó megnyitva",
+            : "Videó betöltve — forrás látszik",
       );
       if (!append && !asBroll) await refreshSeed();
     } catch (e) {
@@ -369,7 +430,7 @@ export default function App() {
         clip_id: clipId,
       });
       setStatus(st);
-      setNote(`Trim: ${inSec.toFixed(2)}s → ${outSec.toFixed(2)}s`);
+      setNote(`Vágás: ${inSec.toFixed(2)}s → ${outSec.toFixed(2)}s`);
       if (st.media) await runPreview(Math.min(tSec, st.timeline?.duration_sec ?? tSec), st);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -390,7 +451,16 @@ export default function App() {
       syncTrimFromStatus(st);
       const t = st.timeline?.playhead_sec ?? tSec;
       setTSec(t);
-      setNote(`Timeline: ${action}`);
+      const labels: Record<string, string> = {
+        duplicate: "Klip duplikálva",
+        remove: "Klip törölve",
+        cut: "Klip felvágva",
+        move: "Klip áthelyezve",
+        select: "Klip kiválasztva",
+        to_broll: "Áthelyezve B-rollra",
+        to_v1: "Áthelyezve V1-re",
+      };
+      setNote(labels[action] || `Timeline: ${action}`);
       if (st.timeline?.clips?.length) await runPreview(t, st);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -405,7 +475,7 @@ export default function App() {
     try {
       const res = await api.analyse(10);
       setStatus(res.status);
-      setNote(res.status.analyse_status || "Sparse analyse fut…");
+      setNote(res.status.analyse_status || "Ritka elemzés fut…");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -428,8 +498,8 @@ export default function App() {
       setStatus(res.status);
       setNote(
         res.queued
-          ? res.message || "Bake sorba téve"
-          : res.message || "Bake fut… (audio AAC mux)",
+          ? res.message || "Export sorba téve"
+          : res.message || "Export fut… (hang AAC)",
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -466,39 +536,62 @@ export default function App() {
   const hasMedia = !!status?.media || clips.length > 0;
   const chips = intelFromPreview(preview, status);
   const matteEmpty = Boolean(preview?.meta?.matte_empty || preview?.meta?.source_fallback);
-  const beforeSrc = matteEmpty
-    ? preview?.source_jpeg_b64 || preview?.jpeg_b64
-    : preview?.alpha_png_b64;
+  const sourceSrc = preview?.source_jpeg_b64 || preview?.jpeg_b64 || null;
+  const maskSrc = matteEmpty ? sourceSrc : preview?.alpha_png_b64 || null;
+  const maskMime = matteEmpty ? "image/jpeg" : "image/png";
+  const cutoutSrc = matteEmpty ? sourceSrc : preview?.jpeg_b64 || null;
+  const singleSrc =
+    viewMode === "source"
+      ? sourceSrc
+      : viewMode === "mask"
+        ? maskSrc
+        : viewMode === "cutout"
+          ? cutoutSrc
+          : null;
+  const singleMime =
+    viewMode === "mask" && !matteEmpty ? "image/png" : "image/jpeg";
+  const beforeSrc = matteEmpty ? sourceSrc : preview?.alpha_png_b64;
   const beforeMime = matteEmpty ? "image/jpeg" : "image/png";
-  const afterSrc = matteEmpty
-    ? preview?.source_jpeg_b64 || preview?.jpeg_b64
-    : preview?.jpeg_b64;
-  const defaultSrc = matteEmpty
-    ? preview?.source_jpeg_b64 || preview?.jpeg_b64
-    : preview?.jpeg_b64;
-  const statusText = smartStatusLine(status, note, busy, error);
+  const afterSrc = matteEmpty ? sourceSrc : preview?.jpeg_b64;
+  const statusText = smartStatusLine(status, note, busy, error, matteEmpty);
 
   const rvm = rvmChip(status);
   const rvmDetail = status?.rvm;
+
+  const viewButtons: { id: ViewMode; label: string; title: string }[] = [
+    { id: "source", label: "Forrás", title: "Eredeti videókép — teljes RGB, sakktábla nélkül." },
+    { id: "mask", label: "Maszk", title: "Alpha / matte nézet — hol vág a háttéreltávolítás." },
+    { id: "cutout", label: "Cutout", title: "Kivágott alany sakktábla felett (ha van maszk)." },
+    {
+      id: "compare",
+      label: "Összehasonlítás",
+      title: "Csúsztatható összehasonlítás: maszk ↔ cutout (alapból teljesen Utána).",
+    },
+  ];
 
   if (!hasMedia) {
     return (
       <div className="app empty">
         {dragOver ? (
           <div className="drop-overlay">
-            <strong>Ejtés: videó megnyitása</strong>
+            <strong>Ejtés: videó betöltése</strong>
           </div>
         ) : null}
         <section className="hero">
           <div className="hero-inner">
             <div className="brand-mark">HybridCut</div>
-            <p className="hero-tag">Helyi cutout szerkesztő — nyiss videót, scrubolj, bake-elj.</p>
+            <p className="hero-tag">Helyi cutout szerkesztő — tölts be videót, nézd meg, exportálj.</p>
             <p className="hero-sub">
-              1) Videó vagy minta · 2) Gyors élő scrub · 3) Max seed + Bake + hang · RTX 3060 ·
-              Ollama-only.
+              1) Videó betöltése · 2) Előnézet · 3) Exportálás — RTX 3060 · csak helyi / ingyenes.
             </p>
             <div className="hero-cta">
-              <button type="button" className="btn primary" disabled={locked} onClick={onSample}>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={locked}
+                onClick={onSample}
+                title="Beépített minta videó betöltése a kipróbáláshoz."
+              >
                 Minta videó
               </button>
               <button
@@ -506,30 +599,43 @@ export default function App() {
                 className="btn accent"
                 disabled={locked}
                 onClick={() => fileRef.current?.click()}
+                title="Videófájl megnyitása a gépről."
               >
-                Videó megnyitása
+                Videó betöltése
               </button>
             </div>
             <ModeSwitcher mode={mode} disabled={locked || pending} onChange={onMode} />
-            <div className="hero-chips" aria-label="Runtime status">
-              <span className={`intel-chip ${rvm.on ? "on" : ""} ${rvm.warn ? "warn" : ""}`}>
+            <div className="hero-chips" aria-label="Futás állapot">
+              <span
+                className={`intel-chip ${rvm.on ? "on" : ""} ${rvm.warn ? "warn" : ""}`}
+                title={rvm.title}
+              >
                 {rvm.label}
               </span>
-              <span className={`intel-chip ${rvmDetail?.onnx_found ? "on" : ""}`}>
+              <span
+                className={`intel-chip ${rvmDetail?.onnx_found ? "on" : ""}`}
+                title="RVM ONNX modell elérhetősége."
+              >
                 {rvmDetail?.onnx_found
                   ? `ONNX ${rvmDetail.onnx_name || "✓"}`
                   : "ONNX hiányzik"}
               </span>
-              <span className={`intel-chip ${rvmDetail?.ort_available ? "on" : ""}`}>
+              <span
+                className={`intel-chip ${rvmDetail?.ort_available ? "on" : ""}`}
+                title="ONNX Runtime telepítve van-e."
+              >
                 {rvmDetail?.ort_available ? "ORT ✓" : "ORT —"}
               </span>
-              <span className={`intel-chip ${assist?.ok ? "on" : ""}`}>
+              <span
+                className={`intel-chip ${assist?.ok ? "on" : ""}`}
+                title="Helyi Ollama asszisztens (llama3)."
+              >
                 {assist?.ok ? "Ollama ✓" : "Ollama —"}
               </span>
             </div>
             <p className="hero-hint">
               {rvmDetail?.onnx_found
-                ? `RVM: ${rvmDetail.source === "parent_videoeditor" ? "parent Videoeditor models" : rvmDetail.source || "discovered"}`
+                ? `RVM: ${rvmDetail.source === "parent_videoeditor" ? "szülő Videoeditor models" : rvmDetail.source || "felismerve"}`
                 : "Ha a CapCut Videoeditor models\\ mappában van rvm_*.onnx, a Gyors motor automatikusan felismeri."}
               {" · "}Húzd ide a videófájlt, vagy kattints a gombra.
             </p>
@@ -569,17 +675,21 @@ export default function App() {
         </div>
       </header>
 
-      <div className="intel-strip" aria-label="Intelligence status">
+      <div className="intel-strip" aria-label="Állapotjelzők">
         {chips.map((c) => (
           <span
             key={c.key}
             className={`intel-chip ${c.on ? "on" : ""} ${c.warn ? "warn" : ""}`}
+            title={c.title}
           >
             {c.label}
           </span>
         ))}
         {assist ? (
-          <span className={`intel-chip ${assist.ok ? "on" : ""}`} title={assist.message}>
+          <span
+            className={`intel-chip ${assist.ok ? "on" : ""}`}
+            title={assist.message || "Helyi Ollama asszisztens állapota."}
+          >
             {assist.ok ? "Ollama ✓" : "Ollama —"}
           </span>
         ) : null}
@@ -590,11 +700,17 @@ export default function App() {
           <div className="rail-block">
             <h2>Matting motor</h2>
             <p className="lead">
-              <strong>Gyors</strong> = scrub · <strong>Max</strong> = seed + export bake
+              <strong>Gyors</strong> = élő előnézet · <strong>Max</strong> = kézi maszk + export
             </p>
             <ModeSwitcher mode={mode} disabled={locked || pending} onChange={onMode} />
             <div className="actions">
-              <button type="button" className="btn primary" disabled={locked} onClick={onSample}>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={locked}
+                onClick={onSample}
+                title="Beépített minta videó betöltése."
+              >
                 Minta
               </button>
               <button
@@ -602,6 +718,7 @@ export default function App() {
                 className="btn"
                 disabled={locked}
                 onClick={() => fileRef.current?.click()}
+                title="Videó betöltése a gépről (új projekt)."
               >
                 Megnyitás
               </button>
@@ -610,6 +727,7 @@ export default function App() {
                 className="btn"
                 disabled={locked}
                 onClick={() => appendRef.current?.click()}
+                title="További klip hozzáadása az V1 sávhoz."
               >
                 + V1 klip
               </button>
@@ -618,6 +736,7 @@ export default function App() {
                 className="btn accent"
                 disabled={locked}
                 onClick={() => brollRef.current?.click()}
+                title="B-roll videó hozzáadása a V2 sávhoz."
               >
                 + B-roll
               </button>
@@ -647,6 +766,7 @@ export default function App() {
                 className="btn"
                 disabled={locked || !status?.media}
                 onClick={() => runPreview(tSec)}
+                title="Aktuális képkocka frissítése az előnézetben."
               >
                 Előnézet
               </button>
@@ -655,27 +775,30 @@ export default function App() {
                 className="btn"
                 disabled={locked || !status?.media}
                 onClick={onAnalyse}
+                title="Ritka maszk-elemzés a timeline mentén (előtöltéshez)."
               >
-                Analyse
+                Elemzés
               </button>
               <button
                 type="button"
                 className={`btn ${mode === "max" ? "accent" : "primary"}`}
-                disabled={(!status?.media && !clips.length) || (!!status?.analyse_running)}
+                disabled={(!status?.media && !clips.length) || !!status?.analyse_running}
                 onClick={onBake}
-                title="Ha bake fut, a következő a sorba kerül"
+                title="Exportálás hanggal — ha fut egy export, a következő a sorba kerül."
               >
-                {status?.bake_running ? "Bake sorba +" : "Bake + hang"}
+                {status?.bake_running ? "Export sorba +" : "Exportálás hanggal"}
               </button>
               <button
                 type="button"
                 className="btn"
                 disabled={!status?.last_bake?.ok && !status?.last_bake?.out_dir}
                 onClick={() => void onOpenOutput()}
+                title="Utolsó export kimeneti mappájának megnyitása."
               >
                 Kimenet mappa
               </button>
             </div>
+            <p className="action-help">1) Videó betöltése 2) Előnézet 3) Exportálás</p>
           </div>
 
           {clips.length > 0 && (
@@ -688,6 +811,7 @@ export default function App() {
                   className={`clip-bin-item ${c.clip_id === selected ? "active" : ""}`}
                   disabled={locked}
                   onClick={() => void runAction("select", { clip_id: c.clip_id })}
+                  title="Klip kiválasztása az idővonalon."
                 >
                   <span>
                     {(c.track ?? 0) >= 1 ? "V2" : "V1"} #{i + 1} {c.display_label || c.clip_id}
@@ -699,13 +823,14 @@ export default function App() {
           )}
 
           <div className="trim-block">
-            <h3>Timeline</h3>
+            <h3>Idővonal</h3>
             <div className="actions tight">
               <button
                 type="button"
                 className="btn"
                 disabled={locked || !clips.length}
                 onClick={() => runAction("duplicate")}
+                title="Kijelölt klip másolása."
               >
                 Duplikál
               </button>
@@ -714,6 +839,7 @@ export default function App() {
                 className="btn"
                 disabled={locked || clips.length < 2}
                 onClick={() => runAction("remove")}
+                title="Kijelölt klip törlése."
               >
                 Töröl
               </button>
@@ -722,6 +848,7 @@ export default function App() {
                 className="btn"
                 disabled={locked || !clips.length}
                 onClick={() => runAction("cut", { t_sec: tSec })}
+                title="Klip felvágása a lejátszási fejnél."
               >
                 Vágás
               </button>
@@ -730,6 +857,7 @@ export default function App() {
                 className="btn"
                 disabled={locked || !selected}
                 onClick={() => runAction("move", { clip_id: selected ?? undefined, direction: -1 })}
+                title="Klip léptetése balra."
               >
                 ←
               </button>
@@ -738,6 +866,7 @@ export default function App() {
                 className="btn"
                 disabled={locked || !selected}
                 onClick={() => runAction("move", { clip_id: selected ?? undefined, direction: 1 })}
+                title="Klip léptetése jobbra."
               >
                 →
               </button>
@@ -746,7 +875,7 @@ export default function App() {
                 className="btn accent"
                 disabled={locked || !selected}
                 onClick={() => runAction("to_broll", { clip_id: selected ?? undefined })}
-                title="Kijelölt klip → V2 B-roll"
+                title="Kijelölt klip áthelyezése a V2 B-roll sávra."
               >
                 → B-roll
               </button>
@@ -755,13 +884,14 @@ export default function App() {
                 className="btn"
                 disabled={locked || !selected}
                 onClick={() => runAction("to_v1", { clip_id: selected ?? undefined })}
+                title="Kijelölt klip visszarakása az V1 sávra."
               >
                 → V1
               </button>
             </div>
             <div className="trim-row">
-              <label>
-                In
+              <label title="Klip kezdőpontja másodpercben.">
+                Be
                 <input
                   type="number"
                   min={0}
@@ -771,8 +901,8 @@ export default function App() {
                   onChange={(e) => setInSec(Number(e.target.value))}
                 />
               </label>
-              <label>
-                Out
+              <label title="Klip végpontja másodpercben.">
+                Ki
                 <input
                   type="number"
                   min={0}
@@ -787,8 +917,9 @@ export default function App() {
                 className="btn"
                 disabled={!clips.length || locked}
                 onClick={applyTrim}
+                title="Be/Ki pontok alkalmazása a kijelölt klipre."
               >
-                Trim
+                Vágás alkalmaz
               </button>
             </div>
           </div>
@@ -799,7 +930,7 @@ export default function App() {
                 <div className="bake-fill" style={{ width: `${analysePct}%` }} />
               </div>
               <div className="bake-label">
-                Analyse {analysePct}% · {status?.analyse_status || "…"} · masks{" "}
+                Elemzés {analysePct}% · {status?.analyse_status || "…"} · maszkok{" "}
                 {status?.analyse_masks ?? 0}
               </div>
             </div>
@@ -811,7 +942,7 @@ export default function App() {
                 <div className="bake-fill" style={{ width: `${bakePct}%` }} />
               </div>
               <div className="bake-label">
-                {bakePct}% · {status?.bake_status || "…"}
+                Export {bakePct}% · {status?.bake_status || "…"}
               </div>
             </div>
           )}
@@ -823,17 +954,23 @@ export default function App() {
                 href="/api/bake/preview.mp4"
                 target="_blank"
                 rel="noreferrer"
+                title="Exportált előnézet MP4 megnyitása."
               >
                 HybridCut_preview.mp4
                 {status?.last_bake?.bake_range?.audio ? " · hanggal (AAC)" : ""}
               </a>
-              <button type="button" className="btn" onClick={() => void onOpenOutput()}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => void onOpenOutput()}
+                title="Kimeneti mappa megnyitása az Explorerben."
+              >
                 Megnyitás Explorerben
               </button>
             </div>
           ) : null}
           {(status?.bake_queue_len ?? 0) > 0 ? (
-            <div className="bake-label">Bake sor: {status?.bake_queue_len} várakozik</div>
+            <div className="bake-label">Export sor: {status?.bake_queue_len} várakozik</div>
           ) : null}
 
           <div className="meta">
@@ -863,7 +1000,7 @@ export default function App() {
             ) : null}
             {plan && !plan.empty ? (
               <div>
-                FramePlan:{" "}
+                Képterv:{" "}
                 <code>
                   {plan.layers.map((L) => `${L.track === 1 ? "V2" : "V1"}:${L.clip_id}`).join(" + ") ||
                     "—"}{" "}
@@ -885,65 +1022,89 @@ export default function App() {
           <div className="stage-head">
             <div>
               <h2>Előnézet</h2>
-              <p className="lead">V1/V2 timeline · MaskStore · wipe · Max seed (perzisztens)</p>
+              <p className="lead">Alapból Forrás · Maszk / Cutout / Összehasonlítás kapcsoló</p>
             </div>
-            <div className="preview-tools">
-              <button
-                type="button"
-                className={`btn ${showWipe ? "primary" : ""}`}
-                disabled={!preview}
-                onClick={() => setShowWipe((v) => !v)}
-              >
-                Előtte / Utána
-              </button>
-              {showWipe ? (
-                <div className="wipe-controls">
-                  <button type="button" className="btn" onClick={() => setWipe(0)} title="Csak alpha">
-                    Előtte
-                  </button>
-                  <button type="button" className="btn" onClick={() => setWipe(50)}>
-                    50%
-                  </button>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => setWipe(100)}
-                    title="Csak cutout"
-                  >
-                    Utána
-                  </button>
-                  <input
-                    className="wipe-slider"
-                    type="range"
-                    min={0}
-                    max={100}
-                    value={wipe}
-                    onChange={(e) => setWipe(Number(e.target.value))}
-                    aria-label="Wipe összehasonlítás"
-                  />
-                </div>
-              ) : null}
+            <div className="preview-tools" role="radiogroup" aria-label="Előnézet nézet">
+              {viewButtons.map((v) => (
+                <button
+                  key={v.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={viewMode === v.id}
+                  className={`btn ${viewMode === v.id ? "primary" : ""}`}
+                  disabled={!preview}
+                  title={v.title}
+                  onClick={() => {
+                    setViewMode(v.id);
+                    if (v.id === "compare") setWipe(100);
+                  }}
+                >
+                  {v.label}
+                </button>
+              ))}
             </div>
           </div>
 
-          <div className="preview-stage checker-subtle">
-            {preview && defaultSrc ? (
+          {viewMode === "compare" ? (
+            <div className="wipe-controls">
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setWipe(0)}
+                title="Csak a maszk / Előtte oldal."
+              >
+                Előtte
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setWipe(50)}
+                title="Fele-fele összehasonlítás."
+              >
+                50%
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setWipe(100)}
+                title="Csak a cutout / forrás (Utána) oldal."
+              >
+                Utána
+              </button>
+              <input
+                className="wipe-slider"
+                type="range"
+                min={0}
+                max={100}
+                value={wipe}
+                onChange={(e) => setWipe(Number(e.target.value))}
+                aria-label="Összehasonlítás csúszka"
+                title="Húzd: balra maszk, jobbra cutout/forrás."
+              />
+            </div>
+          ) : null}
+
+          <div className={`preview-stage ${viewMode === "source" || matteEmpty ? "source-solid" : "checker-subtle"}`}>
+            {preview && (singleSrc || (viewMode === "compare" && beforeSrc && afterSrc)) ? (
               <div className="wipe-wrap">
                 {matteEmpty ? (
-                  <div className="matte-empty-badge" title="Még nincs hasznos maszk — forrás képkocka">
-                    nincs maszk
+                  <div
+                    className="matte-empty-badge"
+                    title="Még nincs hasznos maszk — a forrás képkocka látszik."
+                  >
+                    Maszk üres — forrás látszik
                   </div>
                 ) : null}
-                {showWipe && beforeSrc && afterSrc ? (
+                {viewMode === "compare" && beforeSrc && afterSrc ? (
                   <div className="wipe-compare">
                     <div className="wipe-labels">
-                      <span>{matteEmpty ? "Előtte (nincs maszk)" : "Előtte (alpha)"}</span>
+                      <span>{matteEmpty ? "Előtte (nincs maszk)" : "Előtte (maszk)"}</span>
                       <span>{matteEmpty ? "Utána (forrás)" : "Utána (cutout)"}</span>
                     </div>
                     <div className="wipe-stage checker-subtle">
                       <img
                         src={`data:${beforeMime};base64,${beforeSrc}`}
-                        alt={matteEmpty ? "Forrás — nincs maszk" : "Alpha matte"}
+                        alt={matteEmpty ? "Forrás — nincs maszk" : "Alpha maszk"}
                         className="wipe-base"
                       />
                       <img
@@ -955,14 +1116,20 @@ export default function App() {
                       <div className="wipe-divider" style={{ left: `${wipe}%` }} />
                     </div>
                   </div>
-                ) : (
+                ) : singleSrc ? (
                   <img
                     className="preview-cutout"
-                    src={`data:image/jpeg;base64,${defaultSrc}`}
-                    alt="Matting előnézet"
+                    src={`data:${singleMime};base64,${singleSrc}`}
+                    alt={
+                      viewMode === "source"
+                        ? "Forrás képkocka"
+                        : viewMode === "mask"
+                          ? "Maszk nézet"
+                          : "Cutout előnézet"
+                    }
                   />
-                )}
-                {seedPng && mode === "max" ? (
+                ) : null}
+                {seedPng && mode === "max" && viewMode !== "mask" ? (
                   <img
                     className="seed-overlay-preview"
                     src={
@@ -977,8 +1144,8 @@ export default function App() {
               </div>
             ) : (
               <div className="preview-empty">
-                <h3>Scrub a timeline-on</h3>
-                <p>MaskStore + prefetch adja az élő érzést. Seed megmarad scrub közben.</p>
+                <h3>Scrub az idővonalon</h3>
+                <p>Előtöltés + MaszkTár adja az élő érzést. A kézi maszk scrub után is megmarad.</p>
               </div>
             )}
           </div>
@@ -1008,6 +1175,8 @@ export default function App() {
                 value={Math.min(tSec, duration || tSec)}
                 disabled={!clips.length || locked}
                 onChange={(e) => schedulePreview(Number(e.target.value))}
+                title="Idővonal scrub — húzd a képkockához."
+                aria-label="Lejátszási fej"
               />
               <span>{duration.toFixed(1)}s</span>
             </div>
@@ -1019,6 +1188,7 @@ export default function App() {
               type="button"
               className={`btn ${showSeed || mode === "max" ? "accent" : ""}`}
               disabled={!preview}
+              title="Kézi maszk festőpanel — Max minőséghez ajánlott."
               onClick={() => {
                 setShowSeed((v) => {
                   const next = !v;
@@ -1027,7 +1197,7 @@ export default function App() {
                 });
               }}
             >
-              {showSeed ? "Seed panel elrejtése" : "Max seed paint"}
+              {showSeed ? "Kézi maszk elrejtése" : "Kézi maszk festés"}
             </button>
           </div>
 
@@ -1044,7 +1214,7 @@ export default function App() {
                   const st = await api.setSeed(png);
                   setStatus(st);
                   setSeedPng(st.seed_mask_png_b64 ?? png);
-                  setNote("Seed mask mentve · túléli a scruböt / újratöltést");
+                  setNote("Kézi maszk mentve · túléli a scruböt / újratöltést");
                 } catch (e) {
                   setError(e instanceof Error ? e.message : String(e));
                 } finally {
@@ -1056,7 +1226,7 @@ export default function App() {
                   const st = await api.clearSeed();
                   setStatus(st);
                   setSeedPng(null);
-                  setNote("Seed törölve");
+                  setNote("Kézi maszk törölve");
                 } catch (e) {
                   setError(e instanceof Error ? e.message : String(e));
                 }
