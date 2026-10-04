@@ -182,6 +182,7 @@ input {
   width: 100%;
   max-height: min(58vh, 640px);
   overflow: hidden;
+  border-radius: 10px;
 }
 
 .wipe-stage .wipe-base,
@@ -193,7 +194,7 @@ input {
 }
 
 .wipe-stage .wipe-base {
-  filter: grayscale(0.15);
+  filter: none;
 }
 
 .wipe-stage .wipe-fg {
@@ -481,19 +482,37 @@ input {
   margin: 0;
 }
 
+/* Subtle CapCut-like transparency checker (dark theme, ~10px tiles). */
+.checker-subtle {
+  --checker-a: #2a2a2a;
+  --checker-b: #353535;
+  --checker-size: 10px;
+  background-color: var(--checker-a);
+  background-image: linear-gradient(
+      45deg,
+      var(--checker-b) 25%,
+      transparent 25%,
+      transparent 75%,
+      var(--checker-b) 75%,
+      var(--checker-b)
+    ),
+    linear-gradient(
+      45deg,
+      var(--checker-b) 25%,
+      transparent 25%,
+      transparent 75%,
+      var(--checker-b) 75%,
+      var(--checker-b)
+    );
+  background-size: calc(var(--checker-size) * 2) calc(var(--checker-size) * 2);
+  background-position: 0 0, var(--checker-size) var(--checker-size);
+}
+
 .preview-stage {
   position: relative;
   border-radius: 14px;
   overflow: hidden;
   border: 1px solid var(--line);
-  background:
-    linear-gradient(45deg, #15221c 25%, transparent 25%),
-    linear-gradient(-45deg, #15221c 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #15221c 75%),
-    linear-gradient(-45deg, transparent 75%, #15221c 75%);
-  background-size: 26px 26px;
-  background-position: 0 0, 0 13px, 13px -13px, -13px 0;
-  background-color: #0c1411;
   min-height: 360px;
   display: grid;
   place-items: center;
@@ -765,7 +784,28 @@ input {
   border: 1px solid var(--line);
   max-width: 100%;
   aspect-ratio: 4 / 3;
-  background: #0c1411;
+  --checker-a: #2a2a2a;
+  --checker-b: #353535;
+  --checker-size: 10px;
+  background-color: var(--checker-a);
+  background-image: linear-gradient(
+      45deg,
+      var(--checker-b) 25%,
+      transparent 25%,
+      transparent 75%,
+      var(--checker-b) 75%,
+      var(--checker-b)
+    ),
+    linear-gradient(
+      45deg,
+      var(--checker-b) 25%,
+      transparent 25%,
+      transparent 75%,
+      var(--checker-b) 75%,
+      var(--checker-b)
+    );
+  background-size: calc(var(--checker-size) * 2) calc(var(--checker-size) * 2);
+  background-position: 0 0, var(--checker-size) var(--checker-size);
 }
 
 .seed-bg,

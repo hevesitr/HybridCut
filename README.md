@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-04-hybrid-cudnn-path` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-04-alpha-preview` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-04-hybrid-cudnn-path
+# expect: 2026-10-04-alpha-preview
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA+cuDNN: .\hybrid_cut\start_hybrid_cuda.ps1

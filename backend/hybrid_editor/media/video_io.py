@@ -11,6 +11,12 @@ import numpy as np
 
 from hybrid_editor.engines.base import MediaInfo
 
+# CapCut / Photoshop-like dark-theme transparency checker (never dominate the image).
+CHECKER_TILE_PX = 10
+CHECKER_DARK = 0x2A  # #2a2a2a
+CHECKER_LIGHT = 0x35  # #353535
+EMPTY_ALPHA_MAX = 0.02
+
 
 def probe_video(path: Path) -> MediaInfo:
     path = Path(path)
@@ -88,35 +94,117 @@ def downscale_long_side(bgr: np.ndarray, max_long: int = 720) -> np.ndarray:
     return cv2.resize(bgr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
 
 
-def encode_preview_pair(bgr: np.ndarray, alpha: np.ndarray, *, max_side: int = 960) -> tuple[str, str, int, int]:
-    """Return (jpeg_b64 composite checker, alpha_png_b64, w, h)."""
+def normalize_alpha(alpha: np.ndarray) -> np.ndarray:
+    """Return float32 HxW alpha in [0, 1]."""
+    a = np.asarray(alpha)
+    if a.ndim == 3:
+        a = a[..., 0]
+    a = a.astype(np.float32)
+    if a.size and float(a.max()) > 1.5:
+        a = a / 255.0
+    return np.clip(a, 0.0, 1.0)
+
+
+def make_checkerboard(
+    h: int,
+    w: int,
+    *,
+    tile: int = CHECKER_TILE_PX,
+    dark: int = CHECKER_DARK,
+    light: int = CHECKER_LIGHT,
+) -> np.ndarray:
+    """Subtle dark-theme checkerboard (BGR uint8)."""
+    tile = max(4, int(tile))
+    yy, xx = np.mgrid[0:h, 0:w]
+    checker = (((xx // tile) + (yy // tile)) % 2).astype(np.uint8)
+    plane = np.where(checker == 1, light, dark).astype(np.uint8)
+    return np.stack([plane, plane, plane], axis=-1)
+
+
+def composite_cutout_over_checker(
+    bgr: np.ndarray,
+    alpha: np.ndarray,
+    *,
+    tile: int = CHECKER_TILE_PX,
+    dark: int = CHECKER_DARK,
+    light: int = CHECKER_LIGHT,
+) -> np.ndarray:
+    """Subject RGB × alpha over subtle checker. Empty alpha → dimmed video, never pure black."""
+    h, w = bgr.shape[:2]
+    a = normalize_alpha(alpha)
+    if a.shape[:2] != (h, w):
+        a = cv2.resize(a, (w, h), interpolation=cv2.INTER_LINEAR)
+    bg = make_checkerboard(h, w, tile=tile, dark=dark, light=light)
+    a3 = a[..., None]
+    if float(a.max()) < EMPTY_ALPHA_MAX:
+        # Clear empty-matte state: video stays readable, checker hints transparency.
+        dim = (bgr.astype(np.float32) * 0.42).astype(np.uint8)
+        return (dim.astype(np.float32) * 0.72 + bg.astype(np.float32) * 0.28).astype(np.uint8)
+    return (bgr.astype(np.float32) * a3 + bg.astype(np.float32) * (1.0 - a3)).astype(np.uint8)
+
+
+def visualize_alpha_matte(
+    bgr: np.ndarray,
+    alpha: np.ndarray,
+    *,
+    tile: int = CHECKER_TILE_PX,
+    dark: int = CHECKER_DARK,
+    light: int = CHECKER_LIGHT,
+) -> np.ndarray:
+    """Soft alpha / matte view over subtle checker — structure, not harsh noise."""
+    h, w = bgr.shape[:2]
+    a = normalize_alpha(alpha)
+    if a.shape[:2] != (h, w):
+        a = cv2.resize(a, (w, h), interpolation=cv2.INTER_LINEAR)
+    bg = make_checkerboard(h, w, tile=tile, dark=dark, light=light)
+    a3 = a[..., None]
+    if float(a.max()) < EMPTY_ALPHA_MAX:
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        soft = cv2.cvtColor((gray.astype(np.float32) * 0.35).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+        return (soft.astype(np.float32) * 0.65 + bg.astype(np.float32) * 0.35).astype(np.uint8)
+    # Soft grayscale matte (light subject) over checker + faint source structure in mid-alpha.
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    matte = (a * 210.0 + (1.0 - a) * (gray * 0.25)).astype(np.uint8)
+    matte3 = cv2.cvtColor(matte, cv2.COLOR_GRAY2BGR)
+    return (matte3.astype(np.float32) * a3 + bg.astype(np.float32) * (1.0 - a3)).astype(np.uint8)
+
+
+def encode_preview_pair(
+    bgr: np.ndarray, alpha: np.ndarray, *, max_side: int = 960
+) -> tuple[str, str, int, int, str]:
+    """Return (jpeg_cutout_b64, alpha_vis_png_b64, w, h, source_jpeg_b64).
+
+    - jpeg: subject RGB × alpha over subtle checker (never solid black void)
+    - alpha png: soft matte visualization over subtle checker
+    - source jpeg: original video frame for seed / paint underlay
+    """
     h, w = bgr.shape[:2]
     if max(h, w) > max_side:
         scale = max_side / float(max(h, w))
         bgr = cv2.resize(bgr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-        alpha = cv2.resize(alpha, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_LINEAR)
+        alpha = cv2.resize(
+            np.asarray(alpha),
+            (int(w * scale), int(h * scale)),
+            interpolation=cv2.INTER_LINEAR,
+        )
         h, w = bgr.shape[:2]
-    a = alpha.astype(np.float32)
-    if a.max() > 1.5:
-        a = a / 255.0
-    a = np.clip(a, 0.0, 1.0)
-    tile = 16
-    yy, xx = np.mgrid[0:h, 0:w]
-    checker = (((xx // tile) + (yy // tile)) % 2).astype(np.float32)
-    bg = (checker * 220 + (1.0 - checker) * 40).astype(np.uint8)
-    bg = np.stack([bg, bg, bg], axis=-1)
-    a3 = a[..., None]
-    comp = (bgr.astype(np.float32) * a3 + bg.astype(np.float32) * (1.0 - a3)).astype(np.uint8)
-    ok_j, buf_j = cv2.imencode(".jpg", comp, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+
+    cutout = composite_cutout_over_checker(bgr, alpha)
+    alpha_vis = visualize_alpha_matte(bgr, alpha)
+
+    ok_j, buf_j = cv2.imencode(".jpg", cutout, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
     if not ok_j:
         raise RuntimeError("JPEG encode failed")
-    a8 = (a * 255.0).astype(np.uint8)
-    ok_p, buf_p = cv2.imencode(".png", a8)
+    ok_p, buf_p = cv2.imencode(".png", alpha_vis)
     if not ok_p:
         raise RuntimeError("PNG encode failed")
+    ok_s, buf_s = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+    if not ok_s:
+        raise RuntimeError("Source JPEG encode failed")
     return (
         base64.b64encode(buf_j.tobytes()).decode("ascii"),
         base64.b64encode(buf_p.tobytes()).decode("ascii"),
         w,
         h,
+        base64.b64encode(buf_s.tobytes()).decode("ascii"),
     )

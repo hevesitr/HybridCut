@@ -149,7 +149,7 @@ class MaxQualityEngine(MattingEngine):
         self._stabilizer.reset()
         self._seed = None
         alpha = self._polish(bgr, warmup=True)
-        jpg, png, w, h = encode_preview_pair(bgr, alpha)
+        jpg, png, w, h, src = encode_preview_pair(bgr, alpha)
         return PreviewFrame(
             t_sec=t,
             width=w,
@@ -166,6 +166,7 @@ class MaxQualityEngine(MattingEngine):
                 "user_seed": self._user_seed is not None,
                 "fast_meta": frame.meta,
             },
+            source_jpeg_b64=src,
         )
 
     def bake(

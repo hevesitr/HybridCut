@@ -311,8 +311,8 @@ export function SeedPaint({
         </button>
       </div>
       <p className="seed-hint">
-        Max mód guidance: a seed a scrub / újratöltés után is megmarad (disk + overlay bind). Bake →
-        MaxQuality / MatAnyone2 adapter.
+        Videókép a maszk alatt · finom sakktábla csak az átlátszó részen. Seed scrub után is megmarad
+        (disk + overlay). Bake → MaxQuality / MatAnyone2.
       </p>
     </div>
   );

@@ -595,7 +595,7 @@ class FastEngine(MattingEngine):
             if self._mask_store is not None:
                 self._mask_store.put_async(t, alpha)
 
-        jpg, png, w, h = encode_preview_pair(bgr, alpha)
+        jpg, png, w, h, src = encode_preview_pair(bgr, alpha)
         lane_meta = self._lanes.status() if self._lanes else {}
         return PreviewFrame(
             t_sec=t,
@@ -612,6 +612,7 @@ class FastEngine(MattingEngine):
                 "frame_idx": frame_idx,
                 "proxy_lanes": lane_meta,
             },
+            source_jpeg_b64=src,
         )
 
     def bake(

@@ -108,6 +108,8 @@ export type PreviewResult = {
   height: number;
   jpeg_b64: string;
   alpha_png_b64: string;
+  /** Original video frame for seed paint underlay (no matte bake-in). */
+  source_jpeg_b64?: string;
   engine: string;
   backend: string;
   mode: string;

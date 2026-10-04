@@ -44,20 +44,9 @@ class AudioSegment:
 
 
 def _checker_composite(bgr: np.ndarray, alpha: np.ndarray) -> np.ndarray:
-    h, w = bgr.shape[:2]
-    a = alpha.astype(np.float32)
-    if a.max() > 1.5:
-        a = a / 255.0
-    a = np.clip(a, 0.0, 1.0)
-    if a.ndim == 3:
-        a = a[..., 0]
-    tile = 16
-    yy, xx = np.mgrid[0:h, 0:w]
-    checker = (((xx // tile) + (yy // tile)) % 2).astype(np.float32)
-    bg = (checker * 220 + (1.0 - checker) * 40).astype(np.uint8)
-    bg = np.stack([bg, bg, bg], axis=-1)
-    a3 = a[..., None]
-    return (bgr.astype(np.float32) * a3 + bg.astype(np.float32) * (1.0 - a3)).astype(np.uint8)
+    from hybrid_editor.media.video_io import composite_cutout_over_checker
+
+    return composite_cutout_over_checker(bgr, alpha)
 
 
 def media_has_audio(path: Path | str) -> bool:

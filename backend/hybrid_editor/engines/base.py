@@ -59,6 +59,8 @@ class PreviewFrame:
     engine: str
     backend: str
     meta: dict[str, Any] = field(default_factory=dict)
+    # Original video frame (no matte) — seed paint underlay; optional for older callers.
+    source_jpeg_b64: str = ""
 
 
 @dataclass

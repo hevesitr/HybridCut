@@ -158,6 +158,7 @@ def preview(body: PreviewBody) -> dict:
         "height": frame.height,
         "jpeg_b64": frame.jpeg_b64,
         "alpha_png_b64": frame.alpha_png_b64,
+        "source_jpeg_b64": frame.source_jpeg_b64 or "",
         "engine": frame.engine,
         "backend": frame.backend,
         "meta": frame.meta,

@@ -903,7 +903,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="preview-stage">
+          <div className="preview-stage checker-subtle">
             {preview ? (
               <div className="wipe-wrap">
                 {showWipe && preview.alpha_png_b64 ? (
@@ -912,10 +912,10 @@ export default function App() {
                       <span>Előtte (alpha)</span>
                       <span>Utána (cutout)</span>
                     </div>
-                    <div className="wipe-stage">
+                    <div className="wipe-stage checker-subtle">
                       <img
                         src={`data:image/png;base64,${preview.alpha_png_b64}`}
-                        alt="Alpha"
+                        alt="Alpha matte"
                         className="wipe-base"
                       />
                       <img
@@ -928,7 +928,11 @@ export default function App() {
                     </div>
                   </div>
                 ) : (
-                  <img src={`data:image/jpeg;base64,${preview.jpeg_b64}`} alt="Matting előnézet" />
+                  <img
+                    className="preview-cutout"
+                    src={`data:image/jpeg;base64,${preview.jpeg_b64}`}
+                    alt="Matting előnézet"
+                  />
                 )}
                 {seedPng && mode === "max" ? (
                   <img
@@ -1001,7 +1005,7 @@ export default function App() {
 
           {showSeed && (
             <SeedPaint
-              imageJpegB64={preview?.jpeg_b64 ?? null}
+              imageJpegB64={preview?.source_jpeg_b64 || preview?.jpeg_b64 || null}
               initialMaskPngB64={seedPng}
               width={preview?.width ?? 480}
               height={preview?.height ?? 360}
