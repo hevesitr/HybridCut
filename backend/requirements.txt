@@ -1,0 +1,13 @@
+fastapi>=0.110
+uvicorn[standard]>=0.27
+numpy>=1.26
+opencv-python-headless>=4.8
+pydantic>=2.0
+python-multipart>=0.0.9
+aiofiles>=23.0
+# Optional — real FastEngine ORT RVM (Windows CUDA):
+#   pip install onnxruntime-gpu
+#   set HYBRID_RVM_ONNX / run scripts\download_rvm.ps1
+# Optional — MatAnyone2 adapter only (S-Lab NC weights, user-local):
+#   torch + user-installed matanyone2 + HYBRID_MATANYONE2_WEIGHTS
+# Without ORT/weights: documented OpenCV heuristic fallback.

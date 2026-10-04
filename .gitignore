@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+# Runtime cache at repo root only (keep backend/hybrid_editor/cache/ package)
+/cache/
+!/cache/sample_person.mp4
+backend/.pytest_cache/
+frontend/node_modules/
+# Keep frontend/dist committed/synced so Windows can run API+UI without npm.
+*.onnx
+*.pth
+*.pt
+.DS_Store

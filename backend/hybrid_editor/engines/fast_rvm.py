@@ -1,0 +1,497 @@
+"""FastEngine — real ORT RVM when HYBRID_RVM_ONNX / models path set.
+
+Fallback: documented OpenCV GrabCut-center heuristic (scaffold / CI / no weights).
+CUDA EP preferred; VRAM guard prevents Fast+Max CUDA together on 8GB.
+Preview path uses disk MaskStore + scrub decode prefetch (AHEAD≈8).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from pathlib import Path
+from typing import Any, Optional
+
+import cv2
+import numpy as np
+
+from hybrid_editor import ROOT
+from hybrid_editor.cache import FrameCache, MaskStore, ScrubPrefetcher, mask_dir
+from hybrid_editor.cache.proxy_lanes import Lane, ProxyLaneCache
+from hybrid_editor.engines.base import (
+    BakeResult,
+    EngineCapabilities,
+    EngineMode,
+    MattingEngine,
+    MediaInfo,
+    PreviewFrame,
+    ProgressCb,
+)
+from hybrid_editor.engines.vram import acquire_cuda, release_cuda
+from hybrid_editor.export.composer import (
+    AudioSegment,
+    media_has_audio,
+    try_prores_alpha,
+    write_preview_mp4,
+)
+from hybrid_editor.media.video_io import (
+    downscale_long_side,
+    encode_preview_pair,
+    probe_video,
+    read_frame_at,
+    read_frame_index,
+)
+
+logger = logging.getLogger(__name__)
+
+HEURISTIC_NOTE = (
+    "Heuristic fallback (OpenCV GrabCut + center prior): used when HYBRID_RVM_ONNX "
+    "is unset, models/rvm_*.onnx is missing, or onnxruntime fails to load. "
+    "Not ML-quality — set HYBRID_RVM_ONNX for real RVM ORT matting."
+)
+
+
+def _env_path(name: str) -> Optional[Path]:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    return p if p.is_file() else None
+
+
+def resolve_rvm_onnx() -> Optional[Path]:
+    model = _env_path("HYBRID_RVM_ONNX")
+    if model is not None:
+        return model
+    models_dir = ROOT / "models"
+    for name in (
+        "rvm_mobilenetv3_fp16.onnx",
+        "rvm_mobilenetv3.onnx",
+        "rvm_mobilenetv3_fp32.onnx",
+        "rvm_resnet50_fp16.onnx",
+    ):
+        cand = models_dir / name
+        if cand.is_file():
+            return cand
+    return None
+
+
+def heuristic_person_alpha(bgr: np.ndarray) -> np.ndarray:
+    """Soft person-ish matte without ML — scaffold / CI fallback only."""
+    h, w = bgr.shape[:2]
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    skin = cv2.inRange(hsv, (0, 30, 50), (25, 180, 255))
+    skin2 = cv2.inRange(hsv, (160, 30, 50), (180, 180, 255))
+    skin = cv2.bitwise_or(skin, skin2)
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    cx, cy = w * 0.5, h * 0.55
+    dist = np.sqrt(((xx - cx) / (w * 0.35)) ** 2 + ((yy - cy) / (h * 0.45)) ** 2)
+    center = np.clip(1.0 - dist, 0.0, 1.0)
+    edges = cv2.Canny(cv2.GaussianBlur(lab[:, :, 0], (5, 5), 0), 40, 120)
+    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
+    mask = np.full((h, w), cv2.GC_PR_BGD, np.uint8)
+    mask[center > 0.55] = cv2.GC_PR_FGD
+    mask[skin > 0] = cv2.GC_FGD
+    border = max(4, min(h, w) // 40)
+    mask[:border, :] = cv2.GC_BGD
+    mask[-border:, :] = cv2.GC_BGD
+    mask[:, :border] = cv2.GC_BGD
+    mask[:, -border:] = cv2.GC_BGD
+    try:
+        bgd = np.zeros((1, 65), np.float64)
+        fgd = np.zeros((1, 65), np.float64)
+        small = bgr
+        scale = 1.0
+        if max(h, w) > 640:
+            scale = 640.0 / max(h, w)
+            small = cv2.resize(bgr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+            mask_s = cv2.resize(mask, (small.shape[1], small.shape[0]), interpolation=cv2.INTER_NEAREST)
+        else:
+            mask_s = mask
+        cv2.grabCut(small, mask_s, None, bgd, fgd, 2, cv2.GC_INIT_WITH_MASK)
+        gc = np.where((mask_s == cv2.GC_FGD) | (mask_s == cv2.GC_PR_FGD), 1.0, 0.0).astype(np.float32)
+        if scale != 1.0:
+            gc = cv2.resize(gc, (w, h), interpolation=cv2.INTER_LINEAR)
+    except Exception:
+        gc = center * 0.7 + (skin.astype(np.float32) / 255.0) * 0.3
+    alpha = 0.75 * gc + 0.15 * center + 0.10 * (edges.astype(np.float32) / 255.0)
+    alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=2.0)
+    return np.clip(alpha, 0.0, 1.0).astype(np.float32)
+
+
+class _OrtRvmSession:
+    """RVM ONNX session — CUDA EP preferred when available."""
+
+    def __init__(self, model_path: Path) -> None:
+        import onnxruntime as ort  # type: ignore
+
+        prefer = os.environ.get("HYBRID_ORT_PROVIDER", "cuda").strip().lower()
+        avail = list(ort.get_available_providers())
+        providers: list[str] = []
+        uses_cuda = False
+        if prefer == "cuda" and "CUDAExecutionProvider" in avail:
+            providers.append("CUDAExecutionProvider")
+            uses_cuda = True
+        elif prefer == "dml" and "DmlExecutionProvider" in avail:
+            providers.append("DmlExecutionProvider")
+        elif prefer == "cpu":
+            pass
+        elif "CUDAExecutionProvider" in avail and prefer != "cpu":
+            providers.append("CUDAExecutionProvider")
+            uses_cuda = True
+        providers.append("CPUExecutionProvider")
+
+        if uses_cuda:
+            acquire_cuda("fast-ort", detail=str(model_path))
+        self._uses_cuda = uses_cuda
+        try:
+            so = ort.SessionOptions()
+            so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            self.session = ort.InferenceSession(str(model_path), sess_options=so, providers=providers)
+        except Exception:
+            if uses_cuda:
+                release_cuda("fast-ort")
+            raise
+        self.provider = self.session.get_providers()[0]
+        self._r1 = self._r2 = self._r3 = self._r4 = None
+        self.model_path = model_path
+        # If CUDA was requested but session fell back to CPU, release slot
+        if uses_cuda and "CUDA" not in self.provider:
+            release_cuda("fast-ort")
+            self._uses_cuda = False
+
+    def reset(self) -> None:
+        self._r1 = self._r2 = self._r3 = self._r4 = None
+
+    def close(self) -> None:
+        self.reset()
+        self.session = None  # type: ignore
+        if self._uses_cuda:
+            release_cuda("fast-ort")
+            self._uses_cuda = False
+
+    def matte(self, bgr: np.ndarray, downsample: float = 0.25) -> np.ndarray:
+        if self.session is None:
+            raise RuntimeError("ORT session closed")
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        h, w = rgb.shape[:2]
+        if downsample < 1.0:
+            nh, nw = max(1, int(h * downsample)), max(1, int(w * downsample))
+            nh, nw = nh - nh % 4, nw - nw % 4
+            nh, nw = max(4, nh), max(4, nw)
+            src = cv2.resize(rgb, (nw, nh), interpolation=cv2.INTER_AREA)
+        else:
+            src = rgb
+            nh, nw = h, w
+        x = np.transpose(src, (2, 0, 1))[None, ...]
+        feeds: dict[str, Any] = {"src": x}
+        inputs = {i.name: i for i in self.session.get_inputs()}
+        for name, rec in (("r1i", self._r1), ("r2i", self._r2), ("r3i", self._r3), ("r4i", self._r4)):
+            if name in inputs:
+                shape = [d if isinstance(d, int) else 1 for d in inputs[name].shape]
+                feeds[name] = rec if rec is not None else np.zeros(shape, np.float32)
+        if "downsample_ratio" in inputs:
+            feeds["downsample_ratio"] = np.array([downsample if downsample < 1 else 1.0], np.float32)
+        outs = self.session.run(None, feeds)
+        pha = None
+        for o in outs:
+            if isinstance(o, np.ndarray) and o.ndim >= 3:
+                if o.ndim == 4 and o.shape[1] == 1:
+                    pha = o
+                    break
+        if pha is None:
+            pha = outs[1] if len(outs) > 1 else outs[0]
+        alpha = np.squeeze(pha).astype(np.float32)
+        if alpha.ndim == 3:
+            alpha = alpha[0]
+        if alpha.shape != (h, w):
+            alpha = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_LINEAR)
+        # Recurrent outputs — common export layout fgr, pha, r1o..r4o
+        if len(outs) >= 6:
+            self._r1, self._r2, self._r3, self._r4 = outs[2], outs[3], outs[4], outs[5]
+        return np.clip(alpha, 0.0, 1.0)
+
+
+class FastEngine(MattingEngine):
+    mode = EngineMode.GYORS
+
+    def __init__(self) -> None:
+        self._media: Optional[MediaInfo] = None
+        self._rvm: Optional[_OrtRvmSession] = None
+        self._backend = "heuristic"
+        self._mask_store: Optional[MaskStore] = None
+        self._frame_cache = FrameCache(48)
+        self._prefetch = ScrubPrefetcher(ahead=8)
+        self._lanes: Optional[ProxyLaneCache] = None
+        self._last_frame_idx = 0
+        self._proxy_long = int(os.environ.get("HYBRID_PROXY_LONG", "720") or "720")
+        self._load_rvm()
+
+    def _load_rvm(self) -> None:
+        model = resolve_rvm_onnx()
+        if model is None:
+            self._backend = "heuristic"
+            logger.info(HEURISTIC_NOTE)
+            return
+        try:
+            self._rvm = _OrtRvmSession(model)
+            self._backend = f"ort-rvm:{self._rvm.provider}"
+            logger.info("FastEngine ORT RVM loaded: %s (%s)", model, self._rvm.provider)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ORT RVM unavailable (%s) — %s", exc, HEURISTIC_NOTE)
+            self._rvm = None
+            self._backend = "heuristic"
+
+    def capabilities(self) -> EngineCapabilities:
+        detail = (
+            f"ORT RVM via HYBRID_RVM_ONNX / models/*.onnx ({self._backend})."
+            if self._rvm
+            else HEURISTIC_NOTE
+        )
+        return EngineCapabilities(
+            mode=self.mode,
+            name="Gyors mód (RVM / Fast)",
+            backend=self._backend,
+            available=True,
+            license_note="RVM ONNX: follow upstream license; heuristic fallback is ours (MIT).",
+            vram_hint_gb=3.0 if self._rvm and "CUDA" in self._backend else 0.5,
+            detail=detail,
+            weights_path=str(self._rvm.model_path) if self._rvm else None,
+        )
+
+    def reset(self) -> None:
+        if self._rvm:
+            self._rvm.reset()
+
+    def close(self) -> None:
+        self._prefetch.shutdown()
+        self._frame_cache.clear()
+        if self._lanes:
+            self._lanes.cancel_cold()
+            self._lanes.clear()
+        if self._mask_store:
+            self._mask_store.clear_memory()
+        if self._rvm:
+            self._rvm.close()
+            self._rvm = None
+
+    def open_media(self, path: Path) -> MediaInfo:
+        self.reset()
+        self._frame_cache.clear()
+        if self._lanes:
+            self._lanes.cancel_cold()
+            self._lanes.clear()
+        self._media = probe_video(path)
+        store_dir = mask_dir(ROOT, self._media.path, subject="person")
+        model_id = Path(self._rvm.model_path).stem if self._rvm else "heuristic"
+        self._mask_store = MaskStore(store_dir, model_id=model_id)
+        cold = ROOT / "cache" / "proxy" / Path(self._media.path).stem
+        self._lanes = ProxyLaneCache(
+            hot_size=12,
+            warm_size=48,
+            cold_dir=cold,
+            max_long=self._proxy_long,
+        )
+        self._prefetch.bind(
+            self._decode_proxy_idx,
+            frame_count=self._media.frame_count,
+            max_long=self._proxy_long,
+        )
+        # Non-blocking COLD lane encode (sparse) — never blocks UI
+        self._lanes.start_cold_encode(
+            read_fn=lambda i: self._decode_proxy_idx(i, self._proxy_long),
+            frame_count=self._media.frame_count,
+            stride=max(1, int(round((self._media.fps or 25.0) / 4.0))),
+        )
+        return self._media
+
+    def _decode_proxy_idx(self, frame_idx: int, max_long: int) -> Optional[np.ndarray]:
+        if self._media is None:
+            return None
+        idx = int(frame_idx)
+        if self._lanes is not None:
+            hit = self._lanes.get(idx)
+            if hit is not None:
+                return hit
+        key = (self._media.path, idx, int(max_long))
+        hit = self._frame_cache.get(key)
+        if hit is not None:
+            if self._lanes is not None:
+                self._lanes.put(idx, hit, lane=Lane.WARM)
+            return hit
+        raw = read_frame_index(Path(self._media.path), idx)
+        if raw is None:
+            return None
+        proxy = downscale_long_side(raw, max_long)
+        self._frame_cache.put(key, proxy)
+        if self._lanes is not None:
+            self._lanes.put(idx, proxy, lane=Lane.WARM)
+        return proxy
+
+    def _matte(self, bgr: np.ndarray) -> np.ndarray:
+        if self._rvm is not None:
+            return self._rvm.matte(bgr, downsample=0.25)
+        return heuristic_person_alpha(bgr)
+
+    def preview_frame(self, t_sec: float) -> PreviewFrame:
+        if self._media is None:
+            raise RuntimeError("No media open")
+        fps = self._media.fps or 25.0
+        frame_idx = int(round(max(0.0, t_sec) * fps))
+        direction = 1 if frame_idx >= self._last_frame_idx else -1
+        self._last_frame_idx = frame_idx
+        self._prefetch.nudge(frame_idx, direction=direction, max_long=self._proxy_long)
+
+        # Prefer proxy-sized decode from HOT/WARM/COLD lanes
+        bgr = self._decode_proxy_idx(frame_idx, self._proxy_long)
+        if bgr is not None and self._lanes is not None:
+            self._lanes.put(frame_idx, bgr, lane=Lane.HOT)
+        if bgr is None:
+            if self._rvm:
+                self._rvm.reset()
+            bgr, t = read_frame_at(Path(self._media.path), t_sec)
+        else:
+            t = min(t_sec, self._media.duration_sec)
+
+        # MaskStore hit → skip ORT
+        alpha = None
+        from_store = False
+        if self._mask_store is not None:
+            alpha = self._mask_store.get_alpha(t, shape=bgr.shape[:2])
+            from_store = alpha is not None
+        if alpha is None:
+            if self._rvm:
+                self._rvm.reset()  # seek: don't smear recurrent state
+            alpha = self._matte(bgr)
+            if self._mask_store is not None:
+                self._mask_store.put_async(t, alpha)
+
+        jpg, png, w, h = encode_preview_pair(bgr, alpha)
+        lane_meta = self._lanes.status() if self._lanes else {}
+        return PreviewFrame(
+            t_sec=t,
+            width=w,
+            height=h,
+            jpeg_b64=jpg,
+            alpha_png_b64=png,
+            engine="FastEngine",
+            backend=self._backend,
+            meta={
+                "mode": self.mode.value,
+                "mask_store": from_store,
+                "prefetch_ahead": 8,
+                "frame_idx": frame_idx,
+                "proxy_lanes": lane_meta,
+            },
+        )
+
+    def bake(
+        self,
+        out_dir: Path,
+        *,
+        max_frames: Optional[int] = None,
+        progress: Optional[ProgressCb] = None,
+        in_sec: float = 0.0,
+        out_sec: Optional[float] = None,
+    ) -> BakeResult:
+        if self._media is None:
+            raise RuntimeError("No media open")
+        out_dir = Path(out_dir)
+        alpha_dir = out_dir / "alpha"
+        alpha_dir.mkdir(parents=True, exist_ok=True)
+        self.reset()
+        path = Path(self._media.path)
+        fps = self._media.fps or 25.0
+        start_t = max(0.0, float(in_sec))
+        end_t = float(out_sec) if out_sec is not None and out_sec > 0 else self._media.duration_sec
+        end_t = max(start_t, end_t)
+
+        cap = cv2.VideoCapture(str(path))
+        if not cap.isOpened():
+            raise RuntimeError(f"Cannot open {path}")
+        # Seek to in point
+        cap.set(cv2.CAP_PROP_POS_MSEC, start_t * 1000.0)
+        written = 0
+        limit = max_frames if max_frames is not None else 10**9
+        if limit <= 0:
+            limit = 10**9
+        total_est = int(max(1, round((end_t - start_t) * fps)))
+        if max_frames is not None:
+            total_est = min(total_est, max_frames)
+        frames_bgr: list[np.ndarray] = []
+        frames_alpha: list[np.ndarray] = []
+        frames_bgra: list[np.ndarray] = []
+        try:
+            idx = 0
+            while written < limit:
+                ok, bgr = cap.read()
+                if not ok or bgr is None:
+                    break
+                cur_t = start_t + (idx / fps)
+                if cur_t > end_t + 1e-6:
+                    break
+                alpha = self._matte(bgr)
+                a8 = (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
+                cv2.imwrite(str(alpha_dir / f"{idx:06d}.png"), a8)
+                if self._mask_store is not None:
+                    self._mask_store.put(cur_t, alpha)
+                # Keep proxy-sized frames for preview mp4 (memory-safe)
+                proxy = downscale_long_side(bgr, 720)
+                a_p = cv2.resize(alpha, (proxy.shape[1], proxy.shape[0]), interpolation=cv2.INTER_LINEAR)
+                frames_bgr.append(proxy)
+                frames_alpha.append(a_p)
+                a3 = (a_p * 255).astype(np.uint8)
+                bgra = cv2.cvtColor(proxy, cv2.COLOR_BGR2BGRA)
+                bgra[:, :, 3] = a3
+                frames_bgra.append(bgra)
+                written += 1
+                idx += 1
+                if progress:
+                    progress(min(0.85, written / max(total_est, 1)), f"Gyors bake {written}/{total_est}")
+        finally:
+            cap.release()
+
+        preview_mp4 = None
+        prores = None
+        audio_ok = False
+        if written:
+            if progress:
+                progress(0.9, "Export preview.mp4 + audio…")
+            audio_segs = [
+                AudioSegment(
+                    path=str(path),
+                    in_sec=start_t,
+                    out_sec=end_t,
+                    timeline_start_sec=0.0,
+                )
+            ]
+            preview_mp4 = write_preview_mp4(
+                frames_bgr,
+                frames_alpha,
+                out_dir / "preview.mp4",
+                fps=fps,
+                audio_segments=audio_segs,
+                audio_duration_sec=end_t - start_t,
+            )
+            audio_ok = bool(preview_mp4) and media_has_audio(preview_mp4)
+            if os.environ.get("HYBRID_EXPORT_PRORES", "").strip() in {"1", "true", "yes"}:
+                if progress:
+                    progress(0.95, "Export ProRes alpha…")
+                prores = try_prores_alpha(frames_bgra, out_dir / "master_alpha.mov", fps=fps)
+            if progress:
+                progress(1.0, "Bake kész")
+
+        audio_note = " · audio AAC" if audio_ok else ""
+        return BakeResult(
+            ok=written > 0,
+            out_dir=str(out_dir.resolve()),
+            frames_written=written,
+            engine="FastEngine",
+            backend=self._backend,
+            message=f"Wrote {written} alpha frames + preview{audio_note} ({self._backend})",
+            alpha_preview=str(alpha_dir / "000000.png") if written else None,
+            preview_mp4=preview_mp4,
+            prores_mov=prores,
+            bake_range={"in_sec": start_t, "out_sec": end_t, "audio": audio_ok},
+        )
