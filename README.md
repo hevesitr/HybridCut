@@ -17,7 +17,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 ```powershell
 cd $env:USERPROFILE\Documents
-git clone https://github.com/<YOUR_USER>/HybridCut.git
+git clone https://github.com/hevesitr/HybridCut.git
 cd HybridCut
 .\install_to_videoeditor.ps1
 cd $env:USERPROFILE\Documents\Videoeditor
@@ -37,7 +37,7 @@ Vagy futtasd a klonbol: `cd $env:USERPROFILE\Documents\HybridCut` majd `.\run_hy
 
 ```powershell
 cd $env:USERPROFILE\Documents
-git clone https://github.com/<YOUR_USER>/HybridCut.git
+git clone https://github.com/hevesitr/HybridCut.git
 cd HybridCut
 .\install_to_videoeditor.ps1
 cd $env:USERPROFILE\Documents\Videoeditor
