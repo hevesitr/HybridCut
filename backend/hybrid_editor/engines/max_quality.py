@@ -34,7 +34,13 @@ from hybrid_editor.export.composer import (
     try_prores_alpha,
     write_preview_mp4,
 )
-from hybrid_editor.media.video_io import downscale_long_side, encode_preview_pair, read_frame_at
+from hybrid_editor.media.video_io import (
+    downscale_long_side,
+    encode_preview_pair,
+    encode_source_only_preview,
+    is_matte_empty,
+    read_frame_at,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +154,29 @@ class MaxQualityEngine(MattingEngine):
         bgr = downscale_long_side(bgr, 720)
         self._stabilizer.reset()
         self._seed = None
-        alpha = self._polish(bgr, warmup=True)
-        jpg, png, w, h, src = encode_preview_pair(bgr, alpha)
+        matte_error = None
+        try:
+            alpha = self._polish(bgr, warmup=True)
+            jpg, png, w, h, src, empty = encode_preview_pair(bgr, alpha)
+        except Exception as exc:  # noqa: BLE001
+            matte_error = str(exc)[:240]
+            alpha = None
+            jpg, png, w, h, src, empty = encode_source_only_preview(bgr)
+            empty = True
+        if alpha is not None and (empty or is_matte_empty(alpha)):
+            empty = True
+        meta = {
+            "mode": self.mode.value,
+            "matanyone2": self._adapter.available,
+            "matanyone2_reason": self._status.reason,
+            "warmup": DEFAULT_WARMUP,
+            "user_seed": self._user_seed is not None,
+            "fast_meta": frame.meta,
+            "matte_empty": empty,
+        }
+        if matte_error:
+            meta["matte_error"] = matte_error
+            meta["source_fallback"] = True
         return PreviewFrame(
             t_sec=t,
             width=w,
@@ -158,14 +185,7 @@ class MaxQualityEngine(MattingEngine):
             alpha_png_b64=png,
             engine="MaxQualityEngine",
             backend=self._backend,
-            meta={
-                "mode": self.mode.value,
-                "matanyone2": self._adapter.available,
-                "matanyone2_reason": self._status.reason,
-                "warmup": DEFAULT_WARMUP,
-                "user_seed": self._user_seed is not None,
-                "fast_meta": frame.meta,
-            },
+            meta=meta,
             source_jpeg_b64=src,
         )
 

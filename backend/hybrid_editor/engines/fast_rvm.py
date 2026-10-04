@@ -37,6 +37,8 @@ from hybrid_editor.export.composer import (
 from hybrid_editor.media.video_io import (
     downscale_long_side,
     encode_preview_pair,
+    encode_source_only_preview,
+    is_matte_empty,
     probe_video,
     read_frame_at,
     read_frame_index,
@@ -585,18 +587,44 @@ class FastEngine(MattingEngine):
         # MaskStore hit → skip ORT
         alpha = None
         from_store = False
+        matte_error: Optional[str] = None
         if self._mask_store is not None:
             alpha = self._mask_store.get_alpha(t, shape=bgr.shape[:2])
             from_store = alpha is not None
         if alpha is None:
             if self._rvm:
                 self._rvm.reset()  # seek: don't smear recurrent state
-            alpha = self._matte(bgr)
-            if self._mask_store is not None:
-                self._mask_store.put_async(t, alpha)
+            try:
+                alpha = self._matte(bgr)
+                if self._mask_store is not None:
+                    self._mask_store.put_async(t, alpha)
+            except Exception as exc:  # noqa: BLE001
+                # Soft-fail: keep source RGB visible even if RVM/ORT blows up.
+                matte_error = str(exc)[:240]
+                logger.warning("preview matte failed — source fallback: %s", matte_error)
+                alpha = np.zeros(bgr.shape[:2], dtype=np.float32)
 
-        jpg, png, w, h, src = encode_preview_pair(bgr, alpha)
+        try:
+            jpg, png, w, h, src, empty = encode_preview_pair(bgr, alpha)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("preview encode failed — source-only: %s", exc)
+            jpg, png, w, h, src, empty = encode_source_only_preview(bgr)
+            matte_error = matte_error or str(exc)[:240]
+            empty = True
+        if empty or is_matte_empty(alpha):
+            empty = True
         lane_meta = self._lanes.status() if self._lanes else {}
+        meta: dict[str, Any] = {
+            "mode": self.mode.value,
+            "mask_store": from_store,
+            "prefetch_ahead": 8,
+            "frame_idx": frame_idx,
+            "proxy_lanes": lane_meta,
+            "matte_empty": empty,
+        }
+        if matte_error:
+            meta["matte_error"] = matte_error
+            meta["source_fallback"] = True
         return PreviewFrame(
             t_sec=t,
             width=w,
@@ -605,13 +633,7 @@ class FastEngine(MattingEngine):
             alpha_png_b64=png,
             engine="FastEngine",
             backend=self._backend,
-            meta={
-                "mode": self.mode.value,
-                "mask_store": from_store,
-                "prefetch_ahead": 8,
-                "frame_idx": frame_idx,
-                "proxy_lanes": lane_meta,
-            },
+            meta=meta,
             source_jpeg_b64=src,
         )
 

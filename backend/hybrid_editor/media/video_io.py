@@ -15,7 +15,11 @@ from hybrid_editor.engines.base import MediaInfo
 CHECKER_TILE_PX = 10
 CHECKER_DARK = 0x2A  # #2a2a2a
 CHECKER_LIGHT = 0x35  # #353535
-EMPTY_ALPHA_MAX = 0.02
+# Empty / useless matte: max alpha below this OR almost no opaque coverage.
+EMPTY_ALPHA_MAX = 0.05
+EMPTY_ALPHA_COVER = 0.002  # fraction of pixels with a > 0.15
+# When matte is empty, keep source nearly full brightness (optional slight dim).
+EMPTY_SOURCE_DIM = 0.92
 
 
 def probe_video(path: Path) -> MediaInfo:
@@ -105,6 +109,57 @@ def normalize_alpha(alpha: np.ndarray) -> np.ndarray:
     return np.clip(a, 0.0, 1.0)
 
 
+def is_matte_empty(alpha: np.ndarray) -> bool:
+    """True when alpha is missing, all-transparent, or has no useful coverage yet."""
+    if alpha is None:
+        return True
+    a = normalize_alpha(alpha)
+    if a.size == 0:
+        return True
+    if float(a.max()) < EMPTY_ALPHA_MAX:
+        return True
+    # Tiny speck / noise must not hide the source under checker.
+    if float((a > 0.15).mean()) < EMPTY_ALPHA_COVER:
+        return True
+    return False
+
+
+def source_visible_bgr(bgr: np.ndarray, *, dim: float = EMPTY_SOURCE_DIM) -> np.ndarray:
+    """Source RGB kept readable (optional slight dim) — never replaced by checker."""
+    d = float(np.clip(dim, 0.5, 1.0))
+    if d >= 0.999:
+        return bgr.copy()
+    return (bgr.astype(np.float32) * d).astype(np.uint8)
+
+
+def annotate_nincs_maszk(bgr: np.ndarray) -> np.ndarray:
+    """Burn a small 'nincs maszk' label onto a source frame (Előtte / empty matte)."""
+    out = bgr.copy()
+    h, w = out.shape[:2]
+    label = "nincs maszk"
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = max(0.45, min(w, h) / 640.0)
+    thickness = max(1, int(round(scale * 1.6)))
+    (tw, th), baseline = cv2.getTextSize(label, font, scale, thickness)
+    pad = max(4, int(6 * scale))
+    x1, y1 = pad, pad
+    x2, y2 = x1 + tw + pad * 2, y1 + th + baseline + pad * 2
+    overlay = out.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), (20, 20, 20), -1)
+    out = cv2.addWeighted(overlay, 0.55, out, 0.45, 0)
+    cv2.putText(
+        out,
+        label,
+        (x1 + pad, y1 + th + pad),
+        font,
+        scale,
+        (220, 220, 220),
+        thickness,
+        cv2.LINE_AA,
+    )
+    return out
+
+
 def make_checkerboard(
     h: int,
     w: int,
@@ -129,17 +184,20 @@ def composite_cutout_over_checker(
     dark: int = CHECKER_DARK,
     light: int = CHECKER_LIGHT,
 ) -> np.ndarray:
-    """Subject RGB × alpha over subtle checker. Empty alpha → dimmed video, never pure black."""
+    """Subject RGB × alpha over subtle checker.
+
+    Empty / useless matte → full source RGB (optional slight dim). Never pure checkerboard.
+    After a real matte: checker only in truly transparent regions.
+    """
     h, w = bgr.shape[:2]
     a = normalize_alpha(alpha)
     if a.shape[:2] != (h, w):
         a = cv2.resize(a, (w, h), interpolation=cv2.INTER_LINEAR)
+    if is_matte_empty(a):
+        # Utána / default cutout with no matte yet: show the video (source × ~1).
+        return source_visible_bgr(bgr, dim=1.0)
     bg = make_checkerboard(h, w, tile=tile, dark=dark, light=light)
     a3 = a[..., None]
-    if float(a.max()) < EMPTY_ALPHA_MAX:
-        # Clear empty-matte state: video stays readable, checker hints transparency.
-        dim = (bgr.astype(np.float32) * 0.42).astype(np.uint8)
-        return (dim.astype(np.float32) * 0.72 + bg.astype(np.float32) * 0.28).astype(np.uint8)
     return (bgr.astype(np.float32) * a3 + bg.astype(np.float32) * (1.0 - a3)).astype(np.uint8)
 
 
@@ -151,17 +209,16 @@ def visualize_alpha_matte(
     dark: int = CHECKER_DARK,
     light: int = CHECKER_LIGHT,
 ) -> np.ndarray:
-    """Soft alpha / matte view over subtle checker — structure, not harsh noise."""
+    """Soft alpha / matte view. Empty matte → source + 'nincs maszk' (not pure checker)."""
     h, w = bgr.shape[:2]
     a = normalize_alpha(alpha)
     if a.shape[:2] != (h, w):
         a = cv2.resize(a, (w, h), interpolation=cv2.INTER_LINEAR)
+    if is_matte_empty(a):
+        # Előtte with no matte: keep source visible + clear empty-matte cue.
+        return annotate_nincs_maszk(source_visible_bgr(bgr, dim=EMPTY_SOURCE_DIM))
     bg = make_checkerboard(h, w, tile=tile, dark=dark, light=light)
     a3 = a[..., None]
-    if float(a.max()) < EMPTY_ALPHA_MAX:
-        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-        soft = cv2.cvtColor((gray.astype(np.float32) * 0.35).astype(np.uint8), cv2.COLOR_GRAY2BGR)
-        return (soft.astype(np.float32) * 0.65 + bg.astype(np.float32) * 0.35).astype(np.uint8)
     # Soft grayscale matte (light subject) over checker + faint source structure in mid-alpha.
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
     matte = (a * 210.0 + (1.0 - a) * (gray * 0.25)).astype(np.uint8)
@@ -171,12 +228,13 @@ def visualize_alpha_matte(
 
 def encode_preview_pair(
     bgr: np.ndarray, alpha: np.ndarray, *, max_side: int = 960
-) -> tuple[str, str, int, int, str]:
-    """Return (jpeg_cutout_b64, alpha_vis_png_b64, w, h, source_jpeg_b64).
+) -> tuple[str, str, int, int, str, bool]:
+    """Return (jpeg_cutout_b64, alpha_vis_png_b64, w, h, source_jpeg_b64, matte_empty).
 
-    - jpeg: subject RGB × alpha over subtle checker (never solid black void)
-    - alpha png: soft matte visualization over subtle checker
+    - jpeg: subject RGB × alpha over subtle checker; empty matte → full source RGB
+    - alpha png: soft matte vis; empty → source + 'nincs maszk'
     - source jpeg: original video frame for seed / paint underlay
+    - matte_empty: True when no useful alpha yet
     """
     h, w = bgr.shape[:2]
     if max(h, w) > max_side:
@@ -189,6 +247,7 @@ def encode_preview_pair(
         )
         h, w = bgr.shape[:2]
 
+    empty = is_matte_empty(alpha)
     cutout = composite_cutout_over_checker(bgr, alpha)
     alpha_vis = visualize_alpha_matte(bgr, alpha)
 
@@ -207,4 +266,20 @@ def encode_preview_pair(
         w,
         h,
         base64.b64encode(buf_s.tobytes()).decode("ascii"),
+        empty,
     )
+
+
+def encode_source_only_preview(
+    bgr: np.ndarray, *, max_side: int = 960, note: str = "source-fallback"
+) -> tuple[str, str, int, int, str, bool]:
+    """Soft-fail preview: always show source RGB (empty matte semantics)."""
+    h, w = bgr.shape[:2]
+    if max(h, w) > max_side:
+        scale = max_side / float(max(h, w))
+        bgr = cv2.resize(bgr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+        h, w = bgr.shape[:2]
+    alpha = np.zeros((h, w), dtype=np.float32)
+    jpg, png, ow, oh, src, empty = encode_preview_pair(bgr, alpha, max_side=max_side)
+    _ = note  # callers put note in PreviewFrame.meta
+    return jpg, png, ow, oh, src, empty

@@ -349,7 +349,34 @@ class EditorSession:
                                 for L in overlays
                             ]
                         }
-            frame = self.engine.preview_frame(source_t)
+            try:
+                frame = self.engine.preview_frame(source_t)
+            except Exception as exc:  # noqa: BLE001
+                # Soft-fail at session boundary: still return source RGB so UI is never blank checker.
+                from hybrid_editor.media.video_io import (
+                    encode_source_only_preview,
+                    read_frame_at,
+                )
+
+                if self.media is None:
+                    raise
+                bgr, t = read_frame_at(Path(self.media.path), source_t)
+                jpg, png, w, h, src, _empty = encode_source_only_preview(bgr)
+                frame = PreviewFrame(
+                    t_sec=t,
+                    width=w,
+                    height=h,
+                    jpeg_b64=jpg,
+                    alpha_png_b64=png,
+                    engine=getattr(self.engine, "__class__", type(self.engine)).__name__,
+                    backend=str(getattr(self.engine, "_backend", "unknown")),
+                    meta={
+                        "matte_empty": True,
+                        "source_fallback": True,
+                        "matte_error": str(exc)[:240],
+                    },
+                    source_jpeg_b64=src,
+                )
             if overlay_meta:
                 frame.meta = {**(frame.meta or {}), **overlay_meta}
             if self._seed_alpha is not None:

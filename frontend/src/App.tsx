@@ -145,7 +145,16 @@ export default function App() {
   };
 
   useEffect(() => {
-    refresh().catch((e: Error) => setError(e.message));
+    refresh()
+      .then((st) => {
+        // Auto-fetch preview after reload if media/timeline already open.
+        if (st?.media || st?.timeline?.clips?.length) {
+          const t = st.timeline?.playhead_sec ?? 0;
+          setTSec(t);
+          void runPreview(t, st);
+        }
+      })
+      .catch((e: Error) => setError(e.message));
     api.assistStatus().then(setAssist).catch(() => setAssist(null));
   }, []);
 
@@ -253,18 +262,21 @@ export default function App() {
       setPreview(frame);
       const storeHit = frame.meta?.mask_store ? " · MaskStore" : "";
       const seedHit = frame.meta?.user_seed ? " · seed ✓" : "";
+      const emptyHit = frame.meta?.matte_empty ? " · nincs maszk (forrás)" : "";
+      const failHit = frame.meta?.source_fallback ? " · RVM soft-fail" : "";
       const ov = (frame.meta?.overlay_layers as unknown[] | undefined)?.length ?? 0;
       const ovHit = ov ? ` · B-roll ×${ov}` : "";
       const lanes = frame.meta?.proxy_lanes as { stats?: { hot_hits?: number } } | undefined;
       const laneHit = lanes?.stats?.hot_hits ? ` · HOT ${lanes.stats.hot_hits}` : "";
       setNote(
         noteOverride ??
-          `${frame.engine} · ${frame.backend}${storeHit}${seedHit}${ovHit}${laneHit} · t=${frame.t_sec.toFixed(2)}s`,
+          `${frame.engine} · ${frame.backend}${storeHit}${seedHit}${emptyHit}${failHit}${ovHit}${laneHit} · t=${frame.t_sec.toFixed(2)}s`,
       );
       const refreshed = await api.status();
       setStatus(refreshed);
       syncTrimFromStatus(refreshed);
     } catch (e) {
+      // Soft-fail UI: keep prior source frame if any; never leave a blank checker as the only state.
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
@@ -453,6 +465,17 @@ export default function App() {
   const locked = busy || !!status?.bake_running || !!status?.analyse_running;
   const hasMedia = !!status?.media || clips.length > 0;
   const chips = intelFromPreview(preview, status);
+  const matteEmpty = Boolean(preview?.meta?.matte_empty || preview?.meta?.source_fallback);
+  const beforeSrc = matteEmpty
+    ? preview?.source_jpeg_b64 || preview?.jpeg_b64
+    : preview?.alpha_png_b64;
+  const beforeMime = matteEmpty ? "image/jpeg" : "image/png";
+  const afterSrc = matteEmpty
+    ? preview?.source_jpeg_b64 || preview?.jpeg_b64
+    : preview?.jpeg_b64;
+  const defaultSrc = matteEmpty
+    ? preview?.source_jpeg_b64 || preview?.jpeg_b64
+    : preview?.jpeg_b64;
   const statusText = smartStatusLine(status, note, busy, error);
 
   const rvm = rvmChip(status);
@@ -904,23 +927,28 @@ export default function App() {
           </div>
 
           <div className="preview-stage checker-subtle">
-            {preview ? (
+            {preview && defaultSrc ? (
               <div className="wipe-wrap">
-                {showWipe && preview.alpha_png_b64 ? (
+                {matteEmpty ? (
+                  <div className="matte-empty-badge" title="Még nincs hasznos maszk — forrás képkocka">
+                    nincs maszk
+                  </div>
+                ) : null}
+                {showWipe && beforeSrc && afterSrc ? (
                   <div className="wipe-compare">
                     <div className="wipe-labels">
-                      <span>Előtte (alpha)</span>
-                      <span>Utána (cutout)</span>
+                      <span>{matteEmpty ? "Előtte (nincs maszk)" : "Előtte (alpha)"}</span>
+                      <span>{matteEmpty ? "Utána (forrás)" : "Utána (cutout)"}</span>
                     </div>
                     <div className="wipe-stage checker-subtle">
                       <img
-                        src={`data:image/png;base64,${preview.alpha_png_b64}`}
-                        alt="Alpha matte"
+                        src={`data:${beforeMime};base64,${beforeSrc}`}
+                        alt={matteEmpty ? "Forrás — nincs maszk" : "Alpha matte"}
                         className="wipe-base"
                       />
                       <img
-                        src={`data:image/jpeg;base64,${preview.jpeg_b64}`}
-                        alt="Cutout"
+                        src={`data:image/jpeg;base64,${afterSrc}`}
+                        alt={matteEmpty ? "Forrás képkocka" : "Cutout"}
                         className="wipe-fg"
                         style={{ clipPath: `inset(0 ${100 - wipe}% 0 0)` }}
                       />
@@ -930,7 +958,7 @@ export default function App() {
                 ) : (
                   <img
                     className="preview-cutout"
-                    src={`data:image/jpeg;base64,${preview.jpeg_b64}`}
+                    src={`data:image/jpeg;base64,${defaultSrc}`}
                     alt="Matting előnézet"
                   />
                 )}

@@ -113,7 +113,11 @@ export type PreviewResult = {
   engine: string;
   backend: string;
   mode: string;
-  meta: Record<string, unknown>;
+  meta: Record<string, unknown> & {
+    matte_empty?: boolean;
+    source_fallback?: boolean;
+    matte_error?: string;
+  };
   frame_plan?: EditorStatus["frame_plan"];
 };
 
