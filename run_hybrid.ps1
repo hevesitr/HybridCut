@@ -1,6 +1,8 @@
 # HybridCut one-click launcher (API + built UI on port 3847)
 # ASCII-only. Resolves root via Documents sync target or this script's folder.
-# Safe from ANY cwd — never assumes System32 or a prior cd.
+# Safe from ANY cwd - never assumes System32 or a prior cd.
+# Phase 5: skip pip upgrade; trusted-host; parent Videoeditor .venv reuse;
+# auto HYBRID_RVM_ONNX from parent Documents\Videoeditor\models when present.
 
 $ErrorActionPreference = "Stop"
 
@@ -37,8 +39,8 @@ if (-not $Root) {
 
 $cwd = (Get-Location).Path
 if ($cwd -match '(?i)\\Windows\\System32$') {
-    Write-Host "FIGYELEM: A jelenlegi konyvtar System32 — a script atlep ide: $Root"
-    Write-Host "WARN: Current directory is System32 — switching to: $Root"
+    Write-Host "FIGYELEM: A jelenlegi konyvtar System32 - a script atlep ide: $Root"
+    Write-Host "WARN: Current directory is System32 - switching to: $Root"
 }
 
 Set-Location -LiteralPath $Root
@@ -56,8 +58,8 @@ if (-not (Test-Path -LiteralPath $req)) {
 }
 if (-not (Test-Path -LiteralPath $mainPy)) {
     Write-HybridError `
-        -Hu ("Hianyzik a backend: " + $mainPy + " — futtasd ujra a sync.ps1-et.") `
-        -En ("Backend missing: " + $mainPy + " — re-run sync.ps1.")
+        -Hu ("Hianyzik a backend: " + $mainPy + " - futtasd ujra a sync.ps1-et.") `
+        -En ("Backend missing: " + $mainPy + " - re-run sync.ps1.")
     exit 1
 }
 
@@ -69,6 +71,56 @@ if (Test-Path -LiteralPath $verFile) {
 Write-Host ("ROOT: " + $Root)
 Write-Host ("SYNC_VERSION: " + $stamp)
 Write-Host "UI+API: http://127.0.0.1:3847"
+
+# Parent CapCut Videoeditor (Documents\Videoeditor when Root is ...\hybrid_cut)
+$parentRoot = Split-Path -Parent $Root
+$parentVenvPy = Join-Path $parentRoot ".venv\Scripts\python.exe"
+$parentModels = Join-Path $parentRoot "models"
+# Also accept Documents\Videoeditor\.venv when script lives one level deeper
+$docsVeVenv = Join-Path $env:USERPROFILE "Documents\Videoeditor\.venv\Scripts\python.exe"
+$docsVeModels = Join-Path $env:USERPROFILE "Documents\Videoeditor\models"
+
+# --- Auto-wire parent RVM ONNX (no weight redistribution) ---
+if (-not $env:HYBRID_RVM_ONNX) {
+    $rvmNames = @(
+        "rvm_mobilenetv3_fp16.onnx",
+        "rvm_mobilenetv3_fp32.onnx",
+        "rvm_mobilenetv3.onnx",
+        "rvm_resnet50_fp16.onnx",
+        "rvm_resnet50_fp32.onnx"
+    )
+    $searchDirs = @(
+        (Join-Path $Root "models"),
+        $parentModels,
+        $docsVeModels
+    )
+    foreach ($dir in $searchDirs) {
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        foreach ($name in $rvmNames) {
+            $cand = Join-Path $dir $name
+            if (Test-Path -LiteralPath $cand) {
+                $env:HYBRID_RVM_ONNX = $cand
+                Write-Host ("HYBRID_RVM_ONNX <= " + $cand)
+                break
+            }
+        }
+        if ($env:HYBRID_RVM_ONNX) { break }
+        $any = Get-ChildItem -LiteralPath $dir -Filter "rvm_*.onnx" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($any) {
+            $env:HYBRID_RVM_ONNX = $any.FullName
+            Write-Host ("HYBRID_RVM_ONNX <= " + $any.FullName)
+            break
+        }
+    }
+    if (-not $env:HYBRID_RVM_ONNX) {
+        Write-Host "RVM ONNX: not found yet (heuristic fallback). Parent models/ or scripts\download_rvm.ps1."
+    }
+}
+
+# Prefer CUDA like CapCut Videoeditor; override: $env:HYBRID_ORT_PROVIDER = "cpu"
+if (-not $env:HYBRID_ORT_PROVIDER) {
+    $env:HYBRID_ORT_PROVIDER = "cuda"
+}
 
 # --- Python / venv ---
 function Invoke-PyLauncher {
@@ -105,42 +157,114 @@ if (-not $hasPy) {
 $venvDir = Join-Path $Root ".venv"
 $venvPy = Join-Path $venvDir "Scripts\python.exe"
 $activate = Join-Path $venvDir "Scripts\Activate.ps1"
+$usingParentVenv = $false
 
-if (-not (Test-Path -LiteralPath $venvPy)) {
+# Optional force: $env:HYBRID_REUSE_PARENT_VENV = "1"
+if ($env:HYBRID_REUSE_PARENT_VENV -eq "1") {
+    foreach ($candPy in @($parentVenvPy, $docsVeVenv)) {
+        if (Test-Path -LiteralPath $candPy) {
+            $venvPy = $candPy
+            $usingParentVenv = $true
+            Write-Host ("HYBRID_REUSE_PARENT_VENV=1 -> " + $venvPy)
+            break
+        }
+    }
+}
+
+if (-not $usingParentVenv -and -not (Test-Path -LiteralPath $venvPy)) {
     Write-Host "Creating venv (.venv)..."
     $ok = Invoke-PyLauncher -PyArgs @("-m", "venv", $venvDir)
     if (-not $ok -or -not (Test-Path -LiteralPath $venvPy)) {
+        # Fall back to parent Videoeditor .venv if hybrid venv create fails
+        foreach ($candPy in @($parentVenvPy, $docsVeVenv)) {
+            if (Test-Path -LiteralPath $candPy) {
+                $venvPy = $candPy
+                $usingParentVenv = $true
+                Write-Host ("Hybrid venv create failed - reusing parent: " + $venvPy)
+                break
+            }
+        }
+    }
+}
+
+if (-not (Test-Path -LiteralPath $venvPy)) {
+    Write-HybridError `
+        -Hu "Nincs python a hybrid .venv-ben, es a parent Videoeditor\.venv sem talalhato." `
+        -En "No hybrid .venv python and parent Videoeditor\.venv missing."
+    exit 1
+}
+
+if (-not $usingParentVenv -and (Test-Path -LiteralPath $activate)) {
+    . $activate
+}
+
+# pip: do NOT upgrade pip by default (Windows PyPI can hit
+# ProtocolError / OSError access violation on pip install --upgrade pip).
+# Opt-in: $env:HYBRID_UPGRADE_PIP = "1"
+# Install uses --trusted-host. Opt-out cache skip: $env:HYBRID_PIP_USE_CACHE = "1"
+
+$pipTrusted = @("--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org")
+$pipNoCache = @()
+if ($env:HYBRID_PIP_USE_CACHE -ne "1") {
+    $pipNoCache = @("--no-cache-dir")
+}
+
+if ($env:HYBRID_UPGRADE_PIP -eq "1") {
+    Write-Host "pip upgrade (HYBRID_UPGRADE_PIP=1) ..."
+    & $venvPy -m pip install --upgrade pip @pipTrusted @pipNoCache
+    if ($LASTEXITCODE -ne 0) {
         Write-HybridError `
-            -Hu "A venv letrehozasa sikertelen." `
-            -En "Failed to create .venv."
+            -Hu "pip upgrade sikertelen (HYBRID_UPGRADE_PIP=1). Probalj HYBRID_UPGRADE_PIP nelkul." `
+            -En "pip upgrade failed (HYBRID_UPGRADE_PIP=1). Retry without HYBRID_UPGRADE_PIP."
+        exit 1
+    }
+} else {
+    Write-Host "Skipping pip upgrade (set HYBRID_UPGRADE_PIP=1 to force)."
+}
+
+Write-Host "pip install -r backend\requirements.txt ..."
+& $venvPy -m pip install -r $req @pipTrusted @pipNoCache
+if ($LASTEXITCODE -ne 0) {
+    $fallbackPy = $null
+    foreach ($candPy in @($parentVenvPy, $docsVeVenv)) {
+        if ((Test-Path -LiteralPath $candPy) -and ($candPy -ne $venvPy)) {
+            $fallbackPy = $candPy
+            break
+        }
+    }
+    if ($fallbackPy) {
+        Write-Host ("Hybrid pip failed - installing deps with parent venv: " + $fallbackPy)
+        & $fallbackPy -m pip install -r $req @pipTrusted @pipNoCache
+        if ($LASTEXITCODE -eq 0) {
+            $venvPy = $fallbackPy
+            $usingParentVenv = $true
+            Write-Host ("Runtime python switched to parent: " + $venvPy)
+        } else {
+            Write-HybridError `
+                -Hu "A fuggosegek telepitese sikertelen (hybrid es parent venv)." `
+                -En "Dependency install failed (hybrid and parent venv)."
+            exit 1
+        }
+    } else {
+        Write-HybridError `
+            -Hu "A fuggosegek telepitese sikertelen (backend\requirements.txt)." `
+            -En "Dependency install failed (backend\requirements.txt)."
         exit 1
     }
 }
 
-if (Test-Path -LiteralPath $activate) {
-    . $activate
-}
-
-Write-Host "pip install -r backend\requirements.txt ..."
-& $venvPy -m pip install --upgrade pip
-if ($LASTEXITCODE -ne 0) {
-    Write-HybridError `
-        -Hu "pip upgrade sikertelen." `
-        -En "pip upgrade failed."
-    exit 1
-}
-& $venvPy -m pip install -r $req
-if ($LASTEXITCODE -ne 0) {
-    Write-HybridError `
-        -Hu "A fuggosegek telepitese sikertelen (backend\requirements.txt)." `
-        -En "Dependency install failed (backend\requirements.txt)."
-    exit 1
+# Optional GPU ORT note (do not force-uninstall; CapCut parent may already have onnxruntime-gpu)
+$ortProbe = & $venvPy -c "import importlib.util; print('1' if importlib.util.find_spec('onnxruntime') else '0')" 2>$null
+if ($ortProbe -ne "1") {
+    Write-Host "NOTE: onnxruntime not installed. For CUDA RVM on RTX 3060:"
+    Write-Host ("  & '" + $venvPy + "' -m pip install onnxruntime-gpu --trusted-host pypi.org --trusted-host files.pythonhosted.org --no-cache-dir")
+    Write-Host "  (or reuse parent Videoeditor\.venv after .\setup_gpu.ps1 / .\remount_ort_gpu.ps1)"
 }
 
 # --- Frontend dist (production serve via FastAPI) ---
 if (-not (Test-Path -LiteralPath $distIndex)) {
-    Write-Host "frontend\dist hianyzik — npm build kiserlet..."
-    Write-Host "frontend\dist missing — attempting npm build..."
+    Write-Host "frontend\dist hianyzik - npm build kiserlet..."
+    Write-Host "frontend\dist missing - attempting npm build..."
     $fe = Join-Path $Root "frontend"
     if (-not (Test-Path -LiteralPath (Join-Path $fe "package.json"))) {
         Write-HybridError `
@@ -185,7 +309,13 @@ $env:HYBRID_PORT = "3847"
 
 Write-Host ""
 Write-Host "Starting HybridCut..."
+Write-Host ("Python: " + $venvPy + $(if ($usingParentVenv) { " (parent venv)" } else { "" }))
+if ($env:HYBRID_RVM_ONNX) { Write-Host ("RVM: " + $env:HYBRID_RVM_ONNX) }
 Write-Host "Browser: http://127.0.0.1:3847"
+Write-Host "Manual start (user-confirmed working):"
+Write-Host '  cd hybrid_cut'
+Write-Host '  $env:PYTHONPATH="$PWD\backend"'
+Write-Host '  & .\.venv\Scripts\python.exe -m hybrid_editor.main'
 Write-Host "Stop: Ctrl+C"
 Write-Host ""
 

@@ -45,9 +45,10 @@ from hybrid_editor.media.video_io import (
 logger = logging.getLogger(__name__)
 
 HEURISTIC_NOTE = (
-    "Heuristic fallback (OpenCV GrabCut + center prior): used when HYBRID_RVM_ONNX "
-    "is unset, models/rvm_*.onnx is missing, or onnxruntime fails to load. "
-    "Not ML-quality — set HYBRID_RVM_ONNX for real RVM ORT matting."
+    "Heuristic fallback (OpenCV GrabCut + center prior): used when no RVM ONNX is "
+    "found (HYBRID_RVM_ONNX / hybrid models/ / parent Documents\\Videoeditor\\models) "
+    "or onnxruntime fails to load. Not ML-quality — place rvm_*.onnx or set "
+    "HYBRID_RVM_ONNX; install onnxruntime-gpu in the active venv for CUDA."
 )
 
 
@@ -59,21 +60,133 @@ def _env_path(name: str) -> Optional[Path]:
     return p if p.is_file() else None
 
 
-def resolve_rvm_onnx() -> Optional[Path]:
-    model = _env_path("HYBRID_RVM_ONNX")
-    if model is not None:
-        return model
-    models_dir = ROOT / "models"
-    for name in (
-        "rvm_mobilenetv3_fp16.onnx",
-        "rvm_mobilenetv3.onnx",
-        "rvm_mobilenetv3_fp32.onnx",
-        "rvm_resnet50_fp16.onnx",
-    ):
+def _env_dir(name: str) -> Optional[Path]:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    return p if p.is_dir() else None
+
+
+_RVM_NAMES = (
+    "rvm_mobilenetv3_fp16.onnx",
+    "rvm_mobilenetv3.onnx",
+    "rvm_mobilenetv3_fp32.onnx",
+    "rvm_resnet50_fp16.onnx",
+    "rvm_resnet50_fp32.onnx",
+)
+
+
+def _first_rvm_in_dir(models_dir: Path) -> Optional[Path]:
+    if not models_dir.is_dir():
+        return None
+    for name in _RVM_NAMES:
         cand = models_dir / name
         if cand.is_file():
             return cand
+    found = sorted(models_dir.glob("rvm_*.onnx"))
+    return found[0] if found else None
+
+
+def parent_videoeditor_roots() -> list[Path]:
+    """CapCut Videoeditor roots that may hold models/ + .venv (Windows nested hybrid_cut)."""
+    roots: list[Path] = []
+    # Nested install: Documents\Videoeditor\hybrid_cut → parent Documents\Videoeditor
+    parent = ROOT.parent
+    if parent.name.lower() in {"videoeditor", "hybrid_cut"} or (parent / "models").is_dir():
+        roots.append(parent)
+    if parent.parent.name.lower() == "videoeditor":
+        roots.append(parent.parent)
+    home = Path.home()
+    for cand in (
+        home / "Documents" / "Videoeditor",
+        home / "Documents" / "videoeditor",
+    ):
+        if cand.is_dir():
+            roots.append(cand)
+    # Dedup preserve order
+    out: list[Path] = []
+    seen: set[str] = set()
+    for r in roots:
+        key = str(r.resolve()) if r.exists() else str(r)
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
+def resolve_rvm_onnx() -> Optional[Path]:
+    """Locate RVM ONNX: env → hybrid models/ → parent Videoeditor models/ → USERPROFILE.
+
+    Does not download or redistribute weights. Parent CapCut tree often already has
+    ``Documents\\Videoeditor\\models\\rvm_*.onnx`` from the Tk cutout app.
+    """
+    for env_name in ("HYBRID_RVM_ONNX", "VIDEOEDITOR_RVM_ONNX"):
+        model = _env_path(env_name)
+        if model is not None:
+            return model
+
+    for dir_env in ("HYBRID_MODELS_DIR", "VIDEOEDITOR_MODELS", "VIDEOEDITOR_MODELS_DIR"):
+        d = _env_dir(dir_env)
+        if d is not None:
+            hit = _first_rvm_in_dir(d)
+            if hit is not None:
+                return hit
+
+    hit = _first_rvm_in_dir(ROOT / "models")
+    if hit is not None:
+        return hit
+
+    for root in parent_videoeditor_roots():
+        hit = _first_rvm_in_dir(root / "models")
+        if hit is not None:
+            return hit
+
     return None
+
+
+def probe_ort_runtime() -> dict[str, Any]:
+    """Lightweight ORT / CUDA EP probe for UI status chips (no session load)."""
+    onnx = resolve_rvm_onnx()
+    info: dict[str, Any] = {
+        "onnx_found": onnx is not None,
+        "onnx_path": str(onnx) if onnx else None,
+        "onnx_name": onnx.name if onnx else None,
+        "ort_available": False,
+        "cuda_ep": False,
+        "providers": [],
+        "prefer": os.environ.get("HYBRID_ORT_PROVIDER", "cuda").strip().lower() or "cuda",
+        "source": None,
+    }
+    if onnx is not None:
+        try:
+            onnx_res = onnx.resolve()
+            hybrid_models = (ROOT / "models").resolve()
+            if hybrid_models in onnx_res.parents or onnx_res.parent == hybrid_models:
+                info["source"] = "hybrid_models"
+            elif any(
+                (r / "models").resolve() in onnx_res.parents
+                or onnx_res.parent == (r / "models").resolve()
+                for r in parent_videoeditor_roots()
+                if (r / "models").exists()
+            ):
+                info["source"] = "parent_videoeditor"
+            elif os.environ.get("HYBRID_RVM_ONNX") or os.environ.get("VIDEOEDITOR_RVM_ONNX"):
+                info["source"] = "env"
+            else:
+                info["source"] = "discovered"
+        except Exception:  # noqa: BLE001
+            info["source"] = "discovered"
+    try:
+        import onnxruntime as ort  # type: ignore
+
+        providers = list(ort.get_available_providers())
+        info["ort_available"] = True
+        info["providers"] = providers
+        info["cuda_ep"] = "CUDAExecutionProvider" in providers
+    except Exception as exc:  # noqa: BLE001
+        info["ort_error"] = str(exc)
+    return info
 
 
 def heuristic_person_alpha(bgr: np.ndarray) -> np.ndarray:
@@ -245,7 +358,8 @@ class FastEngine(MattingEngine):
 
     def capabilities(self) -> EngineCapabilities:
         detail = (
-            f"ORT RVM via HYBRID_RVM_ONNX / models/*.onnx ({self._backend})."
+            f"ORT RVM via HYBRID_RVM_ONNX / parent Videoeditor models/ "
+            f"/ models/*.onnx ({self._backend})."
             if self._rvm
             else HEURISTIC_NOTE
         )

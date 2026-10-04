@@ -5,9 +5,13 @@ opencv-python-headless>=4.8
 pydantic>=2.0
 python-multipart>=0.0.9
 aiofiles>=23.0
-# Optional — real FastEngine ORT RVM (Windows CUDA):
-#   pip install onnxruntime-gpu
-#   set HYBRID_RVM_ONNX / run scripts\download_rvm.ps1
+# Optional — real FastEngine ORT RVM (Windows CUDA / RTX 3060):
+#   Prefer parent CapCut venv that already has onnxruntime-gpu:
+#     Documents\Videoeditor\.venv  (after setup_gpu.ps1 / remount_ort_gpu.ps1)
+#   Or in hybrid / parent python:
+#     python -m pip install onnxruntime-gpu --trusted-host pypi.org --trusted-host files.pythonhosted.org --no-cache-dir
+#   Weights (not redistributed): parent Documents\Videoeditor\models\rvm_*.onnx
+#     or HYBRID_RVM_ONNX / VIDEOEDITOR_RVM_ONNX / scripts\download_rvm.ps1
 # Optional — MatAnyone2 adapter only (S-Lab NC weights, user-local):
 #   torch + user-installed matanyone2 + HYBRID_MATANYONE2_WEIGHTS
 # Without ORT/weights: documented OpenCV heuristic fallback.

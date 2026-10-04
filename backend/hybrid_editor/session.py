@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import threading
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -20,10 +23,19 @@ from hybrid_editor.cache.seed_mask import (
 )
 from hybrid_editor.engines import EngineMode, MattingEngine, create_engine, resolve_mode
 from hybrid_editor.engines.base import BakeResult, MediaInfo, PreviewFrame
+from hybrid_editor.engines.fast_rvm import probe_ort_runtime
 from hybrid_editor.engines.max_quality import MaxQualityEngine
 from hybrid_editor.engines.vram import status as vram_status
 from hybrid_editor.media.video_io import probe_video
 from hybrid_editor.timeline import TimelineDoc, plan_frame
+
+
+@dataclass
+class BakeQueueItem:
+    out_dir: str
+    max_frames: Optional[int]
+    timeline_all: bool
+    label: str = ""
 
 
 class EditorSession:
@@ -38,6 +50,7 @@ class EditorSession:
         self.bake_status: str = ""
         self.bake_running: bool = False
         self._bake_thread: Optional[threading.Thread] = None
+        self._bake_queue: list[BakeQueueItem] = []
         self.analyser = SparseAnalyser()
         self._seed_alpha: Optional[np.ndarray] = None
         self._open_path: Optional[str] = None
@@ -66,7 +79,13 @@ class EditorSession:
                 "timeline_multiclip": bool(self.timeline and len(self.timeline.clips) > 1),
                 "broll_track": has_broll,
                 "export_audio": True,
+                "open_output_folder": True,
+                "bake_queue": True,
             }
+            rvm = probe_ort_runtime()
+            # Prefer live engine backend when Fast/Max already loaded ORT
+            rvm["engine_backend"] = caps.backend
+            rvm["engine_weights"] = caps.weights_path
             return {
                 "sync_version": SYNC_VERSION,
                 "mode": self.mode.value,
@@ -84,8 +103,14 @@ class EditorSession:
                 "bake_progress": self.bake_progress,
                 "bake_status": self.bake_status,
                 "bake_running": self.bake_running,
+                "bake_queue_len": len(self._bake_queue),
+                "bake_queue": [
+                    {"out_dir": q.out_dir, "max_frames": q.max_frames, "label": q.label}
+                    for q in self._bake_queue
+                ],
                 "last_bake": asdict(self.last_bake) if self.last_bake else None,
                 "vram": vram_status(),
+                "rvm": rvm,
                 "seed_mask": self._seed_alpha is not None,
                 "mask_rate": MASK_RATE,
                 "intelligence": intel,
@@ -541,6 +566,44 @@ class EditorSession:
             },
         )
 
+    def open_output_folder(self, out_dir: Optional[str] = None) -> dict[str, Any]:
+        """Reveal last bake (or given) folder in the OS file manager."""
+        with self._lock:
+            path: Optional[Path] = None
+            if out_dir:
+                path = Path(out_dir).expanduser()
+            elif self.last_bake and self.last_bake.out_dir:
+                path = Path(self.last_bake.out_dir)
+            else:
+                path = ROOT / "cache" / "bake" / self.mode.value
+            path = path.resolve()
+            if not path.exists():
+                path.mkdir(parents=True, exist_ok=True)
+            opened = False
+            error: Optional[str] = None
+            try:
+                if sys.platform.startswith("win"):
+                    os.startfile(str(path))  # type: ignore[attr-defined]
+                    opened = True
+                elif sys.platform == "darwin":
+                    subprocess.run(["open", str(path)], check=False, timeout=15)
+                    opened = True
+                else:
+                    opener = "xdg-open"
+                    if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+                        subprocess.run([opener, str(path)], check=False, timeout=15)
+                        opened = True
+                    else:
+                        error = "No display — folder path returned only"
+            except Exception as exc:  # noqa: BLE001
+                error = str(exc)
+            return {
+                "ok": True,
+                "opened": opened,
+                "out_dir": str(path),
+                "error": error,
+            }
+
     def bake(
         self,
         out_dir: str | Path,
@@ -548,91 +611,142 @@ class EditorSession:
         max_frames: Optional[int] = 30,
         async_job: bool = False,
         timeline_all: bool = True,
+        queue_if_busy: bool = True,
+        label: str = "",
     ) -> BakeResult | dict[str, Any]:
         with self._lock:
             if self.media is None:
                 raise RuntimeError("Open a video first")
-            if self.bake_running:
-                raise RuntimeError("Bake already running")
             if self.analyser.state.running:
                 raise RuntimeError("Analyse fut — bake később (VRAM / CPU)")
 
-            # Multi-clip bake when >1 clip OR any B-roll overlay present
-            multi = bool(
-                timeline_all
-                and self.timeline
-                and (
-                    len(self.timeline.clips) > 1
-                    or any(int(c.track) >= 1 for c in self.timeline.clips)
+            out_dir_s = str(Path(out_dir))
+            if self.bake_running:
+                if not queue_if_busy or not async_job:
+                    raise RuntimeError("Bake already running")
+                item = BakeQueueItem(
+                    out_dir=out_dir_s,
+                    max_frames=max_frames,
+                    timeline_all=timeline_all,
+                    label=label or f"bake-{len(self._bake_queue) + 1}",
                 )
+                self._bake_queue.append(item)
+                self.bake_status = f"Sorba téve ({len(self._bake_queue)} várakozik)"
+                return {
+                    **self.status(),
+                    "queued": True,
+                    "bake_status": self.bake_status,
+                }
+
+            return self._start_bake(
+                out_dir_s,
+                max_frames=max_frames,
+                async_job=async_job,
+                timeline_all=timeline_all,
             )
 
-            # Single-clip: bake selected clip source range via engine
-            in_sec = 0.0
-            out_sec: Optional[float] = None
-            if not multi and self.timeline and self.timeline.clips:
-                clip = self.timeline._find()
-                if clip is not None:
-                    self._ensure_engine_media(clip.media_path)
-                    in_sec = float(clip.in_sec)
-                    out_sec = float(clip.effective_out())
+    def _start_bake(
+        self,
+        out_dir: str,
+        *,
+        max_frames: Optional[int],
+        async_job: bool,
+        timeline_all: bool,
+    ) -> BakeResult | dict[str, Any]:
+        # Multi-clip bake when >1 clip OR any B-roll overlay present
+        multi = bool(
+            timeline_all
+            and self.timeline
+            and (
+                len(self.timeline.clips) > 1
+                or any(int(c.track) >= 1 for c in self.timeline.clips)
+            )
+        )
 
-            def _prog(p: float, msg: str) -> None:
-                self.bake_progress = float(p)
-                self.bake_status = msg
+        # Single-clip: bake selected clip source range via engine
+        in_sec = 0.0
+        out_sec: Optional[float] = None
+        if not multi and self.timeline and self.timeline.clips:
+            clip = self.timeline._find()
+            if clip is not None:
+                self._ensure_engine_media(clip.media_path)
+                in_sec = float(clip.in_sec)
+                out_sec = float(clip.effective_out())
 
-            def _do_bake() -> BakeResult:
-                if multi:
-                    return self._bake_timeline_multiclip(
-                        Path(out_dir), max_frames=max_frames, progress=_prog
-                    )
-                result = self.engine.bake(
-                    Path(out_dir),
-                    max_frames=max_frames,
-                    progress=_prog,
-                    in_sec=in_sec,
-                    out_sec=out_sec,
+        def _prog(p: float, msg: str) -> None:
+            self.bake_progress = float(p)
+            self.bake_status = msg
+
+        def _do_bake() -> BakeResult:
+            if multi:
+                return self._bake_timeline_multiclip(
+                    Path(out_dir), max_frames=max_frames, progress=_prog
                 )
-                # Windows companion copy
-                from hybrid_editor.export.composer import write_windows_companion
+            result = self.engine.bake(
+                Path(out_dir),
+                max_frames=max_frames,
+                progress=_prog,
+                in_sec=in_sec,
+                out_sec=out_sec,
+            )
+            from hybrid_editor.export.composer import write_windows_companion
 
-                companion = write_windows_companion(result.preview_mp4, Path(out_dir))
-                if companion:
-                    result.preview_mp4 = companion
+            companion = write_windows_companion(result.preview_mp4, Path(out_dir))
+            if companion:
+                result.preview_mp4 = companion
+            return result
+
+        if not async_job:
+            self.bake_running = True
+            try:
+                result = _do_bake()
+                self.last_bake = result
+                self.bake_progress = 1.0 if result.ok else self.bake_progress
+                self.bake_status = result.message
                 return result
+            finally:
+                self.bake_running = False
+                self._drain_bake_queue()
 
-            if not async_job:
-                self.bake_running = True
-                try:
-                    result = _do_bake()
+        self.bake_running = True
+        self.bake_progress = 0.0
+        self.bake_status = "Bake indul…"
+
+        def _run() -> None:
+            try:
+                result = _do_bake()
+                with self._lock:
                     self.last_bake = result
                     self.bake_progress = 1.0 if result.ok else self.bake_progress
                     self.bake_status = result.message
-                    return result
-                finally:
+            except Exception as exc:  # noqa: BLE001
+                with self._lock:
+                    self.bake_status = f"Bake hiba: {exc}"
+            finally:
+                with self._lock:
                     self.bake_running = False
+                    self._drain_bake_queue()
 
-            self.bake_running = True
-            self.bake_progress = 0.0
-            self.bake_status = "Bake indul…"
+        self._bake_thread = threading.Thread(target=_run, daemon=True, name="hybrid-bake")
+        self._bake_thread.start()
+        return self.status()
 
-            def _run() -> None:
-                try:
-                    result = _do_bake()
-                    with self._lock:
-                        self.last_bake = result
-                        self.bake_progress = 1.0 if result.ok else self.bake_progress
-                        self.bake_status = result.message
-                except Exception as exc:  # noqa: BLE001
-                    with self._lock:
-                        self.bake_status = f"Bake hiba: {exc}"
-                finally:
-                    with self._lock:
-                        self.bake_running = False
-
-            self._bake_thread = threading.Thread(target=_run, daemon=True, name="hybrid-bake")
-            self._bake_thread.start()
-            return self.status()
+    def _drain_bake_queue(self) -> None:
+        """Start next queued bake if idle (caller holds lock or is finishing)."""
+        if self.bake_running or not self._bake_queue:
+            return
+        if self.media is None:
+            self._bake_queue.clear()
+            return
+        nxt = self._bake_queue.pop(0)
+        self.bake_status = f"Sor következő: {nxt.label or nxt.out_dir}"
+        # Fire async without re-queueing into itself
+        self._start_bake(
+            nxt.out_dir,
+            max_frames=nxt.max_frames,
+            async_job=True,
+            timeline_all=nxt.timeline_all,
+        )
 
 
 SESSION = EditorSession()

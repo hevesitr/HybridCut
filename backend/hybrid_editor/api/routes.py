@@ -36,6 +36,12 @@ class BakeBody(BaseModel):
     max_frames: Optional[int] = 48
     out_dir: Optional[str] = None
     async_job: bool = True
+    queue_if_busy: bool = True
+    label: str = ""
+
+
+class OpenFolderBody(BaseModel):
+    out_dir: Optional[str] = None
 
 
 class TimelineBody(BaseModel):
@@ -239,14 +245,22 @@ def bake(body: BakeBody) -> dict:
     out = Path(body.out_dir) if body.out_dir else ROOT / "cache" / "bake" / SESSION.mode.value
     out.mkdir(parents=True, exist_ok=True)
     try:
-        result = SESSION.bake(out, max_frames=body.max_frames, async_job=body.async_job)
+        result = SESSION.bake(
+            out,
+            max_frames=body.max_frames,
+            async_job=body.async_job,
+            queue_if_busy=body.queue_if_busy,
+            label=body.label,
+        )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if isinstance(result, dict):
+        queued = bool(result.get("queued"))
         return {
             "ok": True,
             "async": True,
+            "queued": queued,
             "out_dir": str(out.resolve()),
             "message": result.get("bake_status", "Bake started"),
             "status": result,
@@ -256,6 +270,7 @@ def bake(body: BakeBody) -> dict:
     return {
         "ok": result.ok,
         "async": False,
+        "queued": False,
         "out_dir": result.out_dir,
         "frames_written": result.frames_written,
         "engine": result.engine,
@@ -268,6 +283,15 @@ def bake(body: BakeBody) -> dict:
         "mode": SESSION.mode.value,
         "status": SESSION.status(),
     }
+
+
+@router.post("/export/open-folder")
+def open_export_folder(body: OpenFolderBody | None = None) -> dict:
+    """Open last bake output folder (Windows Explorer / OS file manager)."""
+    try:
+        return SESSION.open_output_folder(None if body is None else body.out_dir)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/bake/progress")

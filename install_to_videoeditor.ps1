@@ -2,6 +2,8 @@
 # Copies tree -> %USERPROFILE%\Documents\Videoeditor\hybrid_cut
 # Writes root launcher -> %USERPROFILE%\Documents\Videoeditor\run_hybrid.ps1
 # ASCII-only. Safe from any cwd (including System32).
+# Robolog uses GetTempPath + ASCII guid only; cleanup never aborts install
+# (accented usernames / 8.3 short paths like RBERT~1 can break Remove-Item).
 
 $ErrorActionPreference = "Stop"
 
@@ -11,9 +13,52 @@ $videoeditor = Join-Path $env:USERPROFILE "Documents\Videoeditor"
 $dst = Join-Path $videoeditor "hybrid_cut"
 $rootLauncher = Join-Path $videoeditor "run_hybrid.ps1"
 
+function New-AsciiTempPath {
+    param([string]$Suffix = ".log")
+    # Prefer BCL temp path; filename is ASCII guid only (no username in the leaf).
+    $leaf = [guid]::NewGuid().ToString("N") + $Suffix
+    return [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), $leaf)
+}
+
+function Remove-TempQuiet {
+    param([string]$Path)
+    if (-not $Path) { return }
+    try {
+        if (Test-Path -LiteralPath $Path) {
+            Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+        }
+    } catch {
+        # Never fail install/sync on temp log cleanup (8.3 / accented profile paths).
+    }
+}
+
 function Test-HybridSrc([string]$Path) {
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return $false }
     return (Test-Path -LiteralPath (Join-Path $Path "backend\requirements.txt"))
+}
+
+function Write-RootLauncher {
+    param([string]$HybridRoot, [string]$LauncherPath)
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LauncherPath) | Out-Null
+    $wrap = @"
+# HybridCut root launcher (Documents\Videoeditor) - thin wrapper
+# ASCII-only. Points at nested hybrid_cut\run_hybrid.ps1.
+`$ErrorActionPreference = "Stop"
+`$here = if (`$PSScriptRoot) { `$PSScriptRoot } else { Split-Path -Parent `$MyInvocation.MyCommand.Path }
+`$nested = Join-Path `$here "hybrid_cut\run_hybrid.ps1"
+if (-not (Test-Path -LiteralPath `$nested)) {
+    `$nested = Join-Path `$env:USERPROFILE "Documents\Videoeditor\hybrid_cut\run_hybrid.ps1"
+}
+if (-not (Test-Path -LiteralPath `$nested)) {
+    Write-Host "HIBA: Hianyzik hybrid_cut\run_hybrid.ps1"
+    Write-Host "ERROR: Missing hybrid_cut\run_hybrid.ps1"
+    exit 1
+}
+& `$nested @args
+exit `$LASTEXITCODE
+"@
+    Set-Content -LiteralPath $LauncherPath -Value $wrap -Encoding ascii
+    Write-Host ("ROOT LAUNCHER: " + $LauncherPath)
 }
 
 if (-not (Test-HybridSrc $src)) {
@@ -26,8 +71,8 @@ if (-not (Test-HybridSrc $src)) {
 
 $distIndex = Join-Path $src "frontend\dist\index.html"
 if (-not (Test-Path -LiteralPath $distIndex)) {
-    Write-Host "HIBA: Hianyzik frontend\dist\index.html — a GitHub csomagnak tartalmaznia kell a beepitett UI-t."
-    Write-Host "ERROR: Missing frontend\dist\index.html — GitHub package should include the built UI."
+    Write-Host "HIBA: Hianyzik frontend\dist\index.html - a GitHub csomagnak tartalmaznia kell a beepitett UI-t."
+    Write-Host "ERROR: Missing frontend\dist\index.html - GitHub package should include the built UI."
     exit 1
 }
 
@@ -38,7 +83,7 @@ Write-Host ("SRC: " + $src)
 Write-Host ("DST: " + $dst)
 
 $excludeDirs = @("__pycache__", ".venv", "venv", "node_modules", ".git", "bake", ".pytest_cache")
-$robolog = Join-Path $env:TEMP ("hybrid-install-" + [guid]::NewGuid().ToString("N") + ".log")
+$robolog = New-AsciiTempPath -Suffix ".log"
 $xdArgs = @()
 foreach ($d in $excludeDirs) { $xdArgs += "/XD"; $xdArgs += $d }
 
@@ -47,9 +92,9 @@ $rcArgs = @($src, $dst, "/E", "/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NP", "/X
 $rc = $LASTEXITCODE
 if ($rc -ge 8) {
     Write-Host ("robocopy log: " + $robolog)
+    Remove-TempQuiet -Path $robolog
     Write-Error ("robocopy failed with exit code " + $rc)
 }
-Remove-Item -LiteralPath $robolog -Force -ErrorAction SilentlyContinue
 
 # Ensure sample media if present in clone
 $sampleSrc = Join-Path $src "cache\sample_person.mp4"
@@ -75,6 +120,7 @@ foreach ($p in $need) {
 if ($missing.Count -gt 0) {
     Write-Host "Hianyzo fajlok / Missing files:"
     foreach ($m in $missing) { Write-Host ("  " + $m) }
+    Remove-TempQuiet -Path $robolog
     Write-Error "Install incomplete - missing files listed above."
 }
 
@@ -82,9 +128,10 @@ $verDst = Join-Path $dst "SYNC_VERSION.txt"
 $stamp = (Get-Content -LiteralPath $verDst -Raw).Trim()
 Copy-Item -LiteralPath $verDst -Destination (Join-Path $dst "SYNC_VERSION") -Force
 
-# Root CapCut-folder launcher (same script; resolves nested hybrid_cut)
-$runSrc = Join-Path $dst "run_hybrid.ps1"
-Copy-Item -LiteralPath $runSrc -Destination $rootLauncher -Force
+# Root launcher BEFORE robolog cleanup - must not depend on temp log delete.
+Write-RootLauncher -HybridRoot $dst -LauncherPath $rootLauncher
+
+Remove-TempQuiet -Path $robolog
 
 Write-Host ""
 Write-Host ("INSTALL OK -> " + $dst)

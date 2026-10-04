@@ -1,9 +1,9 @@
 # Sync HybridCut (docs/hybrid-editor) from Cursor Agent Store into
-# Documents\Videoeditor\hybrid_cut  (nested under CapCut delivery — no root clash).
+# Documents\Videoeditor\hybrid_cut  (nested under CapCut delivery - no root clash).
 # ASCII-only. Safe to invoke via full path from ANY directory (including System32).
 # Does NOT require Set-Location beforehand.
 #
-# CapCut root sync.ps1 owns Documents\Videoeditor — HybridCut lands in hybrid_cut/.
+# CapCut root sync.ps1 owns Documents\Videoeditor - HybridCut lands in hybrid_cut/.
 
 $ErrorActionPreference = "Stop"
 
@@ -11,6 +11,24 @@ $dst = Join-Path $env:USERPROFILE "Documents\Videoeditor\hybrid_cut"
 $storeId = "bc-41930eab-1501-4c19-acf3-0c9d63afbf4d"
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $baseStores = Join-Path $env:LOCALAPPDATA "Cursor\AgentStores"
+
+function New-AsciiTempPath {
+    param([string]$Suffix = ".log")
+    $leaf = [guid]::NewGuid().ToString("N") + $Suffix
+    return [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), $leaf)
+}
+
+function Remove-TempQuiet {
+    param([string]$Path)
+    if (-not $Path) { return }
+    try {
+        if (Test-Path -LiteralPath $Path) {
+            Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+        }
+    } catch {
+        # Never fail sync on temp log cleanup (8.3 / accented profile paths).
+    }
+}
 
 function Test-HybridSrc {
     param([string]$Path)
@@ -111,7 +129,7 @@ Write-Host ("DST: " + $dst)
 
 # Mirror tree; skip heavy / local junk (venv, node_modules, pycache, bake outputs)
 $excludeDirs = @("__pycache__", ".venv", "venv", "node_modules", ".git", "bake", ".pytest_cache")
-$robolog = Join-Path $env:TEMP ("hybrid-sync-" + [guid]::NewGuid().ToString("N") + ".log")
+$robolog = New-AsciiTempPath -Suffix ".log"
 $xdArgs = @()
 foreach ($d in $excludeDirs) { $xdArgs += "/XD"; $xdArgs += $d }
 
@@ -122,9 +140,10 @@ $rc = $LASTEXITCODE
 # robocopy: 0-7 = success-ish; >=8 = failure
 if ($rc -ge 8) {
     Write-Host ("robocopy log: " + $robolog)
+    Remove-TempQuiet -Path $robolog
     Write-Error ("robocopy failed with exit code " + $rc)
 }
-Remove-Item -LiteralPath $robolog -Force -ErrorAction SilentlyContinue
+Remove-TempQuiet -Path $robolog
 
 # Ensure sample media exists even if cache/ was partially skipped
 $sampleSrc = Join-Path $src "cache\sample_person.mp4"

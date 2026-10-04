@@ -16,7 +16,7 @@ Write-Host "Dest:     $dest"
 Write-Host "License:  follow upstream RVM / release terms (not redistributed by HybridCut by default)."
 
 if (Test-Path -LiteralPath $dest) {
-    Write-Host "Already exists — skip."
+    Write-Host "Already exists - skip."
     Write-Host ("Set: `$env:HYBRID_RVM_ONNX = '" + $dest + "'")
     exit 0
 }
