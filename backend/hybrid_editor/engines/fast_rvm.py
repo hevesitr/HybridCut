@@ -68,13 +68,43 @@ def _env_dir(name: str) -> Optional[Path]:
     return p if p.is_dir() else None
 
 
+# Prefer fp32 first (fewer ORT dtype / CUDA edge cases). Override with HYBRID_RVM_ONNX.
 _RVM_NAMES = (
-    "rvm_mobilenetv3_fp16.onnx",
-    "rvm_mobilenetv3.onnx",
     "rvm_mobilenetv3_fp32.onnx",
-    "rvm_resnet50_fp16.onnx",
+    "rvm_mobilenetv3.onnx",
+    "rvm_mobilenetv3_fp16.onnx",
     "rvm_resnet50_fp32.onnx",
+    "rvm_resnet50_fp16.onnx",
 )
+
+
+def resolve_rvm_input_dtype(session: Any = None, model_path: Optional[Path] = None) -> np.dtype:
+    """Pick float16 vs float32 for RVM ORT feeds (src + recurrent).
+
+    Priority:
+    1. ORT ``src`` input type meta (``tensor(float16)`` / ``tensor(float)``)
+    2. Filename hint (``fp16`` / ``fp32`` in stem)
+    3. Default float32
+    """
+    if session is not None:
+        try:
+            for inp in session.get_inputs():
+                if getattr(inp, "name", None) != "src":
+                    continue
+                typ = (getattr(inp, "type", None) or "").lower()
+                if "float16" in typ:
+                    return np.dtype(np.float16)
+                if "float" in typ:  # tensor(float) == float32
+                    return np.dtype(np.float32)
+        except Exception:  # noqa: BLE001
+            pass
+    if model_path is not None:
+        stem = Path(model_path).stem.lower()
+        if "fp16" in stem:
+            return np.dtype(np.float16)
+        if "fp32" in stem:
+            return np.dtype(np.float32)
+    return np.dtype(np.float32)
 
 
 def _first_rvm_in_dir(models_dir: Path) -> Optional[Path]:
@@ -147,6 +177,14 @@ def resolve_rvm_onnx() -> Optional[Path]:
 
 def probe_ort_runtime() -> dict[str, Any]:
     """Lightweight ORT / CUDA EP probe for UI status chips (no session load)."""
+    try:
+        from hybrid_editor.cuda_path import inject_nvidia_pip_libs, pip_cudnn_present
+
+        inject_nvidia_pip_libs()
+        cudnn_ok, cudnn_detail = pip_cudnn_present()
+    except Exception as exc:  # noqa: BLE001
+        cudnn_ok, cudnn_detail = False, f"cuda_path unavailable: {exc}"
+
     onnx = resolve_rvm_onnx()
     info: dict[str, Any] = {
         "onnx_found": onnx is not None,
@@ -157,6 +195,9 @@ def probe_ort_runtime() -> dict[str, Any]:
         "providers": [],
         "prefer": os.environ.get("HYBRID_ORT_PROVIDER", "cuda").strip().lower() or "cuda",
         "source": None,
+        "cudnn_ok": cudnn_ok,
+        "cudnn_detail": cudnn_detail,
+        "cuda_fallback": None,
     }
     if onnx is not None:
         try:
@@ -237,6 +278,15 @@ class _OrtRvmSession:
     """RVM ONNX session — CUDA EP preferred when available."""
 
     def __init__(self, model_path: Path) -> None:
+        from hybrid_editor.cuda_path import (
+            brief_ort_error,
+            inject_nvidia_pip_libs,
+            is_cudnn_or_cuda_ep_error,
+            pip_cudnn_present,
+        )
+
+        # Must run BEFORE InferenceSession — LoadLibrary looks up cudnn64_9.dll via PATH.
+        inject_nvidia_pip_libs()
         import onnxruntime as ort  # type: ignore
 
         prefer = os.environ.get("HYBRID_ORT_PROVIDER", "cuda").strip().lower()
@@ -258,21 +308,52 @@ class _OrtRvmSession:
         if uses_cuda:
             acquire_cuda("fast-ort", detail=str(model_path))
         self._uses_cuda = uses_cuda
+        self.fallback_note: Optional[str] = None
+        so = ort.SessionOptions()
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         try:
-            so = ort.SessionOptions()
-            so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-            self.session = ort.InferenceSession(str(model_path), sess_options=so, providers=providers)
-        except Exception:
+            self.session = ort.InferenceSession(
+                str(model_path), sess_options=so, providers=providers
+            )
+        except Exception as exc:  # noqa: BLE001
             if uses_cuda:
                 release_cuda("fast-ort")
-            raise
+                self._uses_cuda = False
+            # Soft fallback: missing cudnn64_*.dll / CUDA EP load → retry CPU (UI stays up).
+            if uses_cuda and is_cudnn_or_cuda_ep_error(exc):
+                brief = brief_ort_error(exc)
+                _, cudnn_detail = pip_cudnn_present()
+                self.fallback_note = (
+                    f"CUDA→CPU: cuDNN/CUDA EP unavailable ({brief}). "
+                    f"{cudnn_detail}. Fix: pip install nvidia-cudnn-cu12 in active venv, "
+                    "or .\\start_hybrid_cuda.ps1 / parent remount_ort_gpu.ps1, "
+                    "or $env:HYBRID_REUSE_PARENT_VENV='1'."
+                )
+                logger.warning("%s", self.fallback_note)
+                try:
+                    self.session = ort.InferenceSession(
+                        str(model_path),
+                        sess_options=so,
+                        providers=["CPUExecutionProvider"],
+                    )
+                except Exception:
+                    raise RuntimeError(self.fallback_note) from exc
+            else:
+                raise
         self.provider = self.session.get_providers()[0]
         self._r1 = self._r2 = self._r3 = self._r4 = None
         self.model_path = model_path
+        self.input_dtype = resolve_rvm_input_dtype(self.session, model_path)
         # If CUDA was requested but session fell back to CPU, release slot
         if uses_cuda and "CUDA" not in self.provider:
-            release_cuda("fast-ort")
+            if self._uses_cuda:
+                release_cuda("fast-ort")
             self._uses_cuda = False
+            if self.fallback_note is None:
+                self.fallback_note = (
+                    "CUDA EP listed but session active provider is CPU — "
+                    "check cudnn64_9.dll on PATH (nvidia-cudnn-cu12)."
+                )
 
     def reset(self) -> None:
         self._r1 = self._r2 = self._r3 = self._r4 = None
@@ -287,6 +368,8 @@ class _OrtRvmSession:
     def matte(self, bgr: np.ndarray, downsample: float = 0.25) -> np.ndarray:
         if self.session is None:
             raise RuntimeError("ORT session closed")
+        dtype = self.input_dtype
+        # Resize in float32 for OpenCV, cast to model dtype before ORT.
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         h, w = rgb.shape[:2]
         if downsample < 1.0:
@@ -297,15 +380,21 @@ class _OrtRvmSession:
         else:
             src = rgb
             nh, nw = h, w
-        x = np.transpose(src, (2, 0, 1))[None, ...]
+        x = np.ascontiguousarray(np.transpose(src, (2, 0, 1))[None, ...], dtype=dtype)
         feeds: dict[str, Any] = {"src": x}
         inputs = {i.name: i for i in self.session.get_inputs()}
         for name, rec in (("r1i", self._r1), ("r2i", self._r2), ("r3i", self._r3), ("r4i", self._r4)):
             if name in inputs:
                 shape = [d if isinstance(d, int) else 1 for d in inputs[name].shape]
-                feeds[name] = rec if rec is not None else np.zeros(shape, np.float32)
+                if rec is None:
+                    feeds[name] = np.zeros(shape, dtype=dtype)
+                else:
+                    feeds[name] = np.ascontiguousarray(rec, dtype=dtype)
         if "downsample_ratio" in inputs:
-            feeds["downsample_ratio"] = np.array([downsample if downsample < 1 else 1.0], np.float32)
+            # RVM exports keep downsample_ratio as float32 even for fp16 graphs.
+            feeds["downsample_ratio"] = np.array(
+                [downsample if downsample < 1 else 1.0], dtype=np.float32
+            )
         outs = self.session.run(None, feeds)
         pha = None
         for o in outs:
@@ -322,7 +411,10 @@ class _OrtRvmSession:
             alpha = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_LINEAR)
         # Recurrent outputs — common export layout fgr, pha, r1o..r4o
         if len(outs) >= 6:
-            self._r1, self._r2, self._r3, self._r4 = outs[2], outs[3], outs[4], outs[5]
+            self._r1 = np.ascontiguousarray(outs[2], dtype=dtype)
+            self._r2 = np.ascontiguousarray(outs[3], dtype=dtype)
+            self._r3 = np.ascontiguousarray(outs[4], dtype=dtype)
+            self._r4 = np.ascontiguousarray(outs[5], dtype=dtype)
         return np.clip(alpha, 0.0, 1.0)
 
 
@@ -333,6 +425,7 @@ class FastEngine(MattingEngine):
         self._media: Optional[MediaInfo] = None
         self._rvm: Optional[_OrtRvmSession] = None
         self._backend = "heuristic"
+        self._status_note: Optional[str] = None
         self._mask_store: Optional[MaskStore] = None
         self._frame_cache = FrameCache(48)
         self._prefetch = ScrubPrefetcher(ahead=8)
@@ -345,16 +438,34 @@ class FastEngine(MattingEngine):
         model = resolve_rvm_onnx()
         if model is None:
             self._backend = "heuristic"
+            self._status_note = HEURISTIC_NOTE
             logger.info(HEURISTIC_NOTE)
             return
         try:
             self._rvm = _OrtRvmSession(model)
             self._backend = f"ort-rvm:{self._rvm.provider}"
-            logger.info("FastEngine ORT RVM loaded: %s (%s)", model, self._rvm.provider)
+            note = getattr(self._rvm, "fallback_note", None)
+            self._status_note = note
+            if note:
+                logger.warning("FastEngine ORT RVM loaded with fallback: %s (%s)", model, note)
+            else:
+                logger.info("FastEngine ORT RVM loaded: %s (%s)", model, self._rvm.provider)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("ORT RVM unavailable (%s) — %s", exc, HEURISTIC_NOTE)
+            from hybrid_editor.cuda_path import brief_ort_error, is_cudnn_or_cuda_ep_error
+
+            brief = brief_ort_error(exc)
+            if is_cudnn_or_cuda_ep_error(exc):
+                msg = (
+                    f"ORT CUDA/cuDNN failed ({brief}) — falling back to heuristic. "
+                    "Install nvidia-cudnn-cu12 in hybrid .venv, run .\\start_hybrid_cuda.ps1, "
+                    "or $env:HYBRID_REUSE_PARENT_VENV='1' after CapCut remount_ort_gpu.ps1."
+                )
+            else:
+                msg = f"ORT RVM unavailable ({brief}) — {HEURISTIC_NOTE}"
+            logger.warning("%s", msg)
             self._rvm = None
             self._backend = "heuristic"
+            self._status_note = msg
 
     def capabilities(self) -> EngineCapabilities:
         detail = (
@@ -363,6 +474,9 @@ class FastEngine(MattingEngine):
             if self._rvm
             else HEURISTIC_NOTE
         )
+        note = getattr(self, "_status_note", None)
+        if note:
+            detail = f"{detail} {note}" if self._rvm else note
         return EngineCapabilities(
             mode=self.mode,
             name="Gyors mód (RVM / Fast)",

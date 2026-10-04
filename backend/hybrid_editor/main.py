@@ -5,6 +5,21 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# Prefer CUDA (RTX 3060). Force CPU: $env:HYBRID_ORT_PROVIDER = "cpu"
+if "HYBRID_ORT_PROVIDER" not in os.environ:
+    os.environ["HYBRID_ORT_PROVIDER"] = "cuda"
+
+# PATH inject before any engine/ORT import (hybrid_editor package also injects).
+try:
+    from hybrid_editor.cuda_path import inject_nvidia_pip_libs, pip_cudnn_present
+
+    inject_nvidia_pip_libs()
+    _ok, _detail = pip_cudnn_present()
+    if not _ok:
+        print(f"[HybridCut] cuDNN note: {_detail}")
+except Exception:
+    pass
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse

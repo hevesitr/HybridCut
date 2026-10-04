@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-04-hybrid-phase5-rvm` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-04-hybrid-cudnn-path` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,9 +44,10 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-04-hybrid-phase5-rvm
+# expect: 2026-10-04-hybrid-cudnn-path
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
+# CUDA+cuDNN: .\hybrid_cut\start_hybrid_cuda.ps1
 ```
 
 One-click from Agent Store:
@@ -70,13 +71,14 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 ---
 
-## Phase 5 (this stamp)
+## Phase 5 + cuDNN PATH (this stamp)
 
-- **FastEngine** resolves RVM ONNX from `HYBRID_RVM_ONNX` / `VIDEOEDITOR_RVM_ONNX` / hybrid `models/` / **parent** `Documents\Videoeditor\models\*.onnx`
-- `run_hybrid.ps1`: skip pip upgrade; trusted-host; auto parent RVM; reuse parent `.venv` when hybrid pip/venv is weak (`Documents\Videoeditor\.venv`)
-- `install_to_videoeditor.ps1`: ASCII robolog + root launcher before cleanup (shipped)
-- UI: clearer first-run empty state + **RVM/CUDA/ORT** status chips; before/after wipe; bake queue; **open output folder**
-- Export: audio AAC mux confirmed; `/api/export/open-folder` + Explorer button
+- **FastEngine** resolves RVM ONNX from `HYBRID_RVM_ONNX` / parent `models/` (prefers **fp32**)
+- `hybrid_editor.cuda_path`: PATH + `os.add_dll_directory` for pip `nvidia-cudnn-cu12` **before** ORT session
+- Soft fallback: CUDA/cuDNN `LoadLibrary` failure → **CPU EP** with clear status (no raw ORT crash in UI)
+- `run_hybrid.ps1`: auto-install `nvidia-cudnn-cu12` when `cudnn64_*.dll` missing; PATH prepend hybrid+parent
+- `start_hybrid_cuda.ps1`: CapCut `remount_ort_gpu.ps1` if sibling; pip cudnn/ort-gpu; then launch
+- Workaround B: `$env:HYBRID_REUSE_PARENT_VENV='1'` (CapCut `.venv` that already works)
 
 ---
 
@@ -84,17 +86,18 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 - `run_hybrid.ps1` does **not** run `pip install --upgrade pip` by default. Opt-in: `$env:HYBRID_UPGRADE_PIP = "1"`.
 - Deps install with `--trusted-host pypi.org --trusted-host files.pythonhosted.org` and `--no-cache-dir`.
-- Force parent venv: `$env:HYBRID_REUSE_PARENT_VENV = "1"`.
-- GPU ORT (parent CapCut path):
+- Force parent venv (Workaround B): `$env:HYBRID_REUSE_PARENT_VENV = "1"`.
+- GPU ORT / cuDNN:
 
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
-.\setup_gpu.ps1
-# or .\remount_ort_gpu.ps1
-# then HybridCut can reuse ..\Videoeditor\.venv via run_hybrid.ps1 fallback
+$env:HYBRID_RVM_ONNX = "$PWD\models\rvm_mobilenetv3_fp32.onnx"
+.\hybrid_cut\start_hybrid_cuda.ps1
+# auto: remount if sibling + nvidia-cudnn-cu12 + PATH
+# or: .\run_hybrid.ps1  (also auto-installs cudnn when DLL missing)
 ```
 
-Hotfix paste: `PASTE_FIX_RUN_HYBRID.ps1`.
+Restart cheat-sheet: [`../hybrid-cudnn-restart.md`](../hybrid-cudnn-restart.md). Hotfix paste: `PASTE_FIX_RUN_HYBRID.ps1`.
 
 ---
 

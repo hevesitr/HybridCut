@@ -86,6 +86,12 @@ class EditorSession:
             # Prefer live engine backend when Fast/Max already loaded ORT
             rvm["engine_backend"] = caps.backend
             rvm["engine_weights"] = caps.weights_path
+            live_note = getattr(self.engine, "_status_note", None)
+            if live_note is None and hasattr(self.engine, "_rvm"):
+                rvm_sess = getattr(self.engine, "_rvm", None)
+                live_note = getattr(rvm_sess, "fallback_note", None) if rvm_sess else None
+            if live_note:
+                rvm["cuda_fallback"] = live_note
             return {
                 "sync_version": SYNC_VERSION,
                 "mode": self.mode.value,

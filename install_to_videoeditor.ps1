@@ -141,7 +141,11 @@ Write-Host ""
 Write-Host "Kovetkezo / Next:"
 Write-Host '  cd $env:USERPROFILE\Documents\Videoeditor'
 Write-Host "  Get-Content .\hybrid_cut\SYNC_VERSION.txt"
-Write-Host "  .\run_hybrid.ps1"
+Write-Host "  # expect: 2026-10-04-hybrid-cudnn-path"
+Write-Host '  $env:HYBRID_RVM_ONNX = "$PWD\models\rvm_mobilenetv3_fp32.onnx"'
+Write-Host "  .\hybrid_cut\start_hybrid_cuda.ps1"
+Write-Host "  # or: .\run_hybrid.ps1"
+Write-Host "  # Workaround B: `$env:HYBRID_REUSE_PARENT_VENV='1'; .\run_hybrid.ps1"
 Write-Host "Open: http://127.0.0.1:3847"
 Write-Host ""
 Write-Host "Megjegyzes: CapCut gyoker = Documents\Videoeditor ; HybridCut = ...\hybrid_cut"

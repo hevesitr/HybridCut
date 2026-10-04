@@ -80,14 +80,14 @@ $parentModels = Join-Path $parentRoot "models"
 $docsVeVenv = Join-Path $env:USERPROFILE "Documents\Videoeditor\.venv\Scripts\python.exe"
 $docsVeModels = Join-Path $env:USERPROFILE "Documents\Videoeditor\models"
 
-# --- Auto-wire parent RVM ONNX (no weight redistribution) ---
+# --- Auto-wire parent RVM ONNX (no weight redistribution; prefer fp32) ---
 if (-not $env:HYBRID_RVM_ONNX) {
     $rvmNames = @(
-        "rvm_mobilenetv3_fp16.onnx",
         "rvm_mobilenetv3_fp32.onnx",
         "rvm_mobilenetv3.onnx",
-        "rvm_resnet50_fp16.onnx",
-        "rvm_resnet50_fp32.onnx"
+        "rvm_mobilenetv3_fp16.onnx",
+        "rvm_resnet50_fp32.onnx",
+        "rvm_resnet50_fp16.onnx"
     )
     $searchDirs = @(
         (Join-Path $Root "models"),
@@ -120,6 +120,31 @@ if (-not $env:HYBRID_RVM_ONNX) {
 # Prefer CUDA like CapCut Videoeditor; override: $env:HYBRID_ORT_PROVIDER = "cpu"
 if (-not $env:HYBRID_ORT_PROVIDER) {
     $env:HYBRID_ORT_PROVIDER = "cuda"
+}
+
+# Prepend pip nvidia cudnn/cublas bins to PATH (hybrid + parent CapCut venv).
+# Same idea as CapCut run_gpu.ps1 / remount_ort_gpu.ps1 — needed before ORT CUDA EP.
+function Add-NvidiaPipBinsToPath {
+    param([string[]]$SiteRoots)
+    foreach ($site in $SiteRoots) {
+        if (-not $site -or -not (Test-Path -LiteralPath $site)) { continue }
+        $nv = Join-Path $site "nvidia"
+        if (-not (Test-Path -LiteralPath $nv)) { continue }
+        Get-ChildItem -LiteralPath $nv -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            foreach ($sub in @("bin", "lib")) {
+                $d = Join-Path $_.FullName $sub
+                if (Test-Path -LiteralPath $d) {
+                    $env:PATH = $d + [IO.Path]::PathSeparator + $env:PATH
+                    Write-Host ("PATH += " + $d)
+                }
+            }
+        }
+        $dlls = Get-ChildItem -LiteralPath $nv -Filter "cudnn64_*.dll" -Recurse -ErrorAction SilentlyContinue
+        foreach ($dll in $dlls) {
+            $env:PATH = $dll.DirectoryName + [IO.Path]::PathSeparator + $env:PATH
+            Write-Host ("cudnn DLL: " + $dll.FullName)
+        }
+    }
 }
 
 # --- Python / venv ---
@@ -259,6 +284,51 @@ if ($ortProbe -ne "1") {
     Write-Host "NOTE: onnxruntime not installed. For CUDA RVM on RTX 3060:"
     Write-Host ("  & '" + $venvPy + "' -m pip install onnxruntime-gpu --trusted-host pypi.org --trusted-host files.pythonhosted.org --no-cache-dir")
     Write-Host "  (or reuse parent Videoeditor\.venv after .\setup_gpu.ps1 / .\remount_ort_gpu.ps1)"
+    Write-Host "  Or: .\start_hybrid_cuda.ps1"
+}
+
+# Auto-install nvidia-cudnn-cu12 into active venv when cudnn64_*.dll is missing.
+# Hybrid .venv often has onnxruntime-gpu but CapCut's remount put cuDNN only in parent.
+$siteHybrid = Join-Path $Root ".venv\Lib\site-packages"
+$parentSite = Join-Path $parentRoot ".venv\Lib\site-packages"
+$docsVeSite = Join-Path $env:USERPROFILE "Documents\Videoeditor\.venv\Lib\site-packages"
+
+function Test-CudnnDllPresent {
+    param([string[]]$SiteRoots)
+    foreach ($site in $SiteRoots) {
+        if (-not $site -or -not (Test-Path -LiteralPath $site)) { continue }
+        $hit = Get-ChildItem -LiteralPath $site -Filter "cudnn64_*.dll" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($hit) { return $true }
+    }
+    return $false
+}
+
+$hasCudnnDll = Test-CudnnDllPresent -SiteRoots @($siteHybrid, $parentSite, $docsVeSite)
+if (-not $hasCudnnDll) {
+    Write-Host "cudnn64_*.dll missing - auto-installing nvidia-cudnn-cu12 (+ cublas/cudart) into active venv..."
+    & $venvPy -m pip install `
+        "nvidia-cudnn-cu12>=9.0.0" `
+        "nvidia-cublas-cu12>=12.0.0" `
+        "nvidia-cuda-runtime-cu12>=12.0.0" `
+        "nvidia-cuda-nvrtc-cu12>=12.0.0" `
+        @pipTrusted @pipNoCache
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "WARN: nvidia-cudnn-cu12 auto-install failed."
+        Write-Host "  Workaround B: `$env:HYBRID_REUSE_PARENT_VENV='1'; then .\run_hybrid.ps1"
+        Write-Host "  Or CapCut: cd parent Videoeditor; .\remount_ort_gpu.ps1"
+        Write-Host "  Or: .\start_hybrid_cuda.ps1"
+    } else {
+        Write-Host "nvidia-cudnn-cu12 installed OK."
+    }
+    $hasCudnnDll = Test-CudnnDllPresent -SiteRoots @($siteHybrid, $parentSite, $docsVeSite)
+}
+
+# PATH inject AFTER possible install so new bins are visible to ORT CUDA EP.
+Add-NvidiaPipBinsToPath -SiteRoots @($siteHybrid, $parentSite, $docsVeSite)
+if ($hasCudnnDll) {
+    Write-Host "cuDNN DLL available; PATH prepended for ORT CUDA EP (Python also uses os.add_dll_directory)."
+} else {
+    Write-Host "WARN: cuDNN still missing after install attempt - HybridCut will soft-fallback to CPU if CUDA EP fails."
 }
 
 # --- Frontend dist (production serve via FastAPI) ---
