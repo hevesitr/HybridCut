@@ -87,11 +87,26 @@ class EditorSession:
             rvm["engine_backend"] = caps.backend
             rvm["engine_weights"] = caps.weights_path
             live_note = getattr(self.engine, "_status_note", None)
+            if live_note is None and hasattr(self.engine, "_fast"):
+                # MaxQualityEngine wraps FastEngine — surface CUDA→CPU note from backbone
+                fast = getattr(self.engine, "_fast", None)
+                live_note = getattr(fast, "_status_note", None) if fast else None
             if live_note is None and hasattr(self.engine, "_rvm"):
                 rvm_sess = getattr(self.engine, "_rvm", None)
                 live_note = getattr(rvm_sess, "fallback_note", None) if rvm_sess else None
             if live_note:
                 rvm["cuda_fallback"] = live_note
+            person_info: dict[str, Any] = {}
+            if isinstance(self.engine, MaxQualityEngine) and hasattr(self.engine, "person_matte_info"):
+                person_info = self.engine.person_matte_info()
+            elif self.mode is EngineMode.GYORS:
+                person_info = {
+                    "matanyone2_active": False,
+                    "person_matte_backend": "rvm-gyors",
+                    "person_matte_label_hu": "Gyors RVM ember-maszk",
+                    "auto_person_matte": True,
+                    "manual_seed_refinement_only": True,
+                }
             return {
                 "sync_version": SYNC_VERSION,
                 "mode": self.mode.value,
@@ -103,6 +118,10 @@ class EditorSession:
                 "vram_hint_gb": caps.vram_hint_gb,
                 "detail": caps.detail,
                 "weights_path": caps.weights_path,
+                "matanyone2_active": bool(person_info.get("matanyone2_active")),
+                "person_matte_label_hu": person_info.get("person_matte_label_hu"),
+                "person_matte_backend": person_info.get("person_matte_backend"),
+                "person_matte": person_info or None,
                 "media": asdict(self.media) if self.media else None,
                 "timeline": self.timeline.to_dict() if self.timeline else None,
                 "frame_plan": plan,

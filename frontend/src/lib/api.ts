@@ -100,6 +100,18 @@ export type EditorStatus = {
   analyse_status?: string;
   analyse_masks?: number;
   intelligence?: Record<string, unknown>;
+  /** Max without MatAnyone2 weights → false; clear HU label in person_matte_label_hu */
+  matanyone2_active?: boolean;
+  person_matte_label_hu?: string | null;
+  person_matte_backend?: string | null;
+  person_matte?: {
+    matanyone2_active?: boolean;
+    person_matte_label_hu?: string;
+    person_matte_backend?: string;
+    auto_person_matte?: boolean;
+    manual_seed_refinement_only?: boolean;
+    matanyone2_reason?: string;
+  } | null;
 };
 
 export type PreviewResult = {
@@ -117,6 +129,10 @@ export type PreviewResult = {
     matte_empty?: boolean;
     source_fallback?: boolean;
     matte_error?: string;
+    matanyone2_active?: boolean;
+    person_matte_label_hu?: string;
+    person_matte_backend?: string;
+    user_seed?: boolean;
   };
   frame_plan?: EditorStatus["frame_plan"];
 };

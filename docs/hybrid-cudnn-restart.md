@@ -1,6 +1,6 @@
 # HybridCut restart — cuDNN + alpha preview (Windows)
 
-Stamp: **`2026-10-04-hu-ux`**
+Stamp: **`2026-10-04-person-matte`**
 
 Includes:
 
@@ -8,6 +8,7 @@ Includes:
 2. **Transparency UX** — subtle checker when a real matte exists
 3. **Empty / weak matte → source visible** — upload/scrub shows source RGB (not pure checker)
 4. **Hungarian UX** — Forrás | Maszk | Cutout | Összehasonlítás; minden gomb HU + tooltip; alapnézet = Forrás
+5. **Person matte** — Max without MatAnyone2 → RVM ember-maszk; Előnézet → Cutout; kézi csak finomítás
 
 ---
 
@@ -19,13 +20,13 @@ Includes:
 cd $env:USERPROFILE\Documents\HybridCut
 git pull
 Get-Content .\SYNC_VERSION.txt
-# expect: 2026-10-04-hu-ux
+# expect: 2026-10-04-person-matte
 
 .\install_to_videoeditor.ps1
 
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-04-hu-ux
+# expect: 2026-10-04-person-matte
 
 $env:HYBRID_RVM_ONNX = "$PWD\models\rvm_mobilenetv3_fp32.onnx"
 .\hybrid_cut\start_hybrid_cuda.ps1
@@ -39,7 +40,7 @@ If you sync Agent Store / copy tree instead of GitHub:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor\hybrid_cut
 Get-Content .\SYNC_VERSION.txt
-# expect: 2026-10-04-hu-ux
+# expect: 2026-10-04-person-matte
 $env:HYBRID_RVM_ONNX = "$env:USERPROFILE\Documents\Videoeditor\models\rvm_mobilenetv3_fp32.onnx"
 .\start_hybrid_cuda.ps1
 ```

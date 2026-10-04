@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-04-hu-ux` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-04-person-matte` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-04-hu-ux
+# expect: 2026-10-04-person-matte
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA+cuDNN: .\hybrid_cut\start_hybrid_cuda.ps1
@@ -71,15 +71,23 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 ---
 
-## Hungarian UX + Forrás default (this stamp)
+## Person matte (this stamp)
 
-- Preview default: **Forrás** (full source RGB) on load/scrub — not 50% wipe / alpha-only
-- View toggle: **Forrás | Maszk | Cutout | Összehasonlítás** (compare wipe starts at Utána=100%)
-- Weak/empty matte → source underlay + status „Maszk üres — forrás látszik”
-- All control buttons/chips: short Hungarian labels + `title` tooltips
+- **Max without MatAnyone2 weights** → RVM quality pipeline person alpha (never empty fake MatAnyone2)
+- Status: **„MatAnyone2 nincs — RVM ember-maszk”** vs **„MatAnyone2 aktív”**
+- **Előnézet** / upload: auto RVM → switch to **Cutout** when matte ready (toast)
+- Manual lasso = **optional refinement** (union with auto) — not required for person removal
+- Empty **Maszk** view: overlay + „Előnézet futtatása”
+- Optional local `.pth`: [`docs/matanyone2-weights.md`](docs/matanyone2-weights.md) (`HYBRID_MATANYONE2_WEIGHTS`)
+
+## Hungarian UX + Forrás default
+
+- Preview default: **Forrás** on load — Előnézet after matte → **Cutout**
+- View toggle: **Forrás | Maszk | Cutout | Összehasonlítás**
+- Weak/empty matte → source underlay + clear „Nincs ember-maszk” cue
 - Help line: `1) Videó betöltése 2) Előnézet 3) Exportálás`
 
-## Phase 5 + cuDNN PATH (this stamp)
+## Phase 5 + cuDNN PATH
 
 - **FastEngine** resolves RVM ONNX from `HYBRID_RVM_ONNX` / parent `models/` (prefers **fp32**)
 - `hybrid_editor.cuda_path`: PATH + `os.add_dll_directory` for pip `nvidia-cudnn-cu12` **before** ORT session

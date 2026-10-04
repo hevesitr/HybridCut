@@ -10,25 +10,31 @@ type ViewMode = "source" | "mask" | "cutout" | "compare";
 function rvmChip(status: EditorStatus | null) {
   const rvm = status?.rvm;
   const backend = (status?.backend || rvm?.engine_backend || "").toLowerCase();
-  const ortCuda = !!rvm?.cuda_ep;
   const liveCuda = backend.includes("cuda");
-  const onnx = !!rvm?.onnx_found || backend.startsWith("ort-rvm");
-  if (liveCuda || (ortCuda && onnx)) {
+  const liveCpu =
+    backend.includes("cpuexecutionprovider") ||
+    backend.endsWith(":cpu") ||
+    backend.includes("ort-rvm:cpu");
+  const onnx = !!rvm?.onnx_found || backend.includes("ort-rvm") || backend.includes("quality-pipeline");
+  // Prefer live session provider — do not show CUDA when EP is actually CPU.
+  if (liveCuda) {
     return {
       key: "rvm",
-      label: onnx ? "RVM CUDA" : "CUDA EP",
+      label: "RVM CUDA",
       on: true,
       warn: false,
       title: "Háttéreltávolító GPU-n fut (CUDA).",
     };
   }
-  if (onnx && rvm?.ort_available) {
+  if (liveCpu || (onnx && rvm?.ort_available)) {
     return {
       key: "rvm",
       label: "RVM CPU",
       on: true,
       warn: true,
-      title: "RVM CPU-n fut — lassabb, mint CUDA.",
+      title: rvm?.cuda_fallback
+        ? String(rvm.cuda_fallback)
+        : "RVM CPU-n fut — ember-maszk így is készül (lassabb, mint CUDA).",
     };
   }
   if (onnx) {
@@ -45,7 +51,37 @@ function rvmChip(status: EditorStatus | null) {
     label: "RVM —",
     on: false,
     warn: false,
-    title: "Nincs betöltött RVM modell.",
+    title: "Nincs betöltött RVM modell — heurisztikus ember-maszk.",
+  };
+}
+
+function personMatteChip(status: EditorStatus | null, preview: PreviewResult | null) {
+  const label =
+    preview?.meta?.person_matte_label_hu ||
+    status?.person_matte_label_hu ||
+    status?.person_matte?.person_matte_label_hu;
+  const active = !!(
+    preview?.meta?.matanyone2_active ||
+    status?.matanyone2_active ||
+    status?.person_matte?.matanyone2_active
+  );
+  if (status?.mode === "max") {
+    return {
+      key: "person",
+      label: label || (active ? "MatAnyone2 aktív" : "MatAnyone2 nincs — RVM ember-maszk"),
+      on: true,
+      warn: !active,
+      title: active
+        ? "MatAnyone2 helyi súlyokkal fut."
+        : "Nincs MatAnyone2 súly — Max mód RVM minőségi pipeline-nal ad ember-maszkot.",
+    };
+  }
+  return {
+    key: "person",
+    label: label || "Gyors RVM ember-maszk",
+    on: true,
+    warn: false,
+    title: "Gyors mód: automatikus RVM ember-maszk (kézi maszk nem kötelező).",
   };
 }
 
@@ -64,10 +100,11 @@ function intelFromPreview(preview: PreviewResult | null, status: EditorStatus | 
       warn: status?.mode === "max",
       title:
         status?.mode === "max"
-          ? "Max: kézi maszk + minőségi export."
-          : "Gyors: élő előnézet scrub közben.",
+          ? "Max: auto RVM ember-maszk + opcionális kézi finomítás / minőségi export."
+          : "Gyors: élő előnézet scrub közben (auto RVM).",
     },
     rvmChip(status),
+    personMatteChip(status, preview),
     {
       key: "mask",
       label: meta.mask_store ? "MaszkTár talált" : "MaszkTár",
@@ -88,10 +125,10 @@ function intelFromPreview(preview: PreviewResult | null, status: EditorStatus | 
     },
     {
       key: "seed",
-      label: status?.seed_mask || meta.user_seed ? "Kézi maszk ✓" : "Kézi maszk",
+      label: status?.seed_mask || meta.user_seed ? "Kézi finomítás ✓" : "Kézi finomítás",
       on: !!status?.seed_mask || !!meta.user_seed,
-      warn: !!status?.seed_mask,
-      title: "Kézzel festett magmaszk a Max minőséghez.",
+      warn: false,
+      title: "Opcionális kézi maszk — csak finomítás; az ember-maszk automatikus.",
     },
     {
       key: "broll",
@@ -136,20 +173,26 @@ function smartStatusLine(
   if (status?.bake_running) return status.bake_status || "Export fut…";
   if (status?.analyse_running) return status.analyse_status || "Elemzés fut…";
   if (busy) return "Dolgozom…";
-  if (matteEmpty) return "Maszk üres — forrás látszik";
+  if (matteEmpty) return "Nincs ember-maszk — futtasd az Előnézetet";
+  const person =
+    status?.person_matte_label_hu ||
+    status?.person_matte?.person_matte_label_hu ||
+    "";
   const fallback = status?.rvm?.cuda_fallback || status?.detail || "";
   if (fallback && /CUDA|cuDNN|cudnn/i.test(fallback)) {
-    return fallback.length > 220 ? `${fallback.slice(0, 220)}…` : fallback;
+    const short = fallback.length > 180 ? `${fallback.slice(0, 180)}…` : fallback;
+    return person ? `${person} · ${short}` : short;
   }
   if (status?.rvm?.cudnn_ok === false && status.rvm.cudnn_detail) {
     return status.rvm.cudnn_detail;
   }
   const mode = status?.mode === "max" ? "Max" : "Gyors";
-  const seed = status?.seed_mask ? " · kézi maszk ✓" : "";
+  const seed = status?.seed_mask ? " · kézi finomítás ✓" : "";
   const clips = status?.timeline?.clips?.length ?? 0;
   const broll = status?.timeline?.clips?.filter((c) => (c.track ?? 0) >= 1).length ?? 0;
   const tl = clips ? ` · ${clips} klip${broll ? ` (${broll} B-roll)` : ""}` : "";
-  const base = note || `${mode}${seed}${tl}`;
+  const personBit = person ? ` · ${person}` : "";
+  const base = note || `${mode}${personBit}${seed}${tl}`;
   return base;
 }
 
@@ -164,16 +207,24 @@ export default function App() {
   const [note, setNote] = useState("Nyiss meg egy videót, vagy tölts be mintát.");
   const [showSeed, setShowSeed] = useState(false);
   const [seedPng, setSeedPng] = useState<string | null>(null);
-  /** Alapnézet: teljes forrás RGB — nem 50% wipe, nem alpha-only. */
+  /** Alapnézet: teljes forrás RGB — Előnézet után Cutout, ha van ember-maszk. */
   const [viewMode, setViewMode] = useState<ViewMode>("source");
   const [wipe, setWipe] = useState(100);
   const [dragOver, setDragOver] = useState(false);
   const [assist, setAssist] = useState<AssistStatus | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const fileRef = useRef<HTMLInputElement>(null);
   const appendRef = useRef<HTMLInputElement>(null);
   const brollRef = useRef<HTMLInputElement>(null);
   const scrubTimer = useRef<number | null>(null);
+  const toastTimer = useRef<number | null>(null);
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 4200);
+  };
 
   const syncTrimFromStatus = (st: EditorStatus) => {
     const selId = st.timeline?.selected_clip_id;
@@ -309,6 +360,7 @@ export default function App() {
     t: number,
     st?: EditorStatus | null,
     noteOverride?: string,
+    opts?: { preferCutout?: boolean },
   ) => {
     const cur = st ?? status;
     if (!cur?.media && !cur?.timeline?.clips?.length) return;
@@ -318,9 +370,12 @@ export default function App() {
       await api.setTimeline({ playhead_sec: t });
       const frame = await api.preview(t);
       setPreview(frame);
+      const empty = Boolean(frame.meta?.matte_empty || frame.meta?.source_fallback);
+      const personLabel = String(frame.meta?.person_matte_label_hu || "");
       const storeHit = frame.meta?.mask_store ? " · MaszkTár" : "";
-      const seedHit = frame.meta?.user_seed ? " · kézi maszk ✓" : "";
-      const emptyHit = frame.meta?.matte_empty ? " · Maszk üres — forrás látszik" : "";
+      const seedHit = frame.meta?.user_seed ? " · kézi finomítás ✓" : "";
+      const emptyHit = empty ? " · Nincs ember-maszk" : "";
+      const personHit = personLabel ? ` · ${personLabel}` : "";
       const failHit = frame.meta?.source_fallback ? " · RVM soft-fail" : "";
       const ov = (frame.meta?.overlay_layers as unknown[] | undefined)?.length ?? 0;
       const ovHit = ov ? ` · B-roll ×${ov}` : "";
@@ -328,8 +383,17 @@ export default function App() {
       const laneHit = lanes?.stats?.hot_hits ? ` · HOT ${lanes.stats.hot_hits}` : "";
       setNote(
         noteOverride ??
-          `${frame.engine} · ${frame.backend}${storeHit}${seedHit}${emptyHit}${failHit}${ovHit}${laneHit} · t=${frame.t_sec.toFixed(2)}s`,
+          `${frame.engine} · ${frame.backend}${personHit}${storeHit}${seedHit}${emptyHit}${failHit}${ovHit}${laneHit} · t=${frame.t_sec.toFixed(2)}s`,
       );
+      // Explicit Előnézet / upload: jump to Cutout when matte ready (scrub stays put).
+      if (opts?.preferCutout) {
+        if (!empty) {
+          setViewMode("cutout");
+          showToast(personLabel || "Ember-maszk kész — Cutout nézet");
+        } else {
+          showToast("Nincs ember-maszk — futtasd az Előnézetet újra");
+        }
+      }
       const refreshed = await api.status();
       setStatus(refreshed);
       syncTrimFromStatus(refreshed);
@@ -358,14 +422,14 @@ export default function App() {
           setStatus(st);
           setNote(
             mode === "gyors"
-              ? "Gyors mód: élő scrub · MaszkTár · proxy"
-              : "Max minőség: kézi maszk + export hanggal",
+              ? "Gyors mód: auto RVM ember-maszk · élő scrub"
+              : "Max: auto RVM ember-maszk (MatAnyone2 opcionális) · kézi csak finomítás",
           );
           if (mode === "max") {
-            setShowSeed(true);
+            // Seed panel available but not required — auto person first.
             await refreshSeed();
           }
-          if (st.media) await runPreview(tSec, st);
+          if (st.media) await runPreview(tSec, st, undefined, { preferCutout: true });
         })
         .catch((e: Error) => setError(e.message))
         .finally(() => setBusy(false));
@@ -382,7 +446,7 @@ export default function App() {
       setViewMode("source");
       syncTrimFromStatus(st);
       await refreshSeed();
-      await runPreview(0, st);
+      await runPreview(0, st, undefined, { preferCutout: true });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -402,13 +466,18 @@ export default function App() {
         setViewMode("source");
       }
       syncTrimFromStatus(st);
-      await runPreview(append || asBroll ? (st.timeline?.playhead_sec ?? 0) : 0, st);
+      await runPreview(
+        append || asBroll ? (st.timeline?.playhead_sec ?? 0) : 0,
+        st,
+        undefined,
+        { preferCutout: !append && !asBroll },
+      );
       setNote(
         asBroll
           ? "B-roll a V2 sávon"
           : append
             ? "Klip hozzáadva (V1)"
-            : "Videó betöltve — forrás látszik",
+            : "Videó betöltve — auto ember-maszk fut",
       );
       if (!append && !asBroll) await refreshSeed();
     } catch (e) {
@@ -700,7 +769,7 @@ export default function App() {
           <div className="rail-block">
             <h2>Matting motor</h2>
             <p className="lead">
-              <strong>Gyors</strong> = élő előnézet · <strong>Max</strong> = kézi maszk + export
+              <strong>Gyors</strong> = auto RVM · <strong>Max</strong> = RVM minőség (+ opcionális MatAnyone2)
             </p>
             <ModeSwitcher mode={mode} disabled={locked || pending} onChange={onMode} />
             <div className="actions">
@@ -765,8 +834,8 @@ export default function App() {
                 type="button"
                 className="btn"
                 disabled={locked || !status?.media}
-                onClick={() => runPreview(tSec)}
-                title="Aktuális képkocka frissítése az előnézetben."
+                onClick={() => void runPreview(tSec, undefined, undefined, { preferCutout: true })}
+                title="Auto ember-maszk futtatása (RVM) — Cutout nézetre vált, ha kész."
               >
                 Előnézet
               </button>
@@ -1022,7 +1091,9 @@ export default function App() {
           <div className="stage-head">
             <div>
               <h2>Előnézet</h2>
-              <p className="lead">Alapból Forrás · Maszk / Cutout / Összehasonlítás kapcsoló</p>
+              <p className="lead">
+                Forrás betöltéskor · Előnézet után Cutout, ha van ember-maszk
+              </p>
             </div>
             <div className="preview-tools" role="radiogroup" aria-label="Előnézet nézet">
               {viewButtons.map((v) => (
@@ -1085,14 +1156,31 @@ export default function App() {
           ) : null}
 
           <div className={`preview-stage ${viewMode === "source" || matteEmpty ? "source-solid" : "checker-subtle"}`}>
+            {toast ? (
+              <div className="preview-toast" role="status">
+                {toast}
+              </div>
+            ) : null}
             {preview && (singleSrc || (viewMode === "compare" && beforeSrc && afterSrc)) ? (
               <div className="wipe-wrap">
-                {matteEmpty ? (
+                {matteEmpty && viewMode === "mask" ? (
+                  <div className="mask-empty-overlay" role="status">
+                    <p>Nincs ember-maszk — futtasd az Előnézetet</p>
+                    <button
+                      type="button"
+                      className="btn primary"
+                      disabled={locked}
+                      onClick={() => void runPreview(tSec, undefined, undefined, { preferCutout: true })}
+                    >
+                      Előnézet futtatása
+                    </button>
+                  </div>
+                ) : matteEmpty ? (
                   <div
                     className="matte-empty-badge"
                     title="Még nincs hasznos maszk — a forrás képkocka látszik."
                   >
-                    Maszk üres — forrás látszik
+                    Nincs ember-maszk — futtasd az Előnézetet
                   </div>
                 ) : null}
                 {viewMode === "compare" && beforeSrc && afterSrc ? (
@@ -1186,9 +1274,9 @@ export default function App() {
           <div className="seed-toggle">
             <button
               type="button"
-              className={`btn ${showSeed || mode === "max" ? "accent" : ""}`}
+              className={`btn ${showSeed ? "accent" : ""}`}
               disabled={!preview}
-              title="Kézi maszk festőpanel — Max minőséghez ajánlott."
+              title="Opcionális kézi finomítás — az ember-maszk automatikus (nem kötelező)."
               onClick={() => {
                 setShowSeed((v) => {
                   const next = !v;
@@ -1197,7 +1285,7 @@ export default function App() {
                 });
               }}
             >
-              {showSeed ? "Kézi maszk elrejtése" : "Kézi maszk festés"}
+              {showSeed ? "Kézi finomítás elrejtése" : "Kézi finomítás (opcionális)"}
             </button>
           </div>
 
@@ -1214,7 +1302,8 @@ export default function App() {
                   const st = await api.setSeed(png);
                   setStatus(st);
                   setSeedPng(st.seed_mask_png_b64 ?? png);
-                  setNote("Kézi maszk mentve · túléli a scruböt / újratöltést");
+                  setNote("Kézi finomítás mentve — auto ember-maszk + festés unió");
+                  await runPreview(tSec, st, undefined, { preferCutout: true });
                 } catch (e) {
                   setError(e instanceof Error ? e.message : String(e));
                 } finally {
@@ -1226,7 +1315,8 @@ export default function App() {
                   const st = await api.clearSeed();
                   setStatus(st);
                   setSeedPng(null);
-                  setNote("Kézi maszk törölve");
+                  setNote("Kézi finomítás törölve — auto RVM marad");
+                  await runPreview(tSec, st, undefined, { preferCutout: true });
                 } catch (e) {
                   setError(e instanceof Error ? e.message : String(e));
                 }

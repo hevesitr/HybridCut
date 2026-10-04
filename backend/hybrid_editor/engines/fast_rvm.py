@@ -584,25 +584,43 @@ class FastEngine(MattingEngine):
         else:
             t = min(t_sec, self._media.duration_sec)
 
-        # MaskStore hit → skip ORT
+        # MaskStore hit → skip ORT (but never trust an empty/useless cached matte)
         alpha = None
         from_store = False
         matte_error: Optional[str] = None
         if self._mask_store is not None:
-            alpha = self._mask_store.get_alpha(t, shape=bgr.shape[:2])
-            from_store = alpha is not None
+            cached = self._mask_store.get_alpha(t, shape=bgr.shape[:2])
+            if cached is not None and not is_matte_empty(cached):
+                alpha = cached
+                from_store = True
         if alpha is None:
             if self._rvm:
                 self._rvm.reset()  # seek: don't smear recurrent state
             try:
                 alpha = self._matte(bgr)
-                if self._mask_store is not None:
+                # CUDA EP may fail mid-session — _load_rvm already CPU-falls back at init;
+                # ensure heuristic still runs if ORT returns empties (rare dtype/shape issues).
+                if is_matte_empty(alpha) and self._rvm is not None:
+                    logger.warning(
+                        "RVM returned empty matte on %s — retry heuristic person alpha",
+                        self._backend,
+                    )
+                    alpha = heuristic_person_alpha(bgr)
+                if self._mask_store is not None and not is_matte_empty(alpha):
                     self._mask_store.put_async(t, alpha)
             except Exception as exc:  # noqa: BLE001
                 # Soft-fail: keep source RGB visible even if RVM/ORT blows up.
+                # Still try heuristic so Előnézet / Cutout can show a person matte on CPU.
                 matte_error = str(exc)[:240]
-                logger.warning("preview matte failed — source fallback: %s", matte_error)
-                alpha = np.zeros(bgr.shape[:2], dtype=np.float32)
+                logger.warning("preview matte failed — heuristic fallback: %s", matte_error)
+                try:
+                    alpha = heuristic_person_alpha(bgr)
+                    matte_error = None  # recovered
+                    if self._mask_store is not None and not is_matte_empty(alpha):
+                        self._mask_store.put_async(t, alpha)
+                except Exception as exc2:  # noqa: BLE001
+                    matte_error = f"{matte_error}; heuristic: {str(exc2)[:120]}"
+                    alpha = np.zeros(bgr.shape[:2], dtype=np.float32)
 
         try:
             jpg, png, w, h, src, empty = encode_preview_pair(bgr, alpha)

@@ -59,17 +59,42 @@ class MaxQualityEngine(MattingEngine):
         if self._adapter.available:
             self._backend = "matanyone2-adapter"
         else:
+            # Always RVM (or heuristic) quality pipeline when MatAnyone2 weights missing.
             self._backend = f"quality-pipeline+{self._fast.capabilities().backend}"
+        self._status_note = self.person_matte_label()
+
+    def person_matte_label(self) -> str:
+        """Clear HU status: MatAnyone2 active vs RVM person-matte fallback."""
+        if self._adapter.available:
+            return "MatAnyone2 aktív"
+        return "MatAnyone2 nincs — RVM ember-maszk"
+
+    def person_matte_info(self) -> dict:
+        active = bool(self._adapter.available)
+        return {
+            "matanyone2_active": active,
+            "matanyone2_available": active,
+            "matanyone2_reason": self._status.reason,
+            "person_matte_backend": "matanyone2" if active else "rvm-quality-pipeline",
+            "person_matte_label_hu": self.person_matte_label(),
+            "auto_person_matte": True,
+            "manual_seed_refinement_only": True,
+        }
 
     def set_user_seed(self, alpha: Optional[np.ndarray]) -> None:
-        """MatAnyone2-style first-frame seed mask from UI paint/lasso."""
+        """Optional paint/lasso refinement — never required for auto person matte."""
         if alpha is None:
             self._user_seed = None
             return
         a = np.asarray(alpha, dtype=np.float32)
         if a.ndim == 3:
             a = a[..., 0]
-        self._user_seed = np.clip(a, 0.0, 1.0)
+        a = np.clip(a, 0.0, 1.0)
+        # Near-empty paint must not arm a "seed present" path that BG-clamps the frame.
+        if float(a.max()) < 0.05 or float((a > 0.15).mean()) < 0.002:
+            self._user_seed = None
+            return
+        self._user_seed = a
 
     def clear_user_seed(self) -> None:
         self._user_seed = None
@@ -79,20 +104,26 @@ class MaxQualityEngine(MattingEngine):
         return self._user_seed
 
     def capabilities(self) -> EngineCapabilities:
+        info = self.person_matte_info()
         if self._adapter.available:
             detail = (
-                "MatAnyone2 local adapter (user weights). "
+                f"{info['person_matte_label_hu']}. "
+                "Local adapter (user weights). "
                 "VRAM guard unloads Fast ORT CUDA before bake on 8GB."
             )
             vram = 5.5
             weights = self._status.weights_path
         else:
+            fast_caps = self._fast.capabilities()
             detail = (
-                f"Quality pipeline (warmup×{DEFAULT_WARMUP}/trimap/anchor/mem_every). "
+                f"{info['person_matte_label_hu']}. "
+                f"Quality pipeline on {fast_caps.backend} "
+                f"(warmup×{DEFAULT_WARMUP}/trimap/anchor/mem_every). "
                 f"MatAnyone2: {self._status.reason}"
             )
             vram = 3.5
-            weights = self._status.weights_path
+            weights = self._status.weights_path or fast_caps.weights_path
+        self._status_note = info["person_matte_label_hu"]
         return EngineCapabilities(
             mode=self.mode,
             name="Max minőségű háttéreltávolítás",
@@ -123,16 +154,27 @@ class MaxQualityEngine(MattingEngine):
         return self._media
 
     def _base_alpha(self, bgr: np.ndarray) -> np.ndarray:
+        """Always run Fast RVM / heuristic — never leave an empty matte for missing MatAnyone2."""
         return self._fast._matte(bgr)
 
     def _seed_for(self, bgr: np.ndarray, auto: np.ndarray) -> np.ndarray:
+        """Guidance seed for quality trimap.
+
+        Manual lasso/paint is **refinement only**: union with auto RVM alpha.
+        Replacing auto with a tiny yellow blob used to BG-clamp the whole frame
+        via fuse_alpha_trimap (person recognition looked broken).
+        """
+        auto_a = np.clip(np.asarray(auto, dtype=np.float32), 0.0, 1.0)
         if self._user_seed is None:
-            return auto
+            return auto_a
         h, w = bgr.shape[:2]
         seed = self._user_seed
         if seed.shape[:2] != (h, w):
             seed = cv2.resize(seed, (w, h), interpolation=cv2.INTER_LINEAR)
-        return np.clip(seed.astype(np.float32), 0.0, 1.0)
+        seed = np.clip(seed.astype(np.float32), 0.0, 1.0)
+        if float(seed.max()) < 0.05:
+            return auto_a
+        return np.maximum(auto_a, seed)
 
     def _polish(self, bgr: np.ndarray, *, warmup: bool = False) -> np.ndarray:
         if warmup:
@@ -141,6 +183,9 @@ class MaxQualityEngine(MattingEngine):
             a = self._base_alpha(bgr)
         if self._seed is None:
             self._seed = self._seed_for(bgr, a.copy())
+        # Soft-boost painted FG on the live alpha too (same union rule).
+        if self._user_seed is not None:
+            a = self._seed_for(bgr, a)
         return apply_quality_pass(a, seed=self._seed, stabilizer=self._stabilizer)
 
     def preview_frame(self, t_sec: float) -> PreviewFrame:
@@ -148,6 +193,9 @@ class MaxQualityEngine(MattingEngine):
             raise RuntimeError("No media open")
         # Preview: quality polish; MaskStore/prefetch live inside Fast backbone
         self._fast.reset()
+        # Keep Fast backend string fresh (CUDA→CPU fallback may update it).
+        if not self._adapter.available:
+            self._backend = f"quality-pipeline+{self._fast.capabilities().backend}"
         frame = self._fast.preview_frame(t_sec)
         # Re-polish with quality path (re-decode for polish fidelity)
         bgr, t = read_frame_at(Path(self._media.path), t_sec)
@@ -157,6 +205,15 @@ class MaxQualityEngine(MattingEngine):
         matte_error = None
         try:
             alpha = self._polish(bgr, warmup=True)
+            # If polish somehow emptied a usable Fast matte, fall back to raw Fast alpha.
+            fast_alpha = None
+            if is_matte_empty(alpha) and frame.meta and not frame.meta.get("matte_empty"):
+                try:
+                    fast_alpha = self._base_alpha(bgr)
+                    if not is_matte_empty(fast_alpha):
+                        alpha = fast_alpha
+                except Exception:  # noqa: BLE001
+                    pass
             jpg, png, w, h, src, empty = encode_preview_pair(bgr, alpha)
         except Exception as exc:  # noqa: BLE001
             matte_error = str(exc)[:240]
@@ -165,12 +222,17 @@ class MaxQualityEngine(MattingEngine):
             empty = True
         if alpha is not None and (empty or is_matte_empty(alpha)):
             empty = True
+        info = self.person_matte_info()
         meta = {
             "mode": self.mode.value,
             "matanyone2": self._adapter.available,
+            "matanyone2_active": info["matanyone2_active"],
             "matanyone2_reason": self._status.reason,
+            "person_matte_label_hu": info["person_matte_label_hu"],
+            "person_matte_backend": info["person_matte_backend"],
             "warmup": DEFAULT_WARMUP,
             "user_seed": self._user_seed is not None,
+            "manual_seed_refinement_only": True,
             "fast_meta": frame.meta,
             "matte_empty": empty,
         }
