@@ -227,6 +227,8 @@ export default function App() {
   const brollRef = useRef<HTMLInputElement>(null);
   const scrubTimer = useRef<number | null>(null);
   const toastTimer = useRef<number | null>(null);
+  const seedCommitTimer = useRef<number | null>(null);
+  const seedCommitGen = useRef(0);
   const wipeStageRef = useRef<HTMLDivElement>(null);
   const wipeDragging = useRef(false);
 
@@ -309,16 +311,28 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let dragDepth = 0;
+    const onDragEnter = (e: DragEvent) => {
+      if (!e.dataTransfer?.types?.includes("Files")) return;
+      e.preventDefault();
+      dragDepth += 1;
+      // Empty hero only — never cover a loaded timeline with „Ejtés: klip…”.
+      if (!(status?.media || (status?.timeline?.clips?.length ?? 0) > 0)) {
+        setDragOver(true);
+      }
+    };
     const onDragOver = (e: DragEvent) => {
       if (!e.dataTransfer?.types?.includes("Files")) return;
       e.preventDefault();
-      setDragOver(true);
     };
     const onDragLeave = (e: DragEvent) => {
-      if (e.relatedTarget == null) setDragOver(false);
+      if (!e.dataTransfer?.types?.includes("Files")) return;
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) setDragOver(false);
     };
     const onDrop = (e: DragEvent) => {
       e.preventDefault();
+      dragDepth = 0;
       setDragOver(false);
       const file = e.dataTransfer?.files?.[0];
       if (file && file.type.startsWith("video/")) {
@@ -326,15 +340,22 @@ export default function App() {
         void onUpload(file, append, false);
       }
     };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDragOver(false);
+    };
+    window.addEventListener("dragenter", onDragEnter);
     window.addEventListener("dragover", onDragOver);
     window.addEventListener("dragleave", onDragLeave);
     window.addEventListener("drop", onDrop);
+    window.addEventListener("keydown", onKey);
     return () => {
+      window.removeEventListener("dragenter", onDragEnter);
       window.removeEventListener("dragover", onDragOver);
       window.removeEventListener("dragleave", onDragLeave);
       window.removeEventListener("drop", onDrop);
+      window.removeEventListener("keydown", onKey);
     };
-  }, [status?.timeline?.clips?.length]);
+  }, [status?.timeline?.clips?.length, status?.media]);
 
   const pollBake = useEffectEvent(async () => {
     try {
@@ -642,11 +663,17 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const res = await api.openOutputFolder(status?.last_bake?.out_dir ?? undefined);
+      // Prefer selecting the *_full_nobg.mov (primary deliverable), not alpha/
+      const prefer =
+        status?.last_bake?.prores_mov ?? status?.last_bake?.out_dir ?? undefined;
+      const res = await api.openOutputFolder(prefer);
+      const mov = res.prores_mov || status?.last_bake?.prores_mov;
       setNote(
-        res.opened
-          ? `Kimenet megnyitva: ${res.out_dir}`
-          : `Kimenet mappa: ${res.out_dir}${res.error ? ` (${res.error})` : ""}`,
+        mov
+          ? `MOV megnyitva / kijelölve: ${mov}`
+          : res.opened
+            ? `Kimenet megnyitva: ${res.out_dir}`
+            : `Kimenet mappa: ${res.out_dir}${res.error ? ` (${res.error})` : ""}`,
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -701,7 +728,31 @@ export default function App() {
 
   const commitSeed = async (png: string, opts?: { quiet?: boolean }) => {
     const quiet = !!opts?.quiet;
-    if (!quiet) setBusy(true);
+    // Quiet path (stroke auto-commit): debounce + never block React on sync ORT.
+    if (quiet) {
+      setSeedPng(png);
+      if (seedCommitTimer.current) window.clearTimeout(seedCommitTimer.current);
+      const gen = ++seedCommitGen.current;
+      seedCommitTimer.current = window.setTimeout(() => {
+        void (async () => {
+          try {
+            const st = await api.setSeed(png);
+            if (gen !== seedCommitGen.current) return;
+            setStatus(st);
+            setSeedPng(st.seed_mask_png_b64 ?? png);
+            setNote("Kézi finomítás mentve — auto ember-maszk + festés unió");
+            const frame = await api.preview(tSec);
+            if (gen !== seedCommitGen.current) return;
+            setPreview(frame);
+          } catch (e) {
+            if (gen !== seedCommitGen.current) return;
+            setError(e instanceof Error ? e.message : String(e));
+          }
+        })();
+      }, 280);
+      return;
+    }
+    setBusy(true);
     try {
       const st = await api.setSeed(png);
       setStatus(st);
@@ -711,7 +762,7 @@ export default function App() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      if (!quiet) setBusy(false);
+      setBusy(false);
     }
   };
 
@@ -850,11 +901,7 @@ export default function App() {
 
   return (
     <div className="app">
-      {dragOver ? (
-        <div className="drop-overlay">
-          <strong>Ejtés: klip a timeline-ra</strong>
-        </div>
-      ) : null}
+      {/* Drop overlay only on empty hero — never when timeline has media. */}
 
       <header className="topbar">
         <div className="brand">
@@ -1154,25 +1201,38 @@ export default function App() {
             </div>
           )}
 
-          {status?.last_bake?.preview_mp4 || status?.last_bake?.ok ? (
+          {status?.last_bake?.prores_mov ||
+          status?.last_bake?.preview_mp4 ||
+          status?.last_bake?.ok ? (
             <div className="export-actions">
+              {status?.last_bake?.prores_mov ? (
+                <div className="bake-label" title={status.last_bake.prores_mov}>
+                  Alpha MOV: <code>{status.last_bake.prores_mov}</code>
+                </div>
+              ) : status?.last_bake?.ok === false ? (
+                <div className="bake-label">
+                  Figyelem: nincs *_full_nobg.mov — ellenőrizd az ffmpeg / FFMPEG_PATH-ot.
+                </div>
+              ) : null}
               <a
                 className="preview-link"
                 href="/api/bake/preview.mp4"
                 target="_blank"
                 rel="noreferrer"
-                title="Exportált előnézet MP4 megnyitása."
+                title="Opcionális előnézet MP4 (sakktábla + hang)."
               >
-                HybridCut_preview.mp4
+                {status?.last_bake?.preview_mp4
+                  ? status.last_bake.preview_mp4.split(/[/\\]/).pop()
+                  : "előnézet.mp4"}
                 {status?.last_bake?.bake_range?.audio ? " · hanggal (AAC)" : ""}
               </a>
               <button
                 type="button"
                 className="btn"
                 onClick={() => void onOpenOutput()}
-                title="Kimeneti mappa megnyitása az Explorerben."
+                title="Explorer: kijelöli a *_full_nobg.mov fájlt (elsődleges kimenet)."
               >
-                Megnyitás Explorerben
+                Megnyitás Explorerben (.mov)
               </button>
             </div>
           ) : null}
@@ -1233,7 +1293,7 @@ export default function App() {
                 {viewMode === "compare"
                   ? "Húzd a vonalat a képen — maszk balra, cutout jobbra"
                   : paintOnPreview
-                    ? "Ecset / Radír / Lasszó az Előnézeten · Forrás → Cutout maszk után"
+                    ? "Ecset / Radír / Lasszó / Varázsceruza a képkocka felett · festés a képen"
                     : "Forrás betöltéskor · Előnézet után Cutout, ha van ember-maszk"}
               </p>
             </div>
@@ -1258,117 +1318,133 @@ export default function App() {
             </div>
           </div>
 
-          <div className={`preview-stage ${viewMode === "source" || matteEmpty ? "source-solid" : "checker-subtle"}`}>
-            {toast ? (
-              <div className="preview-toast" role="status">
-                {toast}
-              </div>
-            ) : null}
-            {preview && (singleSrc || (viewMode === "compare" && beforeSrc && afterSrc)) ? (
-              <div className="wipe-wrap">
-                {matteEmpty && viewMode === "mask" ? (
-                  <div className="mask-empty-overlay" role="status">
-                    <p>Nincs ember-maszk — futtasd az Előnézetet</p>
-                    <button
-                      type="button"
-                      className="btn primary"
-                      disabled={locked}
-                      onClick={() => void runPreview(tSec, undefined, undefined, { preferCutout: true })}
-                    >
-                      Előnézet futtatása
-                    </button>
-                  </div>
-                ) : matteEmpty ? (
-                  <div
-                    className="matte-empty-badge"
-                    title="Még nincs hasznos maszk — a forrás képkocka látszik."
-                  >
-                    Nincs ember-maszk — futtasd az Előnézetet
+          {(() => {
+            const stageInner = (
+              <div
+                className={`preview-stage ${viewMode === "source" || matteEmpty ? "source-solid" : "checker-subtle"}`}
+              >
+                {toast ? (
+                  <div className="preview-toast" role="status">
+                    {toast}
                   </div>
                 ) : null}
-                {viewMode === "compare" && beforeSrc && afterSrc ? (
-                  <div className="wipe-compare">
-                    <div className="wipe-labels" aria-hidden>
-                      <span>{matteEmpty ? "Előtte" : "Maszk"}</span>
-                      <span>{matteEmpty ? "Forrás" : "Cutout"}</span>
-                    </div>
-                    <div
-                      ref={wipeStageRef}
-                      className="wipe-stage checker-subtle"
-                      role="slider"
-                      aria-label="Összehasonlítás vonal"
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={Math.round(wipe)}
-                      title="Húzd a vonalat a képen: balra maszk, jobbra cutout."
-                      onPointerDown={onWipePointerDown}
-                      onPointerMove={onWipePointerMove}
-                      onPointerUp={onWipePointerUp}
-                      onPointerCancel={onWipePointerUp}
-                    >
-                      <img
-                        src={`data:${beforeMime};base64,${beforeSrc}`}
-                        alt={matteEmpty ? "Forrás — nincs maszk" : "Alpha maszk"}
-                        className="wipe-base"
-                        draggable={false}
-                      />
-                      <img
-                        src={`data:${afterMime};base64,${afterSrc}`}
-                        alt={matteEmpty ? "Forrás képkocka" : "Cutout"}
-                        className="wipe-fg"
-                        draggable={false}
-                        style={{ clipPath: `inset(0 ${100 - wipe}% 0 0)` }}
-                      />
-                      <div className="wipe-divider" style={{ left: `${wipe}%` }}>
-                        <span className="wipe-handle" aria-hidden />
+                {preview && (singleSrc || (viewMode === "compare" && beforeSrc && afterSrc)) ? (
+                  <div className="wipe-wrap">
+                    {matteEmpty && viewMode === "mask" ? (
+                      <div className="mask-empty-overlay" role="status">
+                        <p>Nincs ember-maszk — futtasd az Előnézetet</p>
+                        <button
+                          type="button"
+                          className="btn primary"
+                          disabled={locked}
+                          onClick={() =>
+                            void runPreview(tSec, undefined, undefined, { preferCutout: true })
+                          }
+                        >
+                          Előnézet futtatása
+                        </button>
                       </div>
-                    </div>
+                    ) : matteEmpty ? (
+                      <div
+                        className="matte-empty-badge"
+                        title="Még nincs hasznos maszk — a forrás képkocka látszik."
+                      >
+                        Nincs ember-maszk — futtasd az Előnézetet
+                      </div>
+                    ) : null}
+                    {viewMode === "compare" && beforeSrc && afterSrc ? (
+                      <div className="wipe-compare">
+                        <div className="wipe-labels" aria-hidden>
+                          <span>{matteEmpty ? "Előtte" : "Maszk"}</span>
+                          <span>{matteEmpty ? "Forrás" : "Cutout"}</span>
+                        </div>
+                        <div
+                          ref={wipeStageRef}
+                          className="wipe-stage checker-subtle"
+                          role="slider"
+                          aria-label="Összehasonlítás vonal"
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                          aria-valuenow={Math.round(wipe)}
+                          title="Húzd a vonalat a képen: balra maszk, jobbra cutout."
+                          onPointerDown={onWipePointerDown}
+                          onPointerMove={onWipePointerMove}
+                          onPointerUp={onWipePointerUp}
+                          onPointerCancel={onWipePointerUp}
+                        >
+                          <img
+                            src={`data:${beforeMime};base64,${beforeSrc}`}
+                            alt={matteEmpty ? "Forrás — nincs maszk" : "Alpha maszk"}
+                            className="wipe-base"
+                            draggable={false}
+                          />
+                          <img
+                            src={`data:${afterMime};base64,${afterSrc}`}
+                            alt={matteEmpty ? "Forrás képkocka" : "Cutout"}
+                            className="wipe-fg"
+                            draggable={false}
+                            style={{ clipPath: `inset(0 ${100 - wipe}% 0 0)` }}
+                          />
+                          <div className="wipe-divider" style={{ left: `${wipe}%` }}>
+                            <span className="wipe-handle" aria-hidden />
+                          </div>
+                        </div>
+                      </div>
+                    ) : singleSrc ? (
+                      <img
+                        className="preview-cutout"
+                        src={`data:${singleMime};base64,${singleSrc}`}
+                        alt={
+                          viewMode === "source"
+                            ? "Forrás képkocka"
+                            : viewMode === "mask"
+                              ? "Maszk nézet"
+                              : "Cutout előnézet"
+                        }
+                      />
+                    ) : null}
+                    {!paintOnPreview && seedPng && mode === "max" && viewMode !== "mask" ? (
+                      <img
+                        className="seed-overlay-preview"
+                        src={
+                          seedPng.startsWith("data:")
+                            ? seedPng
+                            : `data:image/png;base64,${seedPng}`
+                        }
+                        alt=""
+                        aria-hidden
+                      />
+                    ) : null}
                   </div>
-                ) : singleSrc ? (
-                  <img
-                    className="preview-cutout"
-                    src={`data:${singleMime};base64,${singleSrc}`}
-                    alt={
-                      viewMode === "source"
-                        ? "Forrás képkocka"
-                        : viewMode === "mask"
-                          ? "Maszk nézet"
-                          : "Cutout előnézet"
-                    }
-                  />
-                ) : null}
-                {paintOnPreview ? (
-                  <SeedPaint
-                    variant="overlay"
-                    autoCommitOnStrokeEnd
-                    imageJpegB64={preview?.source_jpeg_b64 || preview?.jpeg_b64 || null}
-                    initialMaskPngB64={seedPng}
-                    width={preview?.width ?? 480}
-                    height={preview?.height ?? 360}
-                    disabled={!!status?.bake_running || !!status?.analyse_running || !preview}
-                    onCommit={(png) => void commitSeed(png, { quiet: true })}
-                    onClear={() => void clearSeedMask()}
-                  />
-                ) : seedPng && mode === "max" && viewMode !== "mask" ? (
-                  <img
-                    className="seed-overlay-preview"
-                    src={
-                      seedPng.startsWith("data:")
-                        ? seedPng
-                        : `data:image/png;base64,${seedPng}`
-                    }
-                    alt=""
-                    aria-hidden
-                  />
-                ) : null}
+                ) : (
+                  <div className="preview-empty">
+                    <h3>Scrub az idővonalon</h3>
+                    <p>
+                      Előtöltés + MaszkTár adja az élő érzést. A kézi maszk scrub után is megmarad.
+                    </p>
+                  </div>
+                )}
               </div>
-            ) : (
-              <div className="preview-empty">
-                <h3>Scrub az idővonalon</h3>
-                <p>Előtöltés + MaszkTár adja az élő érzést. A kézi maszk scrub után is megmarad.</p>
-              </div>
-            )}
-          </div>
+            );
+
+            if (paintOnPreview) {
+              return (
+                <SeedPaint
+                  variant="docked"
+                  autoCommitOnStrokeEnd
+                  imageJpegB64={preview?.source_jpeg_b64 || preview?.jpeg_b64 || null}
+                  initialMaskPngB64={seedPng}
+                  width={preview?.width ?? 480}
+                  height={preview?.height ?? 360}
+                  disabled={!!status?.bake_running || !!status?.analyse_running || !preview}
+                  onCommit={(png) => void commitSeed(png, { quiet: true })}
+                  onClear={() => void clearSeedMask()}
+                  frame={stageInner}
+                />
+              );
+            }
+            return stageInner;
+          })()}
 
           {clips.length > 0 && (
             <TimelineTrack
@@ -1420,8 +1496,11 @@ export default function App() {
               {showLargeSeed ? "Nagy seed panel elrejtése" : "Nagy seed panel"}
             </button>
             {paintOnPreview ? (
-              <span className="seed-toggle-hint" title="Ecset / Radír / Lasszó az Előnézet tetején.">
-                Kézi finomítás: az Előnézeten
+              <span
+                className="seed-toggle-hint"
+                title="Ecset / Radír / Lasszó / Varázsceruza a képkocka feletti sávon — nem a videó pixelein."
+              >
+                Kézi finomítás: eszközsáv a képkocka felett
               </span>
             ) : null}
           </div>

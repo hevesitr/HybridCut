@@ -831,6 +831,59 @@ input {
   animation: tl-fade 0.35s ease both;
 }
 
+/* Tools/actions outside the video pixels; mask canvas overlays the frame only. */
+.seed-paint--docked {
+  margin: 0;
+  padding: 0;
+  border: none;
+  animation: none;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.seed-paint--docked .seed-tools,
+.seed-paint--docked .seed-actions {
+  margin-bottom: 0;
+  justify-self: start;
+  flex-wrap: wrap;
+}
+
+.seed-paint--docked .seed-tools {
+  padding: 0.35rem 0.45rem;
+  border-radius: 10px;
+  border: 1px solid rgba(47, 212, 161, 0.28);
+  background: rgba(8, 18, 14, 0.72);
+}
+
+.seed-paint--docked .seed-actions {
+  padding: 0.25rem 0;
+}
+
+.seed-frame {
+  position: relative;
+  min-width: 0;
+}
+
+.seed-frame .preview-stage {
+  position: relative;
+}
+
+.seed-frame .seed-mask {
+  position: absolute;
+  z-index: 6;
+  cursor: crosshair;
+  touch-action: none;
+  pointer-events: auto;
+}
+
+.seed-hint--docked {
+  margin: 0;
+  font-size: 0.7rem;
+  color: var(--mist);
+  line-height: 1.35;
+}
+
+/* Legacy overlay (removed from App) — keep harmless if cached HTML references it */
 .seed-paint--overlay {
   position: absolute;
   inset: 0;

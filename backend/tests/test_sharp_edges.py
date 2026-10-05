@@ -187,9 +187,10 @@ def test_max_bake_writes_full_res_alpha(tmp_path: Path):
     out = tmp_path / "bake"
     res = eng.bake(out, max_frames=3)
     assert res.ok
-    a0 = cv2.imread(str(out / "alpha" / "000000.png"), cv2.IMREAD_GRAYSCALE)
-    assert a0 is not None
-    assert a0.shape == (h, w)
+    assert res.prores_mov and Path(res.prores_mov).is_file()
+    assert Path(res.prores_mov).name.endswith("_full_nobg.mov")
+    # Optional debug dumps stay off — full-res alpha lives in the MOV
+    assert not (out / "alpha").exists() or not any((out / "alpha").glob("*.png"))
     assert res.bake_range and res.bake_range.get("full_res_alpha") is True
 
 

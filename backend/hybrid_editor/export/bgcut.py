@@ -52,3 +52,14 @@ def ensure_bgcut_dir(out_dir: Path | None = None) -> Path:
     d = Path(out_dir) if out_dir is not None else default_bgcut_dir()
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def dump_alpha_frames_enabled() -> bool:
+    """Optional debug PNG dumps under ``alpha/`` — off by default (MOV is primary)."""
+    raw = (os.environ.get("HYBRID_BGCUT_DUMP_ALPHA") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def alpha_dump_dir(out_dir: Path | None = None) -> Path:
+    """Secondary debug folder: ``{bgcut}/alpha/`` (not the deliverable)."""
+    return ensure_bgcut_dir(out_dir) / "alpha"

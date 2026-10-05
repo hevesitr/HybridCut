@@ -557,8 +557,12 @@ class EditorSession:
 
         assert self.timeline is not None
         out_dir = Path(out_dir)
-        alpha_dir = out_dir / "alpha"
-        alpha_dir.mkdir(parents=True, exist_ok=True)
+        from hybrid_editor.export.bgcut import alpha_dump_dir, dump_alpha_frames_enabled
+
+        dump_alpha = dump_alpha_frames_enabled()
+        alpha_dir = alpha_dump_dir(out_dir) if dump_alpha else None
+        if alpha_dir is not None:
+            alpha_dir.mkdir(parents=True, exist_ok=True)
         fps = float(self.timeline.fps) or 25.0
         dur = self.timeline.duration_sec()
         step = 1.0 / fps
@@ -603,7 +607,8 @@ class EditorSession:
                 except Exception:  # noqa: BLE001
                     pass
             a8 = (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
-            cv2.imwrite(str(alpha_dir / f"{written:06d}.png"), a8)
+            if alpha_dir is not None:
+                cv2.imwrite(str(alpha_dir / f"{written:06d}.png"), a8)
             frames_bgr.append(bgr)
             frames_alpha.append(alpha.astype(np.float32))
             written += 1
@@ -661,18 +666,23 @@ class EditorSession:
         n_broll = len(self.timeline.clips_on(1))
         audio_note = " · audio AAC" if audio_ok else ""
         broll_note = f" · {n_broll} B-roll" if n_broll else ""
-        mov_note = f" · {Path(prores).name}" if prores else ""
+        mov_note = f" · {prores}" if prores else " · HIÁNYZIK: *_full_nobg.mov"
+        msg_core = (
+            f"Kész: {Path(prores).name}" if prores else "SIKERTELEN: nincs *_full_nobg.mov (ffmpeg?)"
+        )
         return BakeResult(
-            ok=written > 0,
+            ok=written > 0 and bool(prores),
             out_dir=str(out_dir.resolve()),
             frames_written=written,
             engine=self.engine.capabilities().name,
             backend=self.engine.capabilities().backend,
             message=(
-                f"Multi-clip timeline bake: {written} frames · "
+                f"{msg_core} · multi-clip {written} frame · "
                 f"{len(self.timeline.clips)} clips{broll_note}{audio_note}{mov_note}"
             ),
-            alpha_preview=str(alpha_dir / "000000.png") if written else None,
+            alpha_preview=(
+                str(alpha_dir / "000000.png") if alpha_dir is not None and written else None
+            ),
             preview_mp4=companion or preview_mp4,
             prores_mov=prores,
             bake_range={
@@ -683,46 +693,76 @@ class EditorSession:
                 "broll": n_broll,
                 "audio": audio_ok,
                 "max_frames_cap": max_frames,
+                "mov_path": prores,
             },
         )
 
     def open_output_folder(self, out_dir: Optional[str] = None) -> dict[str, Any]:
-        """Reveal last bake (or given) folder in the OS file manager."""
+        """Reveal last bake ``*_full_nobg.mov`` (prefer file select) or output folder."""
         with self._lock:
-            path: Optional[Path] = None
+            folder: Optional[Path] = None
+            reveal: Optional[Path] = None
             if out_dir:
-                path = Path(out_dir).expanduser()
-            elif self.last_bake and self.last_bake.out_dir:
-                path = Path(self.last_bake.out_dir)
-            else:
+                cand = Path(out_dir).expanduser()
+                if cand.is_file():
+                    reveal = cand
+                    folder = cand.parent
+                else:
+                    folder = cand
+            elif self.last_bake:
+                if self.last_bake.prores_mov:
+                    reveal = Path(self.last_bake.prores_mov)
+                    folder = reveal.parent
+                elif self.last_bake.preview_mp4:
+                    reveal = Path(self.last_bake.preview_mp4)
+                    folder = reveal.parent
+                elif self.last_bake.out_dir:
+                    folder = Path(self.last_bake.out_dir)
+            if folder is None:
                 from hybrid_editor.export.bgcut import default_bgcut_dir
 
-                path = default_bgcut_dir()
-            path = path.resolve()
-            if not path.exists():
-                path.mkdir(parents=True, exist_ok=True)
+                folder = default_bgcut_dir()
+            folder = folder.resolve()
+            if not folder.exists():
+                folder.mkdir(parents=True, exist_ok=True)
+            if reveal is not None:
+                reveal = reveal.resolve()
             opened = False
             error: Optional[str] = None
             try:
                 if sys.platform.startswith("win"):
-                    os.startfile(str(path))  # type: ignore[attr-defined]
-                    opened = True
+                    if reveal is not None and reveal.is_file():
+                        # Select the .mov in Explorer — primary deliverable
+                        subprocess.run(
+                            ["explorer", f"/select,{reveal}"],
+                            check=False,
+                            timeout=15,
+                        )
+                        opened = True
+                    else:
+                        os.startfile(str(folder))  # type: ignore[attr-defined]
+                        opened = True
                 elif sys.platform == "darwin":
-                    subprocess.run(["open", str(path)], check=False, timeout=15)
+                    if reveal is not None and reveal.is_file():
+                        subprocess.run(["open", "-R", str(reveal)], check=False, timeout=15)
+                    else:
+                        subprocess.run(["open", str(folder)], check=False, timeout=15)
                     opened = True
                 else:
                     opener = "xdg-open"
+                    target = str(reveal if reveal is not None and reveal.is_file() else folder)
                     if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
-                        subprocess.run([opener, str(path)], check=False, timeout=15)
+                        subprocess.run([opener, target], check=False, timeout=15)
                         opened = True
                     else:
-                        error = "No display — folder path returned only"
+                        error = "No display — path returned only"
             except Exception as exc:  # noqa: BLE001
                 error = str(exc)
             return {
                 "ok": True,
                 "opened": opened,
-                "out_dir": str(path),
+                "out_dir": str(folder),
+                "prores_mov": str(reveal) if reveal is not None else None,
                 "error": error,
             }
 

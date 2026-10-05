@@ -369,8 +369,12 @@ class MaxQualityEngine(MattingEngine):
         if self._media is None:
             raise RuntimeError("No media open")
         out_dir = Path(out_dir)
-        alpha_dir = out_dir / "alpha"
-        alpha_dir.mkdir(parents=True, exist_ok=True)
+        from hybrid_editor.export.bgcut import alpha_dump_dir, dump_alpha_frames_enabled
+
+        dump_alpha = dump_alpha_frames_enabled()
+        alpha_dir = alpha_dump_dir(out_dir) if dump_alpha else None
+        if alpha_dir is not None:
+            alpha_dir.mkdir(parents=True, exist_ok=True)
 
         if self._adapter.available:
             try:
@@ -391,7 +395,7 @@ class MaxQualityEngine(MattingEngine):
     def _bake_quality_pipeline(
         self,
         out_dir: Path,
-        alpha_dir: Path,
+        alpha_dir: Path | None,
         *,
         max_frames: Optional[int],
         progress: Optional[ProgressCb],
@@ -450,7 +454,8 @@ class MaxQualityEngine(MattingEngine):
                         despill=float(BEST_SPEC.despill),
                     )
                 a8 = (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
-                cv2.imwrite(str(alpha_dir / f"{idx:06d}.png"), a8)
+                if alpha_dir is not None:
+                    cv2.imwrite(str(alpha_dir / f"{idx:06d}.png"), a8)
                 # preview.mp4 may use a display proxy; ProRes / sharp export keeps full-res BGRA.
                 preview_long = 1080 if self.sharp_edges else 720
                 proxy = downscale_long_side(cut_bgr, preview_long)
@@ -510,21 +515,24 @@ class MaxQualityEngine(MattingEngine):
 
         audio_note = " · audio AAC" if audio_ok else ""
         sharp_note = " · éles szélek" if self.sharp_edges else ""
-        mov_note = f" · {Path(prores).name}" if prores else ""
+        mov_note = f" · {prores}" if prores else " · HIÁNYZIK: *_full_nobg.mov"
         dur_note = f" · {end_t - start_t:.2f}s / {written} frame"
         weights = self._fast.capabilities().weights_path
         w_note = f" · {Path(weights).name}" if weights else ""
+        msg_core = (
+            f"Kész: {Path(prores).name}" if prores else "SIKERTELEN: nincs *_full_nobg.mov (ffmpeg?)"
+        )
         return BakeResult(
-            ok=written > 0,
+            ok=written > 0 and bool(prores),
             out_dir=str(out_dir.resolve()),
             frames_written=written,
             engine="MaxQualityEngine",
             backend=self._backend,
             message=(
-                f"Quality pipeline wrote {written} frames + preview{audio_note}"
-                f"{sharp_note}{mov_note}{dur_note}{w_note} (full-res alpha · {self._backend})"
+                f"{msg_core} · {written} frame{audio_note}"
+                f"{sharp_note}{mov_note}{dur_note}{w_note} (full-res · {self._backend})"
             ),
-            alpha_preview=str(alpha_dir / "000000.png") if written else None,
+            alpha_preview=(str(alpha_dir / "000000.png") if alpha_dir is not None and written else None),
             preview_mp4=preview_mp4,
             prores_mov=prores,
             bake_range={
@@ -537,13 +545,14 @@ class MaxQualityEngine(MattingEngine):
                 "color_polish": bool(self.sharp_edges),
                 "duration_sec": end_t - start_t,
                 "max_frames_cap": max_frames,
+                "mov_path": prores,
             },
         )
 
     def _bake_matanyone2(
         self,
         out_dir: Path,
-        alpha_dir: Path,
+        alpha_dir: Path | None,
         *,
         max_frames: Optional[int],
         progress: Optional[ProgressCb],
@@ -629,7 +638,8 @@ class MaxQualityEngine(MattingEngine):
                     despill=float(BEST_SPEC.despill),
                 )
             a8 = (np.clip(aa, 0, 1) * 255).astype(np.uint8)
-            cv2.imwrite(str(alpha_dir / f"{i:06d}.png"), a8)
+            if alpha_dir is not None:
+                cv2.imwrite(str(alpha_dir / f"{i:06d}.png"), a8)
             a = aa  # for proxy resize below
             proxy = downscale_long_side(frames_bgr[i], 720)
             a_p = cv2.resize(a8.astype(np.float32) / 255.0, (proxy.shape[1], proxy.shape[0]))
@@ -675,18 +685,22 @@ class MaxQualityEngine(MattingEngine):
 
         audio_ok = bool(preview_mp4) and media_has_audio(preview_mp4)
         audio_note = " · audio AAC" if audio_ok else ""
-        mov_note = f" · {Path(prores).name}" if prores else ""
+        mov_note = f" · {prores}" if prores else " · HIÁNYZIK: *_full_nobg.mov"
+        msg_core = (
+            f"Kész: {Path(prores).name}" if prores else "SIKERTELEN: nincs *_full_nobg.mov (ffmpeg?)"
+        )
         return BakeResult(
-            ok=True,
+            ok=bool(prores),
             out_dir=str(out_dir.resolve()),
             frames_written=len(alphas),
             engine="MaxQualityEngine",
             backend="matanyone2-adapter",
             message=(
-                f"MatAnyone2 adapter wrote {len(alphas)} frames + preview{audio_note}"
-                f"{mov_note} (S-Lab NC, local)"
+                f"{msg_core} · {len(alphas)} frame{audio_note}{mov_note} (S-Lab NC, local)"
             ),
-            alpha_preview=str(alpha_dir / "000000.png"),
+            alpha_preview=(
+                str(alpha_dir / "000000.png") if alpha_dir is not None and alphas else None
+            ),
             preview_mp4=preview_mp4,
             prores_mov=prores,
             bake_range={
@@ -695,5 +709,6 @@ class MaxQualityEngine(MattingEngine):
                 "audio": audio_ok,
                 "duration_sec": end_t - start_t,
                 "max_frames_cap": max_frames,
+                "mov_path": prores,
             },
         )

@@ -51,8 +51,10 @@ def _checker_composite(bgr: np.ndarray, alpha: np.ndarray) -> np.ndarray:
 
 def media_has_audio(path: Path | str) -> bool:
     """Best-effort probe: True if ffmpeg sees an audio stream."""
-    ffmpeg = shutil.which("ffmpeg")
-    ffprobe = shutil.which("ffprobe")
+    from hybrid_editor.export.ffmpeg_bin import resolve_ffmpeg
+
+    ffmpeg = resolve_ffmpeg("ffmpeg")
+    ffprobe = resolve_ffmpeg("ffprobe")
     p = Path(path)
     if not p.is_file():
         return False
@@ -98,7 +100,9 @@ def mux_audio_onto_video(
     Multi segment: build a silent bed + delayed overlays, then mux.
     Returns out_path on success, None if ffmpeg missing / no usable audio.
     """
-    ffmpeg = shutil.which("ffmpeg")
+    from hybrid_editor.export.ffmpeg_bin import resolve_ffmpeg
+
+    ffmpeg = resolve_ffmpeg("ffmpeg")
     if not ffmpeg:
         return None
     video_path = Path(video_path)
@@ -271,7 +275,9 @@ def write_preview_mp4(
     finally:
         writer.release()
 
-    ffmpeg = shutil.which("ffmpeg")
+    from hybrid_editor.export.ffmpeg_bin import resolve_ffmpeg
+
+    ffmpeg = resolve_ffmpeg("ffmpeg")
     silent = out_path.with_suffix(".silent.mp4")
     encoded: Optional[Path] = None
     if ffmpeg:
@@ -358,49 +364,139 @@ def write_windows_companion(
         return str(src.resolve())
 
 
-def try_prores_alpha(
+def _uniform_bgra_size(frames_bgra: list[np.ndarray]) -> tuple[int, int, list[np.ndarray]]:
+    """Force all frames to the first frame's HxW (BGRA uint8)."""
+    h, w = frames_bgra[0].shape[:2]
+    out: list[np.ndarray] = []
+    for fr in frames_bgra:
+        if fr.ndim != 3 or fr.shape[2] < 4:
+            raise ValueError(f"BGRA frame invalid: shape={getattr(fr, 'shape', None)}")
+        if fr.shape[0] != h or fr.shape[1] != w:
+            fr = cv2.resize(fr, (w, h), interpolation=cv2.INTER_AREA)
+        if fr.dtype != np.uint8:
+            fr = np.clip(fr, 0, 255).astype(np.uint8)
+        if not fr.flags["C_CONTIGUOUS"] or fr.shape[2] != 4:
+            bgra = np.empty((h, w, 4), dtype=np.uint8)
+            bgra[:, :, :3] = fr[:, :, :3]
+            bgra[:, :, 3] = fr[:, :, 3] if fr.shape[2] >= 4 else 255
+            fr = bgra
+        out.append(fr)
+    return w, h, out
+
+
+def _pipe_bgra_mov(
     frames_bgra: list[np.ndarray],
     out_path: Path,
     *,
-    fps: float = 25.0,
+    fps: float,
+    ffmpeg: str,
+    vcodec_args: list[str],
+    label: str,
 ) -> Optional[str]:
-    """Best-effort ProRes 4444 with alpha (Videoeditor ``*_full_nobg.mov``).
-
-    Falls back to qtrle/png QuickTime Animation when ProRes mux is unavailable.
-    """
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg or not frames_bgra:
+    """Stream raw BGRA frames into ffmpeg (Videoeditor ``*_full_nobg.mov`` path)."""
+    if not frames_bgra:
         return None
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    seq = out_path.parent / "_prores_seq"
+    if out_path.is_file():
+        try:
+            out_path.unlink()
+        except OSError:
+            pass
+    w, h, frames = _uniform_bgra_size(frames_bgra)
+    n = len(frames)
+    timeout = max(180.0, 2.5 * n + 90.0)
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "bgra",
+        "-s",
+        f"{w}x{h}",
+        "-r",
+        str(float(fps) or 25.0),
+        "-i",
+        "-",
+        "-an",
+        *vcodec_args,
+        "-f",
+        "mov",
+        str(out_path),
+    ]
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert proc.stdin is not None
+        try:
+            for fr in frames:
+                proc.stdin.write(fr.tobytes())
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
+        try:
+            _stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate(timeout=15)
+            logger.info("%s alpha MOV timed out after %.0fs", label, timeout)
+            return None
+        if proc.returncode != 0:
+            err = (stderr or b"").decode("utf-8", errors="replace")[-500:]
+            logger.info("%s alpha MOV failed: %s", label, err)
+            return None
+        if out_path.is_file() and out_path.stat().st_size > 256:
+            return str(out_path.resolve())
+    except Exception as exc:  # noqa: BLE001
+        logger.info("%s alpha MOV unavailable (%s)", label, exc)
+    return None
+
+
+def _png_seq_mov(
+    frames_bgra: list[np.ndarray],
+    out_path: Path,
+    *,
+    fps: float,
+    ffmpeg: str,
+    vcodec_args: list[str],
+    label: str,
+) -> Optional[str]:
+    """Fallback: write PNG sequence then mux (when raw pipe is awkward)."""
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    seq = out_path.parent / f"_{label}_seq"
     seq.mkdir(parents=True, exist_ok=True)
     n = len(frames_bgra)
     timeout = max(180.0, 2.0 * n + 60.0)
-    ok = False
     try:
         for i, bgra in enumerate(frames_bgra):
             cv2.imwrite(str(seq / f"{i:06d}.png"), bgra)
         cmd = [
             ffmpeg,
             "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
             "-framerate",
             str(float(fps) or 25.0),
             "-i",
             str(seq / "%06d.png"),
-            "-c:v",
-            "prores_ks",
-            "-profile:v",
-            "4444",
-            "-pix_fmt",
-            "yuva444p10le",
+            *vcodec_args,
             str(out_path),
         ]
         subprocess.run(cmd, check=True, capture_output=True, timeout=timeout)
-        ok = out_path.is_file() and out_path.stat().st_size > 0
+        if out_path.is_file() and out_path.stat().st_size > 256:
+            return str(out_path.resolve())
     except Exception as exc:  # noqa: BLE001
-        logger.info("ProRes alpha export unavailable (%s) — trying qtrle fallback", exc)
-        ok = False
+        logger.info("%s PNG-seq alpha MOV unavailable (%s)", label, exc)
     finally:
         for p in seq.glob("*.png"):
             p.unlink(missing_ok=True)
@@ -408,9 +504,84 @@ def try_prores_alpha(
             seq.rmdir()
         except OSError:
             pass
-    if ok:
-        return str(out_path.resolve())
-    return try_qtrle_alpha(frames_bgra, out_path, fps=fps)
+    return None
+
+
+def try_prores_alpha(
+    frames_bgra: list[np.ndarray],
+    out_path: Path,
+    *,
+    fps: float = 25.0,
+) -> Optional[str]:
+    """Mux Videoeditor-style ``*_full_nobg.mov`` (ProRes → qtrle → png).
+
+    Uses robust ffmpeg resolution (not PATH-only) and raw BGRA pipe like CapCut export.
+    """
+    from hybrid_editor.export.ffmpeg_bin import resolve_ffmpeg
+
+    ffmpeg = resolve_ffmpeg("ffmpeg")
+    if not ffmpeg or not frames_bgra:
+        if not frames_bgra:
+            return None
+        logger.warning(
+            "FFmpeg not found — cannot write *_full_nobg.mov (alpha PNG dumps alone are not the deliverable). "
+            "Install ffmpeg or set FFMPEG_PATH."
+        )
+        return None
+
+    out_path = Path(out_path)
+    # 1) ProRes 4444 (best match to Videoeditor CapCut export)
+    prores_args = [
+        "-c:v",
+        "prores_ks",
+        "-profile:v",
+        "4444",
+        "-pix_fmt",
+        "yuva444p10le",
+        "-vendor",
+        "apl0",
+        "-alpha_bits",
+        "16",
+    ]
+    got = _pipe_bgra_mov(
+        frames_bgra, out_path, fps=fps, ffmpeg=ffmpeg, vcodec_args=prores_args, label="ProRes"
+    )
+    if got:
+        return got
+    got = _png_seq_mov(
+        frames_bgra, out_path, fps=fps, ffmpeg=ffmpeg, vcodec_args=prores_args, label="prores"
+    )
+    if got:
+        return got
+
+    # 2) QuickTime Animation
+    qtrle_args = ["-c:v", "qtrle", "-pix_fmt", "argb"]
+    got = _pipe_bgra_mov(
+        frames_bgra, out_path, fps=fps, ffmpeg=ffmpeg, vcodec_args=qtrle_args, label="qtrle"
+    )
+    if got:
+        return got
+    got = _png_seq_mov(
+        frames_bgra, out_path, fps=fps, ffmpeg=ffmpeg, vcodec_args=qtrle_args, label="qtrle"
+    )
+    if got:
+        return got
+
+    # 3) PNG codec inside MOV (true alpha, widely supported by VLC/CapCut)
+    png_args = ["-c:v", "png", "-pix_fmt", "rgba"]
+    got = _pipe_bgra_mov(
+        frames_bgra, out_path, fps=fps, ffmpeg=ffmpeg, vcodec_args=png_args, label="png"
+    )
+    if got:
+        return got
+    got = _png_seq_mov(
+        frames_bgra, out_path, fps=fps, ffmpeg=ffmpeg, vcodec_args=png_args, label="png"
+    )
+    if got:
+        return got
+
+    logger.warning("All alpha MOV mux attempts failed for %s", out_path)
+    return None
 
 
 def try_qtrle_alpha(
@@ -420,44 +591,20 @@ def try_qtrle_alpha(
     fps: float = 25.0,
 ) -> Optional[str]:
     """Fallback QuickTime Animation (qtrle) alpha MOV when ProRes mux is hard."""
-    ffmpeg = shutil.which("ffmpeg")
+    from hybrid_editor.export.ffmpeg_bin import resolve_ffmpeg
+
+    ffmpeg = resolve_ffmpeg("ffmpeg")
     if not ffmpeg or not frames_bgra:
         return None
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    seq = out_path.parent / "_qtrle_seq"
-    seq.mkdir(parents=True, exist_ok=True)
-    n = len(frames_bgra)
-    timeout = max(120.0, 1.5 * n + 45.0)
-    try:
-        for i, bgra in enumerate(frames_bgra):
-            cv2.imwrite(str(seq / f"{i:06d}.png"), bgra)
-        cmd = [
-            ffmpeg,
-            "-y",
-            "-framerate",
-            str(float(fps) or 25.0),
-            "-i",
-            str(seq / "%06d.png"),
-            "-c:v",
-            "qtrle",
-            "-pix_fmt",
-            "argb",
-            str(out_path),
-        ]
-        subprocess.run(cmd, check=True, capture_output=True, timeout=timeout)
-        if out_path.is_file() and out_path.stat().st_size > 0:
-            return str(out_path.resolve())
-    except Exception as exc:  # noqa: BLE001
-        logger.info("qtrle alpha export unavailable (%s)", exc)
-    finally:
-        for p in seq.glob("*.png"):
-            p.unlink(missing_ok=True)
-        try:
-            seq.rmdir()
-        except OSError:
-            pass
-    return None
+    qtrle_args = ["-c:v", "qtrle", "-pix_fmt", "argb"]
+    got = _pipe_bgra_mov(
+        frames_bgra, out_path, fps=fps, ffmpeg=ffmpeg, vcodec_args=qtrle_args, label="qtrle"
+    )
+    if got:
+        return got
+    return _png_seq_mov(
+        frames_bgra, out_path, fps=fps, ffmpeg=ffmpeg, vcodec_args=qtrle_args, label="qtrle"
+    )
 
 
 def finalize_bgcut_exports(
@@ -471,23 +618,26 @@ def finalize_bgcut_exports(
 ) -> tuple[Optional[str], Optional[str]]:
     """Write Videoeditor-style ``{stem}_full_nobg.mov`` + companion preview.
 
-    Returns ``(prores_or_qtrle_mov, companion_preview_mp4)``.
+    Returns ``(prores_or_qtrle_or_png_mov, companion_preview_mp4)``.
+    Primary deliverable is the ``.mov`` — not ``alpha/*.png``.
     """
     from hybrid_editor.export.bgcut import ensure_bgcut_dir, nobg_mov_path, nobg_preview_path, nobg_stem
 
     out_dir = ensure_bgcut_dir(out_dir)
     mov = nobg_mov_path(media_stem, out_dir=out_dir, scope=scope)
     prores = try_prores_alpha(frames_bgra, mov, fps=fps) if frames_bgra else None
+    if frames_bgra and not prores:
+        logger.error(
+            "PRIMARY OUTPUT MISSING: failed to write %s — only debug alpha dumps may exist",
+            mov,
+        )
     # Companion preview next to the MOV (Videoeditor open-output pattern)
     companion_stem = f"{nobg_stem(media_stem, scope)}_preview"
-    # write_windows_companion appends .mp4 — pass stem without extension suffix handling
-    # nobg_preview_path is `{stem}_full_nobg_preview.mp4`; companion uses stem without .mp4
     companion = write_windows_companion(
         preview_mp4,
         out_dir,
         stem=companion_stem,
     )
-    # Prefer canonical preview path name
     expected = nobg_preview_path(media_stem, out_dir=out_dir, scope=scope)
     if companion and Path(companion).is_file() and Path(companion).resolve() != expected.resolve():
         try:

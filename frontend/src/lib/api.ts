@@ -261,7 +261,7 @@ export const api = {
       mode: string;
     }>("/api/bake/progress"),
   openOutputFolder: (out_dir?: string) =>
-    json<{ ok: boolean; opened: boolean; out_dir: string; error: string | null }>(
+    json<{ ok: boolean; opened: boolean; out_dir: string; prores_mov?: string | null; error: string | null }>(
       "/api/export/open-folder",
       { method: "POST", body: JSON.stringify({ out_dir: out_dir ?? null }) },
     ),

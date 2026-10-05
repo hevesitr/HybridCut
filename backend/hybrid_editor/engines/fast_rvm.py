@@ -367,6 +367,8 @@ class _OrtRvmSession:
                 raise
         self.provider = self.session.get_providers()[0]
         self._r1 = self._r2 = self._r3 = self._r4 = None
+        # Last (src_h, src_w, downsample) used for recurrent — never reuse across sizes.
+        self._rec_key: Optional[tuple[int, int, float]] = None
         self.model_path = model_path
         self.input_dtype = resolve_rvm_input_dtype(self.session, model_path)
         # If CUDA was requested but session fell back to CPU, release slot
@@ -382,6 +384,7 @@ class _OrtRvmSession:
 
     def reset(self) -> None:
         self._r1 = self._r2 = self._r3 = self._r4 = None
+        self._rec_key = None
 
     def close(self) -> None:
         self.reset()
@@ -390,22 +393,53 @@ class _OrtRvmSession:
             release_cuda("fast-ort")
             self._uses_cuda = False
 
+    @staticmethod
+    def _is_expand_broadcast_error(exc: BaseException) -> bool:
+        """ORT Expand / broadcast failures from mismatched recurrent spatial dims."""
+        msg = str(exc).lower()
+        return (
+            "expand" in msg
+            or "cannot broadcast" in msg
+            or "broadcast" in msg
+            or ("shape" in msg and ("mismatch" in msg or "incompatible" in msg))
+        )
+
+    def _zero_recurrent_feeds(
+        self, feeds: dict[str, Any], inputs: dict[str, Any], dtype: np.dtype
+    ) -> None:
+        for name in ("r1i", "r2i", "r3i", "r4i"):
+            if name in inputs:
+                shape = [d if isinstance(d, int) else 1 for d in inputs[name].shape]
+                feeds[name] = np.zeros(shape, dtype=dtype)
+
     def matte(self, bgr: np.ndarray, downsample: float = 0.25) -> np.ndarray:
+        """Run RVM on one frame.
+
+        Passes **full-resolution** ``src`` + ``downsample_ratio`` (RVM-native), matching
+        CapCut Videoeditor ``matting/rvm_onnx.py``. Recurrent ``r1..r4`` are sized for the
+        model's internal spatial grid — reusing them after H/W or ratio changes causes
+        ``Expand_* cannot broadcast`` (e.g. 26×45 vs 51×90). Always reset on size change.
+        """
         if self.session is None:
             raise RuntimeError("ORT session closed")
         dtype = self.input_dtype
-        # Resize in float32 for OpenCV, cast to model dtype before ORT.
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         h, w = rgb.shape[:2]
-        if downsample < 1.0:
-            nh, nw = max(1, int(h * downsample)), max(1, int(w * downsample))
-            nh, nw = nh - nh % 4, nw - nw % 4
-            nh, nw = max(4, nh), max(4, nw)
-            src = cv2.resize(rgb, (nw, nh), interpolation=cv2.INTER_AREA)
-        else:
-            src = rgb
-            nh, nw = h, w
-        x = np.ascontiguousarray(np.transpose(src, (2, 0, 1))[None, ...], dtype=dtype)
+        ds = float(downsample) if downsample < 1.0 else 1.0
+        # Quantize ratio slightly so tiny float jitter does not thrash recurrent reset.
+        ds_key = round(ds, 4)
+        rec_key = (int(h), int(w), ds_key)
+        if self._rec_key is not None and self._rec_key != rec_key:
+            logger.debug(
+                "RVM recurrent reset — spatial/ratio change %s → %s",
+                self._rec_key,
+                rec_key,
+            )
+            self._r1 = self._r2 = self._r3 = self._r4 = None
+        self._rec_key = rec_key
+
+        # Full-res src; model downsamples internally via downsample_ratio.
+        x = np.ascontiguousarray(np.transpose(rgb, (2, 0, 1))[None, ...], dtype=dtype)
         feeds: dict[str, Any] = {"src": x}
         inputs = {i.name: i for i in self.session.get_inputs()}
         for name, rec in (("r1i", self._r1), ("r2i", self._r2), ("r3i", self._r3), ("r4i", self._r4)):
@@ -417,10 +451,24 @@ class _OrtRvmSession:
                     feeds[name] = np.ascontiguousarray(rec, dtype=dtype)
         if "downsample_ratio" in inputs:
             # RVM exports keep downsample_ratio as float32 even for fp16 graphs.
-            feeds["downsample_ratio"] = np.array(
-                [downsample if downsample < 1 else 1.0], dtype=np.float32
+            feeds["downsample_ratio"] = np.array([ds], dtype=np.float32)
+        try:
+            outs = self.session.run(None, feeds)
+        except Exception as exc:  # noqa: BLE001
+            if not self._is_expand_broadcast_error(exc):
+                raise
+            # Missed size change / stale r1..r4 — zero state and retry once at current size.
+            logger.warning(
+                "RVM Expand/broadcast at %dx%d ds=%.4f — reset recurrent and retry once: %s",
+                h,
+                w,
+                ds,
+                exc,
             )
-        outs = self.session.run(None, feeds)
+            self.reset()
+            self._rec_key = rec_key
+            self._zero_recurrent_feeds(feeds, inputs, dtype)
+            outs = self.session.run(None, feeds)
         pha = None
         for o in outs:
             if isinstance(o, np.ndarray) and o.ndim >= 3:
@@ -479,11 +527,15 @@ class FastEngine(MattingEngine):
 
     def set_full_res_matte(self, enabled: bool = True) -> None:
         """Max bake: force native-resolution RVM (no long-side downsample)."""
+        was = bool(getattr(self, "_full_res_matte", False))
         self._full_res_matte = bool(enabled)
         if self._full_res_matte:
             self._matte_target_long = 10**9
         elif self._prefer_quality:
             self._matte_target_long = 1080
+        # Preview↔full-res switches change RVM internal spatial size — drop recurrent.
+        if was != self._full_res_matte and self._rvm is not None:
+            self._rvm.reset()
 
     def _load_rvm(self) -> None:
         prefer = "quality" if self._prefer_quality else "fast"
@@ -748,8 +800,12 @@ class FastEngine(MattingEngine):
         if self._media is None:
             raise RuntimeError("No media open")
         out_dir = Path(out_dir)
-        alpha_dir = out_dir / "alpha"
-        alpha_dir.mkdir(parents=True, exist_ok=True)
+        from hybrid_editor.export.bgcut import alpha_dump_dir, dump_alpha_frames_enabled
+
+        dump_alpha = dump_alpha_frames_enabled()
+        alpha_dir = alpha_dump_dir(out_dir) if dump_alpha else None
+        if alpha_dir is not None:
+            alpha_dir.mkdir(parents=True, exist_ok=True)
         self.reset()
         path = Path(self._media.path)
         fps = self._media.fps or 25.0
@@ -783,7 +839,8 @@ class FastEngine(MattingEngine):
                     break
                 alpha = self._matte(bgr)
                 a8 = (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
-                cv2.imwrite(str(alpha_dir / f"{idx:06d}.png"), a8)
+                if alpha_dir is not None:
+                    cv2.imwrite(str(alpha_dir / f"{idx:06d}.png"), a8)
                 if self._mask_store is not None:
                     self._mask_store.put(cur_t, alpha)
                 # Keep proxy-sized frames for preview mp4 (memory-safe)
@@ -841,19 +898,24 @@ class FastEngine(MattingEngine):
                 progress(1.0, "Bake kész")
 
         audio_note = " · audio AAC" if audio_ok else ""
-        mov_note = f" · {Path(prores).name}" if prores else ""
+        mov_note = f" · {prores}" if prores else " · HIÁNYZIK: *_full_nobg.mov"
         dur_note = f" · {end_t - start_t:.2f}s / {written} frame"
+        ok = written > 0 and bool(prores)
+        msg_core = (
+            f"Kész: {Path(prores).name}" if prores else "SIKERTELEN: nincs *_full_nobg.mov (ffmpeg?)"
+        )
         return BakeResult(
-            ok=written > 0,
+            ok=ok,
             out_dir=str(out_dir.resolve()),
             frames_written=written,
             engine="FastEngine",
             backend=self._backend,
             message=(
-                f"Wrote {written} alpha frames + preview{audio_note}{mov_note}"
-                f"{dur_note} ({self._backend})"
+                f"{msg_core}{audio_note}{mov_note}{dur_note} ({self._backend})"
             ),
-            alpha_preview=str(alpha_dir / "000000.png") if written else None,
+            alpha_preview=(
+                str(alpha_dir / "000000.png") if alpha_dir is not None and written else None
+            ),
             preview_mp4=preview_mp4,
             prores_mov=prores,
             bake_range={
@@ -862,5 +924,6 @@ class FastEngine(MattingEngine):
                 "audio": audio_ok,
                 "duration_sec": end_t - start_t,
                 "max_frames_cap": max_frames,
+                "mov_path": prores,
             },
         )

@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-05-hybrid-polish` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-05-paint-fix` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-05-hybrid-polish
+# expect: 2026-10-05-paint-fix
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA+cuDNN: .\hybrid_cut\start_hybrid_cuda.ps1
@@ -72,7 +72,42 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 ---
 
-## Hybrid polish (this stamp) — merges three fixes
+## Combined stamp — paint UX + bgcut MOV + RVM state (`2026-10-05-paint-fix`)
+
+Supersedes / includes `2026-10-05-bgcut-mov` · `2026-10-05-rvm-state` · prior polish bake paths.
+
+### Primary export — `C:\\bgcut\\{stem}_full_nobg.mov`
+
+- Videoeditor-style `resolve_ffmpeg` (PATH + `FFMPEG_PATH` + common installs)
+- Alpha PNG dumps under `C:\\bgcut\\alpha\\` **off by default** (`HYBRID_BGCUT_DUMP_ALPHA=1` to enable)
+- Status / Explorer select the `.mov` (not the alpha folder)
+- RVM recurrent `r1..r4` reset on H/W or downsample change (`Expand_134` fix)
+
+### Paint UX (from paint-fix)
+
+Supersedes stuck overlay / freeze from `2026-10-05-hybrid-polish` simple-preview paint-on-canvas.
+
+### Toolbar chrome (not in the picture)
+
+- **Ecset / Radír / Lasszó / Varázsceruza / Méret** live in a bar **above** the preview frame (chrome), not floating over video pixels.
+- Painting still happens on the image; mask canvas is letterbox-aligned to the displayed `<img>`.
+
+### Drop hint
+
+- „Ejtés: klip a timeline-ra” **never** covers a loaded timeline (only empty hero drop).
+
+### Freeze / ORT
+
+- Seed stroke commits are **debounced**; quiet path does not set global `busy` / block React on sync ORT.
+- Pointer capture released on up/cancel (no stuck page).
+- **RVM recurrent reset** when `H×W` or downsample ratio changes (`Expand_*` 26×45 vs 51×90). Full-res `src` + `downsample_ratio` (RVM-native).
+
+### Varázsceruza
+
+- Flood-fill smart select on click (tolerance slider); capped so it cannot paint the whole face as one blob.
+- Lasso closes path and fills the region.
+
+## Hybrid polish (prior stamp) — merges three fixes
 
 Supersedes `full-bake-bgcut` · `max-accuracy` · `simple-preview`.
 
@@ -92,7 +127,7 @@ Supersedes `full-bake-bgcut` · `max-accuracy` · `simple-preview`.
 
 ### Simple preview UX
 
-- **Kézi finomítás on Előnézet**: Ecset / Radír / Lasszó (+ Méret) overlay on Cutout / Maszk / Forrás — paint the same canvas you see; stroke auto-commits seed + live cutout.
+- **Kézi finomítás on Előnézet**: Ecset / Radír / Lasszó / Varázsceruza (+ Méret) in chrome **above** Cutout / Maszk / Forrás — paint on the image; stroke auto-commits seed + live cutout.
 - **Nagy seed panel** optional (collapsed by default) — no duplicate paint stage required.
 - **Összehasonlítás**: drag the vertical wipe line on the image; separate wipe slider chrome removed.
 

@@ -135,6 +135,9 @@ def test_preview_maskstore_and_bake_export(tmp_path: Path):
     assert isinstance(result, type(session.last_bake))
     assert result.ok
     assert result.frames_written == 3
-    assert (out / "alpha" / "000000.png").is_file()
+    # Primary deliverable is *_full_nobg.mov (alpha/ PNG dumps optional/debug)
+    assert result.prores_mov and Path(result.prores_mov).is_file()
+    assert Path(result.prores_mov).name.endswith("_full_nobg.mov")
+    assert not (out / "alpha").exists() or not any((out / "alpha").glob("*.png"))
     assert result.preview_mp4
     assert Path(result.preview_mp4).is_file()

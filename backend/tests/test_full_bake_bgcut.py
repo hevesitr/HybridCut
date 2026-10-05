@@ -87,13 +87,21 @@ def test_bake_default_max_frames_is_full_duration(tmp_path: Path, monkeypatch: p
 
     mov = out / "29308762a_full_nobg.mov"
     prev = out / "29308762a_full_nobg_preview.mp4"
-    # ProRes/qtrle may be unavailable in CI — path template + companion still required intent
-    if result.prores_mov:
+    from hybrid_editor.export.ffmpeg_bin import resolve_ffmpeg
+
+    # Primary deliverable: *_full_nobg.mov (not alpha/*.png)
+    assert not (out / "alpha").is_dir() or not any((out / "alpha").glob("*.png")), (
+        "alpha/ PNG dumps must stay off by default (set HYBRID_BGCUT_DUMP_ALPHA=1 for debug)"
+    )
+    if resolve_ffmpeg("ffmpeg"):
+        assert result.prores_mov, f"expected *_full_nobg.mov, got {result!r}"
+        assert Path(result.prores_mov).name.endswith("_full_nobg.mov")
         assert Path(result.prores_mov).name == "29308762a_full_nobg.mov"
         assert Path(result.prores_mov).is_file()
+        assert mov.is_file() and mov.stat().st_size > 256
+        assert result.ok
     assert result.preview_mp4
     assert "full_nobg" in Path(result.preview_mp4).name or Path(result.preview_mp4).is_file()
-    # Companion naming preferred
     if prev.is_file():
         assert Path(result.preview_mp4).resolve() == prev.resolve() or Path(result.preview_mp4).is_file()
 
@@ -125,3 +133,18 @@ def test_api_default_out_dir_is_bgcut(tmp_path: Path, monkeypatch: pytest.Monkey
     from hybrid_editor.export.bgcut import default_bgcut_dir
 
     assert default_bgcut_dir() == tmp_path / "bgcut"
+
+
+def test_output_path_template_ends_full_nobg_mov():
+    """Contract: primary file name always ends with ``_full_nobg.mov``."""
+    p = nobg_mov_path("clip.name", out_dir=Path("/tmp/bgcut-x"))
+    assert p.name.endswith("_full_nobg.mov")
+    assert p.name == "clip.name_full_nobg.mov"
+
+
+def test_resolve_ffmpeg_finds_bin():
+    from hybrid_editor.export.ffmpeg_bin import resolve_ffmpeg
+
+    # CI / cloud agents ship ffmpeg on PATH — bake must find it (not shutil.which-only on Windows).
+    ff = resolve_ffmpeg("ffmpeg")
+    assert ff is None or Path(ff).is_file()
