@@ -86,16 +86,13 @@ function personMatteChip(status: EditorStatus | null, preview: PreviewResult | n
 }
 
 function intelFromPreview(preview: PreviewResult | null, status: EditorStatus | null) {
+  /** First-view strip: only active / decision chips — less dense log noise. */
   const meta = preview?.meta ?? {};
-  const lanes = meta.proxy_lanes as { stats?: { hot_hits?: number; warm_hits?: number } } | undefined;
-  const hot = lanes?.stats?.hot_hits ?? 0;
-  const overlays = (meta.overlay_layers as unknown[] | undefined)?.length ?? 0;
-  const audio = !!status?.last_bake?.bake_range?.audio || !!status?.intelligence?.export_audio;
   const q = status?.bake_queue_len ?? 0;
-  return [
+  const chips = [
     {
       key: "mode",
-      label: status?.mode === "max" ? "Max · élesebb export" : "Gyors · lágyabb",
+      label: status?.mode === "max" ? "Max · élesebb" : "Gyors · lágyabb",
       on: true,
       warn: status?.mode === "max",
       title:
@@ -105,61 +102,53 @@ function intelFromPreview(preview: PreviewResult | null, status: EditorStatus | 
     },
     rvmChip(status),
     personMatteChip(status, preview),
-    {
-      key: "mask",
-      label: meta.mask_store ? "MaszkTár talált" : "MaszkTár",
-      on: !!meta.mask_store,
-      title: "Előre számolt maszkok tárolója — gyorsítja a scrubot.",
-    },
-    {
-      key: "prefetch",
-      label: `Előtöltés ×${meta.prefetch_ahead ?? 8}`,
-      on: true,
-      title: "Következő képkockák előre betöltése sima scrubhoz.",
-    },
-    {
-      key: "proxy",
-      label: hot > 0 ? `Proxy HOT ${hot}` : "Proxy sávok",
-      on: hot > 0,
-      title: "Kis felbontású gyorsítótár az élő előnézethez.",
-    },
-    {
+  ];
+  if (status?.seed_mask || meta.user_seed) {
+    chips.push({
       key: "seed",
-      label: status?.seed_mask || meta.user_seed ? "Kézi finomítás ✓" : "Kézi finomítás",
-      on: !!status?.seed_mask || !!meta.user_seed,
+      label: "Kézi finomítás ✓",
+      on: true,
       warn: false,
       title: "Opcionális kézi maszk — csak finomítás; az ember-maszk automatikus.",
-    },
-    {
-      key: "broll",
-      label: overlays > 0 ? `B-roll ×${overlays}` : status?.intelligence?.broll_track ? "B-roll" : "V1",
-      on: overlays > 0 || !!status?.intelligence?.broll_track,
-      title: "Második videosáv (B-roll) állapota.",
-    },
-    {
-      key: "audio",
-      label: audio ? "Hang AAC" : "Hang",
-      on: audio,
-      title: "Export hangcsatorna (AAC) állapota.",
-    },
-    {
+    });
+  }
+  if (status?.bake_running || q > 0) {
+    chips.push({
       key: "queue",
-      label: q > 0 ? `Export sor ${q}` : "Export sor",
-      on: q > 0 || !!status?.bake_running,
+      label: status?.bake_running ? "Export fut…" : `Export sor ${q}`,
+      on: true,
+      warn: false,
       title: "Várakozó vagy futó export (bake) feladatok.",
-    },
-    {
+    });
+  } else if (status?.last_bake?.ok && status.last_bake.prores_mov) {
+    chips.push({
+      key: "export",
+      label: "nobg MOV ✓",
+      on: true,
+      warn: false,
+      title: status.last_bake.prores_mov,
+    });
+  } else if (status?.last_bake && !status.last_bake.ok) {
+    chips.push({
+      key: "export",
+      label: "Export hiba",
+      on: false,
+      warn: true,
+      title: status.last_bake.message || "Nincs *_full_nobg.mov",
+    });
+  }
+  if (status?.analyse_running || (status?.analyse_masks ?? 0) > 0) {
+    chips.push({
       key: "analyse",
-      label:
-        (status?.analyse_masks ?? 0) > 0
-          ? `Elemzés ${status?.analyse_masks}`
-          : status?.analyse_running
-            ? "Elemzés…"
-            : "Elemzés",
-      on: (status?.analyse_masks ?? 0) > 0 || !!status?.analyse_running,
+      label: status?.analyse_running
+        ? "Elemzés…"
+        : `Elemzés ${status?.analyse_masks}`,
+      on: true,
+      warn: false,
       title: "Ritka maszk-elemzés a timeline mentén.",
-    },
-  ];
+    });
+  }
+  return chips;
 }
 
 function smartStatusLine(
@@ -221,6 +210,8 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false);
   const [assist, setAssist] = useState<AssistStatus | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  /** Cache-bust in-app checker preview after each bake. */
+  const [bakePreviewKey, setBakePreviewKey] = useState(0);
   const [pending, startTransition] = useTransition();
   const fileRef = useRef<HTMLInputElement>(null);
   const appendRef = useRef<HTMLInputElement>(null);
@@ -371,11 +362,23 @@ export default function App() {
             }
           : prev,
       );
-      if (p.bake_status) setNote(p.bake_status);
-      if (!p.bake_running && p.last_bake?.ok) {
+      if (p.bake_status && p.bake_running) setNote(p.bake_status);
+      if (!p.bake_running && p.last_bake) {
         const st = await refresh();
-        setNote(p.last_bake.message || "Export kész · hang a preview.mp4-ben");
-        if (st.media) await runPreview(tSec, st, p.last_bake.message);
+        const mov = p.last_bake.prores_mov;
+        if (p.last_bake.ok && mov) {
+          setBakePreviewKey(Date.now());
+          setNote(`Kész: ${mov}`);
+          showToast("nobg MOV kész — sakktábla előnézet + Explorer");
+        } else if (!p.last_bake.ok) {
+          setNote(
+            p.last_bake.message ||
+              "SIKERTELEN: nincs *_full_nobg.mov — ellenőrizd az ffmpeg / FFMPEG_PATH-ot.",
+          );
+        } else {
+          setNote(p.last_bake.message || "Export kész");
+        }
+        if (st.media) await runPreview(tSec, st, mov || p.last_bake.message);
       }
     } catch {
       /* ignore */
@@ -906,11 +909,11 @@ export default function App() {
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark">HybridCut</div>
-          <div className="brand-sub">Videoeditor · Róbert Hevesi-Tóth</div>
+          <div className="brand-sub">lime · orange · helyi cutout</div>
         </div>
         <div className="sync">
-          <div>{status?.sync_version ?? "…"}</div>
-          <div>RTX 3060 · helyi / ingyenes</div>
+          <div className="sync-stamp">{status?.sync_version ?? "…"}</div>
+          <div>RTX 3060 · Ollama localhost</div>
         </div>
       </header>
 
@@ -1045,13 +1048,14 @@ export default function App() {
                 className="btn"
                 disabled={!status?.last_bake?.ok && !status?.last_bake?.out_dir}
                 onClick={() => void onOpenOutput()}
-                title="Utolsó export kimeneti mappájának megnyitása (C:\\bgcut)."
+                title="Explorer: kijelöli a *_full_nobg.mov fájlt."
               >
-                Kimenet mappa
+                Megnyitás Explorerben
               </button>
             </div>
             <p className="action-help">
-              1) Videó betöltése 2) Előnézet 3) Exportálás → C:\bgcut\*_full_nobg.mov (teljes hossz)
+              1) Videó 2) Előnézet 3) Export → teljes útvonal a kártyán · master:{" "}
+              <code>{"C:\\bgcut\\{stem}_full_nobg.mov"}</code>
             </p>
           </div>
 
@@ -1178,20 +1182,19 @@ export default function App() {
             </div>
           </div>
 
-          {(status?.analyse_running || (status?.analyse_progress ?? 0) > 0) && (
-            <div className="bake-progress">
+          {status?.analyse_running ? (
+            <div className="bake-progress" aria-live="polite">
               <div className="bake-bar">
                 <div className="bake-fill" style={{ width: `${analysePct}%` }} />
               </div>
               <div className="bake-label">
-                Elemzés {analysePct}% · {status?.analyse_status || "…"} · maszkok{" "}
-                {status?.analyse_masks ?? 0}
+                Elemzés {analysePct}% · {status?.analyse_status || "…"}
               </div>
             </div>
-          )}
+          ) : null}
 
-          {(status?.bake_running || (status?.bake_progress ?? 0) > 0) && (
-            <div className="bake-progress">
+          {status?.bake_running ? (
+            <div className="bake-progress export-busy" aria-live="polite">
               <div className="bake-bar">
                 <div className="bake-fill" style={{ width: `${bakePct}%` }} />
               </div>
@@ -1199,90 +1202,130 @@ export default function App() {
                 Export {bakePct}% · {status?.bake_status || "…"}
               </div>
             </div>
-          )}
+          ) : null}
 
-          {status?.last_bake?.prores_mov ||
-          status?.last_bake?.preview_mp4 ||
-          status?.last_bake?.ok ? (
-            <div className="export-actions">
-              {status?.last_bake?.prores_mov ? (
-                <div className="bake-label" title={status.last_bake.prores_mov}>
-                  Alpha MOV: <code>{status.last_bake.prores_mov}</code>
-                </div>
-              ) : status?.last_bake?.ok === false ? (
-                <div className="bake-label">
-                  Figyelem: nincs *_full_nobg.mov — ellenőrizd az ffmpeg / FFMPEG_PATH-ot.
-                </div>
-              ) : null}
-              <a
-                className="preview-link"
-                href="/api/bake/preview.mp4"
-                target="_blank"
-                rel="noreferrer"
-                title="Opcionális előnézet MP4 (sakktábla + hang)."
-              >
-                {status?.last_bake?.preview_mp4
-                  ? status.last_bake.preview_mp4.split(/[/\\]/).pop()
-                  : "előnézet.mp4"}
-                {status?.last_bake?.bake_range?.audio ? " · hanggal (AAC)" : ""}
-              </a>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => void onOpenOutput()}
-                title="Explorer: kijelöli a *_full_nobg.mov fájlt (elsődleges kimenet)."
-              >
-                Megnyitás Explorerben (.mov)
-              </button>
+          {!status?.bake_running && status?.last_bake ? (
+            <div
+              className={`export-result ${status.last_bake.ok && status.last_bake.prores_mov ? "ok" : "fail"}`}
+              role="status"
+            >
+              {status.last_bake.ok && status.last_bake.prores_mov ? (
+                <>
+                  <div className="export-result-eyebrow">Átlátszó nobg kész</div>
+                  <p className="export-result-path" title={status.last_bake.prores_mov}>
+                    {status.last_bake.prores_mov}
+                  </p>
+                  {status.last_bake.preview_mp4 ? (
+                    <div className="nobg-player checker-subtle">
+                      <video
+                        key={bakePreviewKey}
+                        className="nobg-video"
+                        src={`/api/bake/preview.mp4?t=${bakePreviewKey}`}
+                        controls
+                        playsInline
+                        preload="metadata"
+                        title="Sakktábla alá kompozitált _preview.mp4 (Chrome-barát). Master: ProRes/qtrle .mov"
+                      />
+                    </div>
+                  ) : (
+                    <p className="export-result-hint">
+                      Nincs böngésző-előnézet — nyisd meg a MOV-ot Premiere / Resolve-ban (ProRes alpha).
+                    </p>
+                  )}
+                  <div className="export-result-actions">
+                    <button
+                      type="button"
+                      className="btn primary"
+                      onClick={() => void onOpenOutput()}
+                      title="Explorer: kijelöli a *_full_nobg.mov fájlt (elsődleges kimenet)."
+                    >
+                      Megnyitás Explorerben
+                    </button>
+                    {status.last_bake.preview_mp4 ? (
+                      <a
+                        className="btn preview-link-btn"
+                        href={`/api/bake/preview.mp4?t=${bakePreviewKey}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="Opcionális előnézet MP4 (sakktábla + hang)."
+                      >
+                        _preview.mp4
+                        {status.last_bake.bake_range?.audio ? " · AAC" : ""}
+                      </a>
+                    ) : null}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="export-result-eyebrow warn">Export sikertelen</div>
+                  <p className="export-result-path fail-text">
+                    {status.last_bake.message ||
+                      "Nincs *_full_nobg.mov — ne az alpha mappát használd. Állítsd be az FFMPEG_PATH-ot."}
+                  </p>
+                  <div className="export-result-actions">
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => void onOpenOutput()}
+                      title="Kimenet mappa megnyitása"
+                    >
+                      Mappa megnyitása
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           ) : null}
           {(status?.bake_queue_len ?? 0) > 0 ? (
             <div className="bake-label">Export sor: {status?.bake_queue_len} várakozik</div>
           ) : null}
 
-          <div className="meta">
-            <div>
-              Motor: <code>{status?.engine ?? "—"}</code>
-            </div>
-            <div>
-              Backend: <code>{status?.backend ?? "—"}</code>
-            </div>
-            <div>
-              VRAM: <code>{status?.vram_hint_gb ?? "—"} GB</code>
-              {status?.vram?.cuda_holder && status.vram.cuda_holder !== "none" ? (
-                <>
-                  {" "}
-                  · CUDA: <code>{status.vram.cuda_holder}</code>
-                </>
+          <details className="meta-fold">
+            <summary>Részletek · motor / VRAM</summary>
+            <div className="meta">
+              <div>
+                Motor: <code>{status?.engine ?? "—"}</code>
+              </div>
+              <div>
+                Backend: <code>{status?.backend ?? "—"}</code>
+              </div>
+              <div>
+                VRAM: <code>{status?.vram_hint_gb ?? "—"} GB</code>
+                {status?.vram?.cuda_holder && status.vram.cuda_holder !== "none" ? (
+                  <>
+                    {" "}
+                    · CUDA: <code>{status.vram.cuda_holder}</code>
+                  </>
+                ) : null}
+              </div>
+              {status?.media ? (
+                <div>
+                  Média:{" "}
+                  <code>
+                    {status.media.width}×{status.media.height} · {status.media.fps.toFixed(1)} fps ·{" "}
+                    {status.media.duration_sec.toFixed(1)}s
+                  </code>
+                </div>
+              ) : null}
+              {plan && !plan.empty ? (
+                <div>
+                  Képterv:{" "}
+                  <code>
+                    {plan.layers.map((L) => `${L.track === 1 ? "V2" : "V1"}:${L.clip_id}`).join(" + ") ||
+                      "—"}{" "}
+                    · src {plan.layers[0]?.source_t_sec.toFixed(2)}s
+                  </code>
+                </div>
+              ) : null}
+              <div>{status?.detail}</div>
+              {assist ? (
+                <div title={assist.message}>
+                  Assist: <code>{assist.ok ? "llama3 @ 11434" : assist.message}</code>
+                </div>
               ) : null}
             </div>
-            {status?.media ? (
-              <div>
-                Média:{" "}
-                <code>
-                  {status.media.width}×{status.media.height} · {status.media.fps.toFixed(1)} fps ·{" "}
-                  {status.media.duration_sec.toFixed(1)}s
-                </code>
-              </div>
-            ) : null}
-            {plan && !plan.empty ? (
-              <div>
-                Képterv:{" "}
-                <code>
-                  {plan.layers.map((L) => `${L.track === 1 ? "V2" : "V1"}:${L.clip_id}`).join(" + ") ||
-                    "—"}{" "}
-                  · src {plan.layers[0]?.source_t_sec.toFixed(2)}s
-                </code>
-              </div>
-            ) : null}
-            <div>{status?.detail}</div>
-            {assist ? (
-              <div title={assist.message}>
-                Assist: <code>{assist.ok ? "llama3 @ 11434" : assist.message}</code>
-              </div>
-            ) : null}
-          </div>
-          <div className="license">{status?.license_note}</div>
+            <div className="license">{status?.license_note}</div>
+          </details>
         </aside>
 
         <section className="stage">

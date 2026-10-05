@@ -1,13 +1,13 @@
 # HybridCut restart — bgcut MOV primary
 
-Feature stamp: **`2026-10-05-bgcut-mov`**. Final shipped SYNC: **`2026-10-05-paint-fix`** (includes this + `2026-10-05-rvm-state` + paint toolbar/Varázsceruza).
+Feature stamp: **`2026-10-05-bgcut-mov`**. Final shipped SYNC: **`2026-10-05-ui-nobg`** (includes this + `2026-10-05-rvm-state` + paint toolbar/Varázsceruza).
 
 ## After pull / sync
 
 ```powershell
 cd $env:USERPROFILE\Documents\HybridCut
 git pull
-Get-Content .\SYNC_VERSION.txt   # 2026-10-05-paint-fix
+Get-Content .\SYNC_VERSION.txt   # 2026-10-05-ui-nobg
 .\install_to_videoeditor.ps1
 cd $env:USERPROFILE\Documents\Videoeditor
 $env:HYBRID_RVM_ONNX = "$PWD\models\rvm_resnet50_fp32.onnx"

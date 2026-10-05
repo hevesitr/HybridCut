@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-05-paint-fix` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-05-ui-nobg` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-05-paint-fix
+# expect: 2026-10-05-ui-nobg
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA+cuDNN: .\hybrid_cut\start_hybrid_cuda.ps1
@@ -72,7 +72,26 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 ---
 
-## Combined stamp — paint UX + bgcut MOV + RVM state (`2026-10-05-paint-fix`)
+## Stamp — UI polish + visible nobg (`2026-10-05-ui-nobg`)
+
+Supersedes `2026-10-05-paint-fix` (includes bgcut MOV + RVM state + paint UX).
+
+### See transparent nobg
+
+- After bake: **result card** replaces the progress bar (not stuck at 79%/100%).
+- Big success line with full path: `C:\bgcut\{stem}_full_nobg.mov`
+- **Megnyitás Explorerben** selects that `.mov` (NLE master)
+- In-app `<video>` plays checker-composited `_preview.mp4` (Chrome-friendly); ProRes/qtrle `.mov` stays the deliverable
+- Mux failure → red **Export sikertelen** card (not silent `alpha/` folder)
+
+### UI polish
+
+- Slimmer intel strip (mode / RVM / person / live export only)
+- Stronger HybridCut lime→orange brand mark; stamp in sync chip
+- Motor/VRAM details collapsed under **Részletek**
+- Stronger checker under cutout; progress shimmer + result-card motion
+
+### Prior — paint UX + bgcut MOV + RVM (`2026-10-05-paint-fix`)
 
 Supersedes / includes `2026-10-05-bgcut-mov` · `2026-10-05-rvm-state` · prior polish bake paths.
 
