@@ -237,11 +237,16 @@ def visualize_alpha_matte(
 
 
 def encode_preview_pair(
-    bgr: np.ndarray, alpha: np.ndarray, *, max_side: int = 960
+    bgr: np.ndarray,
+    alpha: np.ndarray,
+    *,
+    max_side: int = 960,
+    sharp_cutout: bool = False,
 ) -> tuple[str, str, int, int, str, bool]:
-    """Return (jpeg_cutout_b64, alpha_vis_png_b64, w, h, source_jpeg_b64, matte_empty).
+    """Return (cutout_b64, alpha_vis_png_b64, w, h, source_jpeg_b64, matte_empty).
 
-    - jpeg: subject RGB × alpha over subtle checker; empty matte → full source RGB
+    - cutout: subject RGB × alpha over subtle checker; empty matte → full source RGB
+      sharp_cutout=True → PNG (no JPEG halo soft); else high-quality JPEG
     - alpha png: soft matte vis; empty → source + 'nincs maszk'
     - source jpeg: original video frame for seed / paint underlay
     - matte_empty: True when no useful alpha yet
@@ -261,13 +266,19 @@ def encode_preview_pair(
     cutout = composite_cutout_over_checker(bgr, alpha)
     alpha_vis = visualize_alpha_matte(bgr, alpha)
 
-    ok_j, buf_j = cv2.imencode(".jpg", cutout, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
-    if not ok_j:
-        raise RuntimeError("JPEG encode failed")
+    if sharp_cutout:
+        # Lossless cutout composite — avoids JPEG ringing on hair / shoulder edges.
+        ok_j, buf_j = cv2.imencode(".png", cutout)
+        if not ok_j:
+            raise RuntimeError("PNG cutout encode failed")
+    else:
+        ok_j, buf_j = cv2.imencode(".jpg", cutout, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+        if not ok_j:
+            raise RuntimeError("JPEG encode failed")
     ok_p, buf_p = cv2.imencode(".png", alpha_vis)
     if not ok_p:
         raise RuntimeError("PNG encode failed")
-    ok_s, buf_s = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+    ok_s, buf_s = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
     if not ok_s:
         raise RuntimeError("Source JPEG encode failed")
     return (

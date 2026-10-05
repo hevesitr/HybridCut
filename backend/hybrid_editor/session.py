@@ -54,6 +54,13 @@ class EditorSession:
         self.analyser = SparseAnalyser()
         self._seed_alpha: Optional[np.ndarray] = None
         self._open_path: Optional[str] = None
+        # Default ON for Max/export — CapCut-like needle-sharp person edges.
+        self.sharp_edges: bool = True
+        self._sync_sharp_to_engine()
+
+    def _sync_sharp_to_engine(self) -> None:
+        if isinstance(self.engine, MaxQualityEngine) and hasattr(self.engine, "set_sharp_edges"):
+            self.engine.set_sharp_edges(self.sharp_edges)
 
     def _seed_path(self) -> Optional[Path]:
         if self.media is None:
@@ -76,6 +83,7 @@ class EditorSession:
                 "sparse_analyse": True,
                 "seed_paint": self.mode is EngineMode.MAX or self._seed_alpha is not None,
                 "quality_pipeline": self.mode is EngineMode.MAX,
+                "sharp_edges": self.sharp_edges,
                 "timeline_multiclip": bool(self.timeline and len(self.timeline.clips) > 1),
                 "broll_track": has_broll,
                 "export_audio": True,
@@ -107,10 +115,15 @@ class EditorSession:
                     "auto_person_matte": True,
                     "manual_seed_refinement_only": True,
                 }
+            mode_label = (
+                "Gyors — gyors/lágyabb scrub"
+                if self.mode is EngineMode.GYORS
+                else "Max — élesebb export"
+            )
             return {
                 "sync_version": SYNC_VERSION,
                 "mode": self.mode.value,
-                "mode_label": "Gyors mód" if self.mode is EngineMode.GYORS else "Max minőségű háttéreltávolítás",
+                "mode_label": mode_label,
                 "engine": caps.name,
                 "backend": caps.backend,
                 "available": caps.available,
@@ -118,6 +131,7 @@ class EditorSession:
                 "vram_hint_gb": caps.vram_hint_gb,
                 "detail": caps.detail,
                 "weights_path": caps.weights_path,
+                "sharp_edges": self.sharp_edges,
                 "matanyone2_active": bool(person_info.get("matanyone2_active")),
                 "person_matte_label_hu": person_info.get("person_matte_label_hu"),
                 "person_matte_backend": person_info.get("person_matte_backend"),
@@ -151,15 +165,47 @@ class EditorSession:
                 return self.status()
             media_path = self.media.path if self.media else None
             seed = self._seed_alpha
+            # Near-empty kézi seed must not travel into Max (old wipe path / stale UI).
+            if seed is not None:
+                s = np.asarray(seed, dtype=np.float32)
+                if s.ndim == 3:
+                    s = s[..., 0]
+                if float(s.max()) < 0.05 or float((s > 0.15).mean()) < 0.002:
+                    seed = None
+                    self._seed_alpha = None
             old = self.engine
             old.close()
             self.mode = new_mode
             self.engine = create_engine(new_mode)
+            self._sync_sharp_to_engine()
             if media_path:
                 self.media = self.engine.open_media(Path(media_path))
                 self._open_path = media_path
                 self._ensure_timeline(reset=False)
+                # Drop in-memory MaskStore after mode switch so empty Gyors caches
+                # cannot shadow a fresh Max RVM / ResNet matte on the same path.
+                fast = getattr(self.engine, "_fast", None) or self.engine
+                store = getattr(fast, "_mask_store", None)
+                if store is not None and hasattr(store, "clear_memory"):
+                    store.clear_memory()
             self._apply_seed_to_engine(seed)
+            st = self.status()
+            if new_mode is EngineMode.MAX:
+                st = {
+                    **st,
+                    "auto_preview_recommended": True,
+                    "person_matte_hint_hu": (
+                        st.get("person_matte_label_hu")
+                        or "MatAnyone2 nincs — RVM ember-maszk"
+                    ),
+                }
+            return st
+
+    def set_sharp_edges(self, enabled: bool) -> dict[str, Any]:
+        """Toggle CapCut-like sharp person edges (default on for Max/export)."""
+        with self._lock:
+            self.sharp_edges = bool(enabled)
+            self._sync_sharp_to_engine()
             return self.status()
 
     def _apply_seed_to_engine(self, seed: Optional[np.ndarray]) -> None:

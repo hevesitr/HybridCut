@@ -408,6 +408,44 @@ input {
   color: rgba(230, 240, 234, 0.45);
 }
 
+.sharp-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 0 0.85rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--fog);
+  font-size: 0.78rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.sharp-toggle.on {
+  border-color: rgba(224, 179, 90, 0.55);
+  background: linear-gradient(160deg, rgba(224, 179, 90, 0.14), rgba(224, 179, 90, 0.03));
+}
+
+.sharp-toggle input {
+  accent-color: #e0b35a;
+  width: 1rem;
+  height: 1rem;
+}
+
+.sharp-toggle span {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.sharp-toggle em {
+  margin-left: auto;
+  font-style: normal;
+  font-size: 0.66rem;
+  color: rgba(230, 240, 234, 0.45);
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

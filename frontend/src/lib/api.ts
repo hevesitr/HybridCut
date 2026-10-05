@@ -100,10 +100,15 @@ export type EditorStatus = {
   analyse_status?: string;
   analyse_masks?: number;
   intelligence?: Record<string, unknown>;
+  /** CapCut-like sharp person edges (default on for Max/export). */
+  sharp_edges?: boolean;
   /** Max without MatAnyone2 weights → false; clear HU label in person_matte_label_hu */
   matanyone2_active?: boolean;
   person_matte_label_hu?: string | null;
   person_matte_backend?: string | null;
+  /** Set on Max mode switch — UI should auto-run Előnézet. */
+  auto_preview_recommended?: boolean;
+  person_matte_hint_hu?: string | null;
   person_matte?: {
     matanyone2_active?: boolean;
     person_matte_label_hu?: string;
@@ -133,6 +138,8 @@ export type PreviewResult = {
     person_matte_label_hu?: string;
     person_matte_backend?: string;
     user_seed?: boolean;
+    sharp_edges?: boolean;
+    cutout_format?: "png" | "jpeg";
   };
   frame_plan?: EditorStatus["frame_plan"];
 };
@@ -181,6 +188,11 @@ export const api = {
   status: () => json<EditorStatus>("/api/status"),
   setMode: (mode: "gyors" | "max") =>
     json<EditorStatus>("/api/mode", { method: "POST", body: JSON.stringify({ mode }) }),
+  setSharpEdges: (enabled: boolean) =>
+    json<EditorStatus>("/api/sharp-edges", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
   loadSample: () => json<EditorStatus>("/api/demo/sample"),
   openPath: (path: string, append = false, as_broll = false) =>
     json<EditorStatus>("/api/open", {

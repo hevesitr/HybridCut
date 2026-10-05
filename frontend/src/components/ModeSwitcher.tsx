@@ -13,12 +13,12 @@ export function ModeSwitcher({ mode, disabled, onChange }: Props) {
         role="radio"
         aria-checked={mode === "gyors"}
         disabled={disabled}
-        title="Gyors mód: élő előnézet scrub közben, MaszkTár és proxy gyorsítótárral."
+        title="Gyors = gyors/lágyabb élő előnézet (MobileNet scrub, MaszkTár, proxy)."
         onClick={() => onChange("gyors")}
       >
-        <strong>Gyors mód</strong>
-        <span>Élő előnézet · MaszkTár · proxy</span>
-        <em>ORT RVM — előnézet FPS</em>
+        <strong>Gyors</strong>
+        <span>gyors / lágyabb</span>
+        <em>MobileNet · élő scrub</em>
       </button>
       <button
         type="button"
@@ -26,12 +26,12 @@ export function ModeSwitcher({ mode, disabled, onChange }: Props) {
         role="radio"
         aria-checked={mode === "max"}
         disabled={disabled}
-        title="Max minőség: kézi maszk festés + minőségi export (hanggal)."
+        title="Max = élesebb export (ResNet50 ha van, szűk trimap, teljes felbontású bake)."
         onClick={() => onChange("max")}
       >
-        <strong>Max minőség</strong>
-        <span>Kézi maszk · minőségi export</span>
-        <em>Pipeline / MatAnyone2 — export</em>
+        <strong>Max</strong>
+        <span>élesebb export</span>
+        <em>ResNet / pipeline · bake</em>
       </button>
     </div>
   );

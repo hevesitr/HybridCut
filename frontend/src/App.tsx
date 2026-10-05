@@ -95,13 +95,13 @@ function intelFromPreview(preview: PreviewResult | null, status: EditorStatus | 
   return [
     {
       key: "mode",
-      label: status?.mode === "max" ? "Max minőség" : "Gyors mód",
+      label: status?.mode === "max" ? "Max · élesebb export" : "Gyors · lágyabb",
       on: true,
       warn: status?.mode === "max",
       title:
         status?.mode === "max"
-          ? "Max: auto RVM ember-maszk + opcionális kézi finomítás / minőségi export."
-          : "Gyors: élő előnézet scrub közben (auto RVM).",
+          ? "Max: ResNet50 ha van + élesebb export / teljes felbontású bake."
+          : "Gyors: MobileNet scrub — gyors/lágyabb élő előnézet.",
     },
     rvmChip(status),
     personMatteChip(status, preview),
@@ -168,16 +168,23 @@ function smartStatusLine(
   busy: boolean,
   error: string | null,
   matteEmpty: boolean,
+  preview: PreviewResult | null,
 ): string {
   if (error) return error;
   if (status?.bake_running) return status.bake_status || "Export fut…";
   if (status?.analyse_running) return status.analyse_status || "Elemzés fut…";
   if (busy) return "Dolgozom…";
-  if (matteEmpty) return "Nincs ember-maszk — futtasd az Előnézetet";
   const person =
+    preview?.meta?.person_matte_label_hu ||
     status?.person_matte_label_hu ||
     status?.person_matte?.person_matte_label_hu ||
     "";
+  if (matteEmpty) {
+    if (preview?.meta?.source_fallback || preview?.meta?.matte_error) {
+      return "Ember-maszk sikertelen — próbáld újra az Előnézetet";
+    }
+    return "Nincs ember-maszk — futtasd az Előnézetet";
+  }
   const fallback = status?.rvm?.cuda_fallback || status?.detail || "";
   if (fallback && /CUDA|cuDNN|cudnn/i.test(fallback)) {
     const short = fallback.length > 180 ? `${fallback.slice(0, 180)}…` : fallback;
@@ -390,6 +397,8 @@ export default function App() {
         if (!empty) {
           setViewMode("cutout");
           showToast(personLabel || "Ember-maszk kész — Cutout nézet");
+        } else if (frame.meta?.matte_error || frame.meta?.source_fallback) {
+          showToast("Ember-maszk sikertelen — RVM/heuristic nem adott maszkot");
         } else {
           showToast("Nincs ember-maszk — futtasd az Előnézetet újra");
         }
@@ -416,20 +425,35 @@ export default function App() {
     startTransition(() => {
       setBusy(true);
       setError(null);
+      // Clear stale empty matte from previous mode before Max auto-preview.
+      if (mode === "max") {
+        setPreview(null);
+      }
       api
         .setMode(mode)
         .then(async (st) => {
           setStatus(st);
+          const personHint =
+            (st as { person_matte_hint_hu?: string }).person_matte_hint_hu ||
+            st.person_matte_label_hu ||
+            "";
           setNote(
             mode === "gyors"
-              ? "Gyors mód: auto RVM ember-maszk · élő scrub"
-              : "Max: auto RVM ember-maszk (MatAnyone2 opcionális) · kézi csak finomítás",
+              ? "Gyors = gyors/lágyabb · MobileNet scrub"
+              : personHint
+                ? `Max · ${personHint} · Éles szélek alapból be`
+                : "Max = élesebb export · ResNet50 ha van · Éles szélek alapból be",
           );
           if (mode === "max") {
             // Seed panel available but not required — auto person first.
             await refreshSeed();
           }
-          if (st.media) await runPreview(tSec, st, undefined, { preferCutout: true });
+          const hasMedia = !!(st.media || (st.timeline?.clips?.length ?? 0) > 0);
+          if (hasMedia) {
+            await runPreview(tSec, st, undefined, { preferCutout: true });
+          } else if (mode === "max") {
+            showToast(personHint || "Max: tölts be videót, majd Előnézet — RVM ember-maszk automatikus");
+          }
         })
         .catch((e: Error) => setError(e.message))
         .finally(() => setBusy(false));
@@ -605,6 +629,11 @@ export default function App() {
   const hasMedia = !!status?.media || clips.length > 0;
   const chips = intelFromPreview(preview, status);
   const matteEmpty = Boolean(preview?.meta?.matte_empty || preview?.meta?.source_fallback);
+  const cutoutIsPng =
+    !matteEmpty &&
+    (preview?.meta?.cutout_format === "png" ||
+      (preview?.meta?.sharp_edges === true && status?.mode === "max"));
+  const cutoutMime = cutoutIsPng ? "image/png" : "image/jpeg";
   const sourceSrc = preview?.source_jpeg_b64 || preview?.jpeg_b64 || null;
   const maskSrc = matteEmpty ? sourceSrc : preview?.alpha_png_b64 || null;
   const maskMime = matteEmpty ? "image/jpeg" : "image/png";
@@ -618,11 +647,37 @@ export default function App() {
           ? cutoutSrc
           : null;
   const singleMime =
-    viewMode === "mask" && !matteEmpty ? "image/png" : "image/jpeg";
+    viewMode === "mask" && !matteEmpty
+      ? "image/png"
+      : viewMode === "cutout" && cutoutIsPng
+        ? "image/png"
+        : "image/jpeg";
   const beforeSrc = matteEmpty ? sourceSrc : preview?.alpha_png_b64;
   const beforeMime = matteEmpty ? "image/jpeg" : "image/png";
   const afterSrc = matteEmpty ? sourceSrc : preview?.jpeg_b64;
-  const statusText = smartStatusLine(status, note, busy, error, matteEmpty);
+  const afterMime = matteEmpty ? "image/jpeg" : cutoutMime;
+  const sharpEdges = status?.sharp_edges !== false;
+  const statusText = smartStatusLine(status, note, busy, error, matteEmpty, preview);
+
+  const onSharpEdges = (enabled: boolean) => {
+    startTransition(() => {
+      setBusy(true);
+      setError(null);
+      api
+        .setSharpEdges(enabled)
+        .then(async (st) => {
+          setStatus(st);
+          setNote(
+            enabled
+              ? "Éles szélek be — szűk trimap, PNG cutout, teljes felbontású Max bake"
+              : "Éles szélek ki — lágyabb feather / Gyors-szerű szélek",
+          );
+          if (st.media) await runPreview(tSec, st);
+        })
+        .catch((e: Error) => setError(e.message))
+        .finally(() => setBusy(false));
+    });
+  };
 
   const rvm = rvmChip(status);
   const rvmDetail = status?.rvm;
@@ -769,9 +824,22 @@ export default function App() {
           <div className="rail-block">
             <h2>Matting motor</h2>
             <p className="lead">
-              <strong>Gyors</strong> = auto RVM · <strong>Max</strong> = RVM minőség (+ opcionális MatAnyone2)
+              <strong>Gyors</strong> = gyors/lágyabb · <strong>Max</strong> = élesebb export
             </p>
             <ModeSwitcher mode={mode} disabled={locked || pending} onChange={onMode} />
+            <label
+              className={`sharp-toggle ${sharpEdges ? "on" : ""}`}
+              title="Éles szélek: szűk trimap, kevesebb Gaussian feather, PNG cutout, teljes felbontású Max bake. Alapból be Max/exportnál."
+            >
+              <input
+                type="checkbox"
+                checked={sharpEdges}
+                disabled={locked || pending}
+                onChange={(e) => onSharpEdges(e.target.checked)}
+              />
+              <span>Éles szélek</span>
+              <em>{mode === "max" ? "Max / export" : "exportnál érvényes"}</em>
+            </label>
             <div className="actions">
               <button
                 type="button"
@@ -1196,7 +1264,7 @@ export default function App() {
                         className="wipe-base"
                       />
                       <img
-                        src={`data:image/jpeg;base64,${afterSrc}`}
+                        src={`data:${afterMime};base64,${afterSrc}`}
                         alt={matteEmpty ? "Forrás képkocka" : "Cutout"}
                         className="wipe-fg"
                         style={{ clipPath: `inset(0 ${100 - wipe}% 0 0)` }}

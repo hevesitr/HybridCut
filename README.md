@@ -4,11 +4,11 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-04-person-matte` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-05-perfect-matte` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
-| Modes | **Gyors** (ORT RVM scrub) · **Max** (seed + quality bake / MatAnyone2 adapter) |
+| Modes | **Gyors** = gyors/lágyabb (MobileNet scrub) · **Max** = élesebb export (ResNet50 + Éles szélek) |
 | Target | Windows + NVIDIA RTX 3060 8GB · local / free only |
 | GitHub | https://github.com/hevesitr/HybridCut |
 
@@ -44,10 +44,11 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-04-person-matte
+# expect: 2026-10-05-perfect-matte
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA+cuDNN: .\hybrid_cut\start_hybrid_cuda.ps1
+# Compare edges with original Videoeditor: .\run_gpu.ps1 (Tk cutout)
 ```
 
 One-click from Agent Store:

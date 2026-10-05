@@ -21,6 +21,10 @@ class ModeBody(BaseModel):
     mode: str = Field(..., description="gyors | max")
 
 
+class SharpEdgesBody(BaseModel):
+    enabled: bool = Field(True, description="Éles szélek — default on for Max/export")
+
+
 class OpenBody(BaseModel):
     path: str
     append: bool = False
@@ -98,6 +102,12 @@ def set_mode(body: ModeBody) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/sharp-edges")
+def set_sharp_edges(body: SharpEdgesBody) -> dict:
+    """Éles szélek toggle — tighter trimap / PNG cutout / full-res Max bake."""
+    return SESSION.set_sharp_edges(body.enabled)
 
 
 @router.post("/open")

@@ -62,9 +62,11 @@ def test_session_mode_switch_preserves_contract():
     assert session.mode is EngineMode.GYORS
     st = session.set_mode("max")
     assert st["mode"] == "max"
-    assert "Max" in st["mode_label"] or "max" in st["mode"]
+    assert "Max" in st["mode_label"] or "élesebb" in st["mode_label"]
+    assert st.get("sharp_edges") is True
     st2 = session.set_mode("gyors")
     assert st2["mode"] == "gyors"
+    assert "lágyabb" in st2["mode_label"] or "Gyors" in st2["mode_label"]
     assert st2["backend"] != ""
 
 

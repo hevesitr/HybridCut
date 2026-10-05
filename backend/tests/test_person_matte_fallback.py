@@ -114,12 +114,143 @@ def test_session_max_preview_person_matte(tmp_path: Path, monkeypatch: pytest.Mo
     prev = session.preview(0.1)
     assert prev.engine == "MaxQualityEngine"
     assert prev.meta.get("matanyone2_active") is False
+    assert prev.meta.get("matte_empty") is False
     assert "RVM" in (prev.meta.get("person_matte_label_hu") or "")
-    # Preview pair may mark empty only if alpha truly useless — synthetic person should pass.
-    assert prev.meta.get("matte_empty") is False or prev.alpha_png_b64
     # Decode alpha from a direct polish for a hard assert
     eng = session.engine
     assert isinstance(eng, MaxQualityEngine)
     bgr = _synthetic_person_bgr()
     a = eng._polish(bgr, warmup=True)
+    assert not is_matte_empty(a)
+    assert float(a.mean()) >= 0.05
+    assert float((a > 0.15).mean()) >= 0.08
+
+
+def test_max_empty_rvm_still_yields_person_via_heuristic():
+    """Regression: Max polish used to call _matte without heuristic retry → empty mask."""
+    from hybrid_editor.engines.fast_rvm import FastEngine
+
+    eng = MaxQualityEngine()
+
+    class _EmptyRvm:
+        model_path = Path("empty.onnx")
+        provider = "CPU"
+
+        def matte(self, bgr, downsample=0.25):  # noqa: ANN001
+            return np.zeros(bgr.shape[:2], np.float32)
+
+        def reset(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    eng._fast._rvm = _EmptyRvm()  # type: ignore[assignment]
+    eng._fast._backend = "ort-rvm:CPU"
+    bgr = _synthetic_person_bgr()
+    base = eng._base_alpha(bgr)
+    assert not is_matte_empty(base), "base alpha must heuristic-recover from empty ORT"
+    polished = eng._polish(bgr, warmup=True)
+    assert not is_matte_empty(polished)
+    assert float(polished.mean()) >= 0.04
+    assert float((polished > 0.15).mean()) >= 0.06
+    # FastEngine._matte itself must also recover (Max + Gyors share this path).
+    fe = FastEngine(prefer_quality=True)
+    fe._rvm = _EmptyRvm()  # type: ignore[assignment]
+    fe._backend = "ort-rvm:CPU"
+    assert not is_matte_empty(fe._matte(bgr))
+
+
+def test_max_mode_switch_clears_near_empty_seed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("HYBRID_MATANYONE2_WEIGHTS", raising=False)
+    sample = tmp_path / "person.mp4"
+    _write_person_clip(sample, n=4)
+    session = EditorSession()
+    session.open_media(sample)
+    tiny = np.zeros((120, 160), np.float32)
+    tiny[10:12, 10:12] = 1.0
+    session._seed_alpha = tiny
+    st = session.set_mode("max")
+    assert session._seed_alpha is None
+    assert st.get("auto_preview_recommended") is True
+    prev = session.preview(0.0)
+    assert prev.meta.get("matte_empty") is False
+    assert "RVM" in (prev.meta.get("person_matte_label_hu") or "")
+
+
+class _PersonOrtSession:
+    """Stand-in for _OrtRvmSession when a real ONNX file exists but is not loadable."""
+
+    def __init__(self, model_path: Path) -> None:
+        self.model_path = Path(model_path)
+        self.provider = "CPUExecutionProvider"
+        self.fallback_note = None
+
+    def matte(self, bgr, downsample=0.25):  # noqa: ANN001
+        h, w = bgr.shape[:2]
+        a = np.zeros((h, w), np.float32)
+        cv2.ellipse(a, (w // 2, h // 2), (max(12, w // 5), max(18, h // 3)), 0, 0, 360, 0.94, -1)
+        return a
+
+    def reset(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+def test_max_session_nonempty_when_rvm_onnx_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Cloud has no real RVM weights; still prove ORT path + Max session with ONNX present."""
+    monkeypatch.delenv("HYBRID_MATANYONE2_WEIGHTS", raising=False)
+    onnx = tmp_path / "rvm_resnet50_fp32.onnx"
+    onnx.write_bytes(b"fake-onnx")
+    monkeypatch.setenv("HYBRID_RVM_ONNX", str(onnx))
+
+    import hybrid_editor.engines.fast_rvm as fr
+
+    monkeypatch.setattr(fr, "_OrtRvmSession", _PersonOrtSession)
+
+    sample = tmp_path / "person.mp4"
+    _write_person_clip(sample, n=5)
+    session = EditorSession()
+    st = session.set_mode("max")
+    assert st.get("matanyone2_active") is False
+    session.open_media(sample)
+    eng = session.engine
+    assert isinstance(eng, MaxQualityEngine)
+    assert eng._fast._rvm is not None
+    assert Path(eng._fast._rvm.model_path).name == "rvm_resnet50_fp32.onnx"
+    assert "ort-rvm" in eng._fast.capabilities().backend
+    prev = session.preview(0.1)
+    assert prev.engine == "MaxQualityEngine"
+    assert prev.meta.get("matte_empty") is False
+    assert prev.meta.get("source_fallback") is not True
+    assert "RVM" in (prev.meta.get("person_matte_label_hu") or "")
+    assert float((eng._base_alpha(_synthetic_person_bgr()) > 0.15).mean()) >= 0.08
+
+
+def test_max_onnx_present_empty_ort_still_recovers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """ONNX file found but ORT returns zeros — Max must still ship a person matte."""
+    monkeypatch.delenv("HYBRID_MATANYONE2_WEIGHTS", raising=False)
+    onnx = tmp_path / "rvm_mobilenetv3_fp32.onnx"
+    onnx.write_bytes(b"fake-onnx")
+    monkeypatch.setenv("HYBRID_RVM_ONNX", str(onnx))
+
+    class _ZeroOrt(_PersonOrtSession):
+        def matte(self, bgr, downsample=0.25):  # noqa: ANN001
+            return np.zeros(bgr.shape[:2], np.float32)
+
+    import hybrid_editor.engines.fast_rvm as fr
+
+    monkeypatch.setattr(fr, "_OrtRvmSession", _ZeroOrt)
+
+    sample = tmp_path / "person.mp4"
+    _write_person_clip(sample, n=4)
+    session = EditorSession()
+    session.set_mode("max")
+    session.open_media(sample)
+    prev = session.preview(0.0)
+    assert prev.meta.get("matte_empty") is False
+    bgr = _synthetic_person_bgr()
+    a = session.engine._base_alpha(bgr)  # type: ignore[union-attr]
     assert not is_matte_empty(a)

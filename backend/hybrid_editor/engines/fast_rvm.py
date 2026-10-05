@@ -70,14 +70,25 @@ def _env_dir(name: str) -> Optional[Path]:
     return p if p.is_dir() else None
 
 
-# Prefer fp32 first (fewer ORT dtype / CUDA edge cases). Override with HYBRID_RVM_ONNX.
-_RVM_NAMES = (
+# Gyors / scrub: MobileNet first (speed). Override with HYBRID_RVM_ONNX.
+_RVM_NAMES_FAST = (
     "rvm_mobilenetv3_fp32.onnx",
     "rvm_mobilenetv3.onnx",
     "rvm_mobilenetv3_fp16.onnx",
     "rvm_resnet50_fp32.onnx",
     "rvm_resnet50_fp16.onnx",
 )
+# Max / export: ResNet50 first when present (sharper person edges). CapCut BEST/RECOMMENDED.
+_RVM_NAMES_QUALITY = (
+    "rvm_resnet50_fp16.onnx",
+    "rvm_resnet50_fp32.onnx",
+    "rvm_resnet50.onnx",
+    "rvm_mobilenetv3_fp32.onnx",
+    "rvm_mobilenetv3.onnx",
+    "rvm_mobilenetv3_fp16.onnx",
+)
+# Back-compat alias
+_RVM_NAMES = _RVM_NAMES_FAST
 
 
 def resolve_rvm_input_dtype(session: Any = None, model_path: Optional[Path] = None) -> np.dtype:
@@ -109,10 +120,11 @@ def resolve_rvm_input_dtype(session: Any = None, model_path: Optional[Path] = No
     return np.dtype(np.float32)
 
 
-def _first_rvm_in_dir(models_dir: Path) -> Optional[Path]:
+def _first_rvm_in_dir(models_dir: Path, *, prefer: str = "fast") -> Optional[Path]:
     if not models_dir.is_dir():
         return None
-    for name in _RVM_NAMES:
+    names = _RVM_NAMES_QUALITY if prefer == "quality" else _RVM_NAMES_FAST
+    for name in names:
         cand = models_dir / name
         if cand.is_file():
             return cand
@@ -147,12 +159,21 @@ def parent_videoeditor_roots() -> list[Path]:
     return out
 
 
-def resolve_rvm_onnx() -> Optional[Path]:
+def resolve_rvm_onnx(*, prefer: str = "fast") -> Optional[Path]:
     """Locate RVM ONNX: env → hybrid models/ → parent Videoeditor models/ → USERPROFILE.
 
+    prefer:
+      - ``fast``: MobileNet first (Gyors scrub)
+      - ``quality``: ResNet50 first when present (Max / sharp export)
+
+    Explicit ``HYBRID_RVM_ONNX`` / ``VIDEOEDITOR_RVM_ONNX`` always wins.
     Does not download or redistribute weights. Parent CapCut tree often already has
     ``Documents\\Videoeditor\\models\\rvm_*.onnx`` from the Tk cutout app.
     """
+    prefer = (prefer or "fast").strip().lower()
+    if prefer not in {"fast", "quality"}:
+        prefer = "fast"
+
     for env_name in ("HYBRID_RVM_ONNX", "VIDEOEDITOR_RVM_ONNX"):
         model = _env_path(env_name)
         if model is not None:
@@ -161,16 +182,16 @@ def resolve_rvm_onnx() -> Optional[Path]:
     for dir_env in ("HYBRID_MODELS_DIR", "VIDEOEDITOR_MODELS", "VIDEOEDITOR_MODELS_DIR"):
         d = _env_dir(dir_env)
         if d is not None:
-            hit = _first_rvm_in_dir(d)
+            hit = _first_rvm_in_dir(d, prefer=prefer)
             if hit is not None:
                 return hit
 
-    hit = _first_rvm_in_dir(ROOT / "models")
+    hit = _first_rvm_in_dir(ROOT / "models", prefer=prefer)
     if hit is not None:
         return hit
 
     for root in parent_videoeditor_roots():
-        hit = _first_rvm_in_dir(root / "models")
+        hit = _first_rvm_in_dir(root / "models", prefer=prefer)
         if hit is not None:
             return hit
 
@@ -187,11 +208,13 @@ def probe_ort_runtime() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         cudnn_ok, cudnn_detail = False, f"cuda_path unavailable: {exc}"
 
-    onnx = resolve_rvm_onnx()
+    prefer = os.environ.get("HYBRID_RVM_PREFER", "fast").strip().lower() or "fast"
+    onnx = resolve_rvm_onnx(prefer=prefer if prefer in {"fast", "quality"} else "fast")
     info: dict[str, Any] = {
         "onnx_found": onnx is not None,
         "onnx_path": str(onnx) if onnx else None,
         "onnx_name": onnx.name if onnx else None,
+        "onnx_prefer": prefer,
         "ort_available": False,
         "cuda_ep": False,
         "providers": [],
@@ -423,7 +446,7 @@ class _OrtRvmSession:
 class FastEngine(MattingEngine):
     mode = EngineMode.GYORS
 
-    def __init__(self) -> None:
+    def __init__(self, *, prefer_quality: bool = False) -> None:
         self._media: Optional[MediaInfo] = None
         self._rvm: Optional[_OrtRvmSession] = None
         self._backend = "heuristic"
@@ -434,10 +457,21 @@ class FastEngine(MattingEngine):
         self._lanes: Optional[ProxyLaneCache] = None
         self._last_frame_idx = 0
         self._proxy_long = int(os.environ.get("HYBRID_PROXY_LONG", "720") or "720")
+        # Gyors scrub: MobileNet + low ds. Max backbone: ResNet when available + CapCut BEST ds.
+        self._prefer_quality = bool(prefer_quality)
+        self._matte_downsample = 0.40 if self._prefer_quality else 0.25
+        # CapCut BEST target_long_side=768; Max preview/bake should match Videoeditor left side.
+        self._matte_target_long = 768 if self._prefer_quality else 480
+        # Allow env override for Max quality long-side (full-res feel on 1080p → ds≈0.71).
+        if self._prefer_quality:
+            env_long = os.environ.get("HYBRID_MAX_RVM_LONG", "").strip()
+            if env_long.isdigit():
+                self._matte_target_long = max(480, int(env_long))
         self._load_rvm()
 
     def _load_rvm(self) -> None:
-        model = resolve_rvm_onnx()
+        prefer = "quality" if self._prefer_quality else "fast"
+        model = resolve_rvm_onnx(prefer=prefer)
         if model is None:
             self._backend = "heuristic"
             self._status_note = HEURISTIC_NOTE
@@ -479,13 +513,20 @@ class FastEngine(MattingEngine):
         note = getattr(self, "_status_note", None)
         if note:
             detail = f"{detail} {note}" if self._rvm else note
+        name = (
+            "Max minőségű RVM (ResNet preferált)"
+            if self._prefer_quality
+            else "Gyors mód (RVM / Fast · lágyabb scrub)"
+        )
         return EngineCapabilities(
             mode=self.mode,
-            name="Gyors mód (RVM / Fast)",
+            name=name,
             backend=self._backend,
             available=True,
             license_note="RVM ONNX: follow upstream license; heuristic fallback is ours (MIT).",
-            vram_hint_gb=3.0 if self._rvm and "CUDA" in self._backend else 0.5,
+            vram_hint_gb=3.5 if self._rvm and "CUDA" in self._backend and self._prefer_quality else (
+                3.0 if self._rvm and "CUDA" in self._backend else 0.5
+            ),
             detail=detail,
             weights_path=str(self._rvm.model_path) if self._rvm else None,
         )
@@ -559,9 +600,36 @@ class FastEngine(MattingEngine):
             self._lanes.put(idx, proxy, lane=Lane.WARM)
         return proxy
 
+    def _downsample_for(self, bgr: np.ndarray) -> float:
+        """RVM downsample ratio from long-side target (CapCut-like)."""
+        h, w = bgr.shape[:2]
+        long = max(h, w)
+        if long <= 0:
+            return float(self._matte_downsample)
+        target = float(self._matte_target_long)
+        return float(min(1.0, max(0.125, target / float(long))))
+
     def _matte(self, bgr: np.ndarray) -> np.ndarray:
+        """Person alpha for one frame — never return an empty matte when heuristic can help.
+
+        Max quality polish calls this directly (not preview_frame). Empty ORT / soft-fail
+        used to skip the heuristic retry that only lived in preview_frame → Max looked
+        like it found no person mask.
+        """
+        alpha: Optional[np.ndarray] = None
         if self._rvm is not None:
-            return self._rvm.matte(bgr, downsample=0.25)
+            try:
+                alpha = self._rvm.matte(bgr, downsample=self._downsample_for(bgr))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("RVM matte failed — heuristic person alpha: %s", exc)
+                alpha = None
+        if alpha is not None and not is_matte_empty(alpha):
+            return alpha
+        if alpha is not None and is_matte_empty(alpha):
+            logger.warning(
+                "RVM returned empty matte on %s — heuristic person alpha",
+                self._backend,
+            )
         return heuristic_person_alpha(bgr)
 
     def preview_frame(self, t_sec: float) -> PreviewFrame:
@@ -597,20 +665,12 @@ class FastEngine(MattingEngine):
             if self._rvm:
                 self._rvm.reset()  # seek: don't smear recurrent state
             try:
+                # _matte already retries heuristic on empty/soft-fail ORT.
                 alpha = self._matte(bgr)
-                # CUDA EP may fail mid-session — _load_rvm already CPU-falls back at init;
-                # ensure heuristic still runs if ORT returns empties (rare dtype/shape issues).
-                if is_matte_empty(alpha) and self._rvm is not None:
-                    logger.warning(
-                        "RVM returned empty matte on %s — retry heuristic person alpha",
-                        self._backend,
-                    )
-                    alpha = heuristic_person_alpha(bgr)
                 if self._mask_store is not None and not is_matte_empty(alpha):
                     self._mask_store.put_async(t, alpha)
             except Exception as exc:  # noqa: BLE001
                 # Soft-fail: keep source RGB visible even if RVM/ORT blows up.
-                # Still try heuristic so Előnézet / Cutout can show a person matte on CPU.
                 matte_error = str(exc)[:240]
                 logger.warning("preview matte failed — heuristic fallback: %s", matte_error)
                 try:

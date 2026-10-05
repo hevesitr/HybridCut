@@ -27,6 +27,7 @@ from hybrid_editor.engines.quality_pipeline import (
     apply_quality_pass,
     warmup_alpha,
 )
+from hybrid_editor.engines.videoeditor_polish import BEST_SPEC, polish_videoeditor
 from hybrid_editor.engines.vram import acquire_cuda, force_release_all, release_cuda
 from hybrid_editor.export.composer import (
     AudioSegment,
@@ -49,19 +50,25 @@ class MaxQualityEngine(MattingEngine):
     mode = EngineMode.MAX
 
     def __init__(self) -> None:
-        self._fast = FastEngine()
+        # Prefer ResNet50 when present — MobileNet is Gyors/scrub only.
+        self._fast = FastEngine(prefer_quality=True)
         self._adapter = MatAnyone2Adapter()
         self._status = probe_matanyone2()
         self._media: Optional[MediaInfo] = None
         self._stabilizer = AnchorMemoryStabilizer(strength=0.4, jump_threshold=0.18)
         self._seed: Optional[np.ndarray] = None
         self._user_seed: Optional[np.ndarray] = None  # painted / lasso first-frame mask
+        # Default on: CapCut-like sharp bake / preview (toggle via session).
+        self.sharp_edges: bool = True
         if self._adapter.available:
             self._backend = "matanyone2-adapter"
         else:
             # Always RVM (or heuristic) quality pipeline when MatAnyone2 weights missing.
             self._backend = f"quality-pipeline+{self._fast.capabilities().backend}"
         self._status_note = self.person_matte_label()
+
+    def set_sharp_edges(self, enabled: bool) -> None:
+        self.sharp_edges = bool(enabled)
 
     def person_matte_label(self) -> str:
         """Clear HU status: MatAnyone2 active vs RVM person-matte fallback."""
@@ -115,9 +122,11 @@ class MaxQualityEngine(MattingEngine):
             weights = self._status.weights_path
         else:
             fast_caps = self._fast.capabilities()
+            weights_name = Path(fast_caps.weights_path).name if fast_caps.weights_path else "heuristic"
+            sharp = "éles szélek ON" if self.sharp_edges else "lágyabb szélek"
             detail = (
                 f"{info['person_matte_label_hu']}. "
-                f"Quality pipeline on {fast_caps.backend} "
+                f"Quality pipeline on {fast_caps.backend} ({weights_name}, {sharp}) "
                 f"(warmup×{DEFAULT_WARMUP}/trimap/anchor/mem_every). "
                 f"MatAnyone2: {self._status.reason}"
             )
@@ -155,7 +164,32 @@ class MaxQualityEngine(MattingEngine):
 
     def _base_alpha(self, bgr: np.ndarray) -> np.ndarray:
         """Always run Fast RVM / heuristic — never leave an empty matte for missing MatAnyone2."""
-        return self._fast._matte(bgr)
+        from hybrid_editor.engines.fast_rvm import heuristic_person_alpha
+
+        try:
+            a = self._fast._matte(bgr)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Max base matte failed — heuristic: %s", exc)
+            a = heuristic_person_alpha(bgr)
+        if is_matte_empty(a):
+            # Belt-and-suspenders: FastEngine._matte already retries, but keep Max safe
+            # if a stub/backbone returns zeros without going through that path.
+            a = heuristic_person_alpha(bgr)
+        return a
+
+    def _ensure_nonempty_alpha(self, bgr: np.ndarray, alpha: Optional[np.ndarray]) -> np.ndarray:
+        """Last-resort person alpha so Max Előnézet never ships an empty mask."""
+        from hybrid_editor.engines.fast_rvm import heuristic_person_alpha
+
+        if alpha is not None and not is_matte_empty(alpha):
+            return alpha
+        try:
+            a = self._base_alpha(bgr)
+            if not is_matte_empty(a):
+                return a
+        except Exception:  # noqa: BLE001
+            pass
+        return heuristic_person_alpha(bgr)
 
     def _seed_for(self, bgr: np.ndarray, auto: np.ndarray) -> np.ndarray:
         """Guidance seed for quality trimap.
@@ -186,7 +220,18 @@ class MaxQualityEngine(MattingEngine):
         # Soft-boost painted FG on the live alpha too (same union rule).
         if self._user_seed is not None:
             a = self._seed_for(bgr, a)
-        return apply_quality_pass(a, seed=self._seed, stabilizer=self._stabilizer)
+        # Éles szélek (default): CapCut Videoeditor polish — NO wide trimap fuse
+        # (trimap erode/dilate was the thick halo / hair-hole source on the right side).
+        if self.sharp_edges:
+            polished = polish_videoeditor(a, bgr, spec=BEST_SPEC, seed=self._seed)
+            return self._stabilizer.update(polished)
+        return apply_quality_pass(
+            a,
+            seed=self._seed,
+            stabilizer=self._stabilizer,
+            sharp_edges=False,
+            frame_bgr=bgr,
+        )
 
     def preview_frame(self, t_sec: float) -> PreviewFrame:
         if self._media is None:
@@ -197,48 +242,80 @@ class MaxQualityEngine(MattingEngine):
         if not self._adapter.available:
             self._backend = f"quality-pipeline+{self._fast.capabilities().backend}"
         frame = self._fast.preview_frame(t_sec)
-        # Re-polish with quality path (re-decode for polish fidelity)
+        # Re-polish with Videoeditor path at near-source resolution (match left-side quality).
         bgr, t = read_frame_at(Path(self._media.path), t_sec)
-        bgr = downscale_long_side(bgr, 720)
+        # Sharp: keep up to 1440 long-side for Cutout preview (full bake stays native).
+        preview_long = int(os.environ.get("HYBRID_MAX_PREVIEW_LONG", "1440") or "1440")
+        if not self.sharp_edges:
+            preview_long = 720
+        bgr = downscale_long_side(bgr, preview_long)
         self._stabilizer.reset()
         self._seed = None
         matte_error = None
+        recovered = False
         try:
             alpha = self._polish(bgr, warmup=True)
-            # If polish somehow emptied a usable Fast matte, fall back to raw Fast alpha.
-            fast_alpha = None
-            if is_matte_empty(alpha) and frame.meta and not frame.meta.get("matte_empty"):
-                try:
-                    fast_alpha = self._base_alpha(bgr)
-                    if not is_matte_empty(fast_alpha):
-                        alpha = fast_alpha
-                except Exception:  # noqa: BLE001
-                    pass
-            jpg, png, w, h, src, empty = encode_preview_pair(bgr, alpha)
+            # Polish / empty RVM must never leave Max without a person mask.
+            if is_matte_empty(alpha):
+                alpha = self._ensure_nonempty_alpha(bgr, alpha)
+                recovered = not is_matte_empty(alpha)
+            jpg, png, w, h, src, empty = encode_preview_pair(
+                bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
+            )
         except Exception as exc:  # noqa: BLE001
             matte_error = str(exc)[:240]
-            alpha = None
-            jpg, png, w, h, src, empty = encode_source_only_preview(bgr)
-            empty = True
+            try:
+                alpha = self._ensure_nonempty_alpha(bgr, None)
+                recovered = not is_matte_empty(alpha)
+                jpg, png, w, h, src, empty = encode_preview_pair(
+                    bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
+                )
+            except Exception as exc2:  # noqa: BLE001
+                matte_error = f"{matte_error}; recover: {str(exc2)[:120]}"
+                alpha = None
+                jpg, png, w, h, src, empty = encode_source_only_preview(bgr, max_side=preview_long)
+                empty = True
         if alpha is not None and (empty or is_matte_empty(alpha)):
-            empty = True
+            # Final hard retry before admitting empty to the UI.
+            alpha = self._ensure_nonempty_alpha(bgr, alpha)
+            if not is_matte_empty(alpha):
+                jpg, png, w, h, src, empty = encode_preview_pair(
+                    bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
+                )
+                recovered = True
+            else:
+                empty = True
         info = self.person_matte_info()
+        weights = self._fast.capabilities().weights_path
+        # Status: clear empty vs live RVM person-matte label.
+        label_hu = info["person_matte_label_hu"]
+        if empty:
+            label_hu = "Nincs ember-maszk"
         meta = {
             "mode": self.mode.value,
             "matanyone2": self._adapter.available,
             "matanyone2_active": info["matanyone2_active"],
             "matanyone2_reason": self._status.reason,
-            "person_matte_label_hu": info["person_matte_label_hu"],
+            "person_matte_label_hu": label_hu,
             "person_matte_backend": info["person_matte_backend"],
+            "auto_person_matte": True,
             "warmup": DEFAULT_WARMUP,
             "user_seed": self._user_seed is not None,
             "manual_seed_refinement_only": True,
             "fast_meta": frame.meta,
             "matte_empty": empty,
+            "matte_recovered": recovered,
+            "sharp_edges": self.sharp_edges,
+            "cutout_format": "png" if self.sharp_edges else "jpeg",
+            "polish": "videoeditor" if self.sharp_edges else "trimap-soft",
+            "rvm_weights": Path(weights).name if weights else None,
+            "preview_long_side": preview_long,
         }
-        if matte_error:
+        if matte_error and empty:
             meta["matte_error"] = matte_error
             meta["source_fallback"] = True
+        elif matte_error and not empty:
+            meta["matte_error_recovered"] = matte_error
         return PreviewFrame(
             t_sec=t,
             width=w,
@@ -322,6 +399,7 @@ class MaxQualityEngine(MattingEngine):
                 cur_t = start_t + (idx / fps)
                 if cur_t > end_t + 1e-6:
                     break
+                # Full source resolution polish/bake (no proxy downsample before matte).
                 alpha = self._polish(bgr, warmup=(idx == 0))
                 # Mid-clip re-warmup on strong drift vs seed
                 if idx > 0 and idx % 48 == 0 and self._seed is not None:
@@ -333,12 +411,18 @@ class MaxQualityEngine(MattingEngine):
                         alpha = self._polish(bgr, warmup=True)
                 a8 = (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
                 cv2.imwrite(str(alpha_dir / f"{idx:06d}.png"), a8)
-                proxy = downscale_long_side(bgr, 720)
+                # preview.mp4 may use a display proxy; ProRes / sharp export keeps full-res BGRA.
+                preview_long = 1080 if self.sharp_edges else 720
+                proxy = downscale_long_side(bgr, preview_long)
                 a_p = cv2.resize(alpha, (proxy.shape[1], proxy.shape[0]), interpolation=cv2.INTER_LINEAR)
                 frames_bgr.append(proxy)
                 frames_alpha.append(a_p)
-                bgra = cv2.cvtColor(proxy, cv2.COLOR_BGR2BGRA)
-                bgra[:, :, 3] = (a_p * 255).astype(np.uint8)
+                if self.sharp_edges:
+                    bgra = cv2.cvtColor(bgr, cv2.COLOR_BGR2BGRA)
+                    bgra[:, :, 3] = a8
+                else:
+                    bgra = cv2.cvtColor(proxy, cv2.COLOR_BGR2BGRA)
+                    bgra[:, :, 3] = (a_p * 255).astype(np.uint8)
                 frames_bgra.append(bgra)
                 written += 1
                 idx += 1
@@ -376,17 +460,29 @@ class MaxQualityEngine(MattingEngine):
                 progress(1.0, "Bake kész")
 
         audio_note = " · audio AAC" if audio_ok else ""
+        sharp_note = " · éles szélek" if self.sharp_edges else ""
+        weights = self._fast.capabilities().weights_path
+        w_note = f" · {Path(weights).name}" if weights else ""
         return BakeResult(
             ok=written > 0,
             out_dir=str(out_dir.resolve()),
             frames_written=written,
             engine="MaxQualityEngine",
             backend=self._backend,
-            message=f"Quality pipeline wrote {written} frames + preview{audio_note} ({self._backend})",
+            message=(
+                f"Quality pipeline wrote {written} frames + preview{audio_note}"
+                f"{sharp_note}{w_note} (full-res alpha · {self._backend})"
+            ),
             alpha_preview=str(alpha_dir / "000000.png") if written else None,
             preview_mp4=preview_mp4,
             prores_mov=prores,
-            bake_range={"in_sec": start_t, "out_sec": end_t, "audio": audio_ok},
+            bake_range={
+                "in_sec": start_t,
+                "out_sec": end_t,
+                "audio": audio_ok,
+                "sharp_edges": self.sharp_edges,
+                "full_res_alpha": True,
+            },
         )
 
     def _bake_matanyone2(
@@ -465,10 +561,15 @@ class MaxQualityEngine(MattingEngine):
         frames_proxy: list[np.ndarray] = []
         frames_bgra: list[np.ndarray] = []
         for i, a in enumerate(alphas):
-            a8 = (np.clip(a, 0, 1) * 255).astype(np.uint8)
-            if a8.shape[:2] != frames_bgr[i].shape[:2]:
-                a8 = cv2.resize(a8, (frames_bgr[i].shape[1], frames_bgr[i].shape[0]))
+            aa = np.clip(a.astype(np.float32), 0.0, 1.0)
+            if aa.shape[:2] != frames_bgr[i].shape[:2]:
+                aa = cv2.resize(aa, (frames_bgr[i].shape[1], frames_bgr[i].shape[0]), interpolation=cv2.INTER_LINEAR)
+            # Same CapCut polish as quality-pipeline Max — kill halo / fill hair holes.
+            if self.sharp_edges:
+                aa = polish_videoeditor(aa, frames_bgr[i], spec=BEST_SPEC)
+            a8 = (np.clip(aa, 0, 1) * 255).astype(np.uint8)
             cv2.imwrite(str(alpha_dir / f"{i:06d}.png"), a8)
+            a = aa  # for proxy resize below
             proxy = downscale_long_side(frames_bgr[i], 720)
             a_p = cv2.resize(a8.astype(np.float32) / 255.0, (proxy.shape[1], proxy.shape[0]))
             frames_proxy.append(proxy)
@@ -500,7 +601,7 @@ class MaxQualityEngine(MattingEngine):
             prores = try_prores_alpha(frames_bgra, out_dir / "master_alpha.mov", fps=fps)
 
         # Restore Fast backbone for further preview (CPU/heuristic or ORT as available)
-        self._fast = FastEngine()
+        self._fast = FastEngine(prefer_quality=True)
         if self._media:
             self._fast.open_media(Path(self._media.path))
 
