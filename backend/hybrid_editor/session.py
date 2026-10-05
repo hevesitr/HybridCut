@@ -548,9 +548,9 @@ class EditorSession:
 
         from hybrid_editor.export.composer import (
             AudioSegment,
+            finalize_bgcut_exports,
             media_has_audio,
             write_preview_mp4,
-            write_windows_companion,
         )
         from hybrid_editor.media.video_io import downscale_long_side, read_frame_at
         from hybrid_editor.timeline import plan_frame as _plan
@@ -636,13 +636,32 @@ class EditorSession:
                 audio_duration_sec=dur,
             )
             audio_ok = bool(preview_mp4) and media_has_audio(preview_mp4)
-            companion = write_windows_companion(preview_mp4, out_dir)
+            # Build BGRA for alpha MOV (same proxy size as preview)
+            frames_bgra = []
+            for bgr, a in zip(frames_bgr, frames_alpha):
+                bgra = cv2.cvtColor(bgr, cv2.COLOR_BGR2BGRA)
+                a8 = (np.clip(a, 0, 1) * 255).astype(np.uint8)
+                bgra[:, :, 3] = a8
+                frames_bgra.append(bgra)
+            stem = Path(self.timeline.clips_on(0)[0].media_path).stem if self.timeline.clips_on(0) else "timeline"
+            if progress:
+                progress(0.95, "Export C:\\bgcut *_full_nobg.mov…")
+            prores, companion = finalize_bgcut_exports(
+                media_stem=stem,
+                out_dir=out_dir,
+                preview_mp4=preview_mp4,
+                frames_bgra=frames_bgra,
+                fps=fps,
+            )
             if progress:
                 progress(1.0, "Bake kész")
+        else:
+            prores = None
 
         n_broll = len(self.timeline.clips_on(1))
         audio_note = " · audio AAC" if audio_ok else ""
         broll_note = f" · {n_broll} B-roll" if n_broll else ""
+        mov_note = f" · {Path(prores).name}" if prores else ""
         return BakeResult(
             ok=written > 0,
             out_dir=str(out_dir.resolve()),
@@ -651,16 +670,19 @@ class EditorSession:
             backend=self.engine.capabilities().backend,
             message=(
                 f"Multi-clip timeline bake: {written} frames · "
-                f"{len(self.timeline.clips)} clips{broll_note}{audio_note}"
+                f"{len(self.timeline.clips)} clips{broll_note}{audio_note}{mov_note}"
             ),
             alpha_preview=str(alpha_dir / "000000.png") if written else None,
             preview_mp4=companion or preview_mp4,
+            prores_mov=prores,
             bake_range={
                 "in_sec": 0.0,
                 "out_sec": dur,
+                "duration_sec": dur,
                 "clips": len(self.timeline.clips),
                 "broll": n_broll,
                 "audio": audio_ok,
+                "max_frames_cap": max_frames,
             },
         )
 
@@ -673,7 +695,9 @@ class EditorSession:
             elif self.last_bake and self.last_bake.out_dir:
                 path = Path(self.last_bake.out_dir)
             else:
-                path = ROOT / "cache" / "bake" / self.mode.value
+                from hybrid_editor.export.bgcut import default_bgcut_dir
+
+                path = default_bgcut_dir()
             path = path.resolve()
             if not path.exists():
                 path.mkdir(parents=True, exist_ok=True)
@@ -706,7 +730,7 @@ class EditorSession:
         self,
         out_dir: str | Path,
         *,
-        max_frames: Optional[int] = 30,
+        max_frames: Optional[int] = None,
         async_job: bool = False,
         timeline_all: bool = True,
         queue_if_busy: bool = True,
@@ -787,11 +811,7 @@ class EditorSession:
                 in_sec=in_sec,
                 out_sec=out_sec,
             )
-            from hybrid_editor.export.composer import write_windows_companion
-
-            companion = write_windows_companion(result.preview_mp4, Path(out_dir))
-            if companion:
-                result.preview_mp4 = companion
+            # Engines already write {stem}_full_nobg.mov + companion preview into out_dir.
             return result
 
         if not async_job:

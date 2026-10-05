@@ -9,6 +9,10 @@ type Props = {
   width: number;
   height: number;
   disabled?: boolean;
+  /** panel = duplicate stage below; overlay = paint on main Előnézet. */
+  variant?: "panel" | "overlay";
+  /** Commit seed after each stroke (live cutout refresh). */
+  autoCommitOnStrokeEnd?: boolean;
   onCommit: (pngB64: string) => void;
   onClear: () => void;
 };
@@ -60,6 +64,8 @@ export function SeedPaint({
   width,
   height,
   disabled,
+  variant = "panel",
+  autoCommitOnStrokeEnd = false,
   onCommit,
   onClear,
 }: Props) {
@@ -68,10 +74,12 @@ export function SeedPaint({
   const [tool, setTool] = useState<Tool>("brush");
   const [brush, setBrush] = useState(28);
   const drawing = useRef(false);
+  const dirty = useRef(false);
   const lasso = useRef<{ x: number; y: number }[]>([]);
   const [ready, setReady] = useState(false);
   const lastMaskKey = useRef<string | null>(null);
   const sizeKey = useRef("");
+  const overlay = variant === "overlay";
 
   const w = Math.max(160, width || 480);
   const h = Math.max(120, height || 360);
@@ -80,7 +88,7 @@ export function SeedPaint({
   useEffect(() => {
     const bg = bgRef.current;
     const mask = maskRef.current;
-    if (!bg || !mask) return;
+    if (!mask) return;
     const resized = sizeKey.current !== `${w}x${h}`;
     if (resized) {
       // Preserve existing mask pixels across resize when possible
@@ -92,8 +100,10 @@ export function SeedPaint({
       if (pctx && mctx && mask.width && mask.height) {
         pctx.drawImage(mask, 0, 0);
       }
-      bg.width = w;
-      bg.height = h;
+      if (bg) {
+        bg.width = w;
+        bg.height = h;
+      }
       mask.width = w;
       mask.height = h;
       if (pctx && mctx && prev.width && prev.height) {
@@ -101,11 +111,21 @@ export function SeedPaint({
       }
       sizeKey.current = `${w}x${h}`;
     } else {
-      if (bg.width !== w) bg.width = w;
-      if (bg.height !== h) bg.height = h;
+      if (bg) {
+        if (bg.width !== w) bg.width = w;
+        if (bg.height !== h) bg.height = h;
+      }
       if (mask.width !== w) mask.width = w;
       if (mask.height !== h) mask.height = h;
     }
+
+    if (overlay) {
+      // Paint layer sits on the main Előnézet — no duplicate JPEG stage.
+      setReady(true);
+      return;
+    }
+
+    if (!bg) return;
     const bctx = bg.getContext("2d");
     if (!bctx) return;
     if (!imageJpegB64) {
@@ -120,7 +140,7 @@ export function SeedPaint({
       setReady(true);
     };
     img.src = `data:image/jpeg;base64,${imageJpegB64}`;
-  }, [imageJpegB64, w, h]);
+  }, [imageJpegB64, w, h, overlay]);
 
   // Bind server seed once per mask payload (survives scrub / panel reopen)
   useEffect(() => {
@@ -166,6 +186,7 @@ export function SeedPaint({
     ctx.arc(x, y, brush / 2, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
+    dirty.current = true;
   };
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -195,27 +216,9 @@ export function SeedPaint({
       pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
       ctx.stroke();
       ctx.restore();
+      dirty.current = true;
     } else {
       paintAt(x, y);
-    }
-  };
-
-  const onPointerUp = () => {
-    if (!drawing.current) return;
-    drawing.current = false;
-    if (tool === "lasso" && lasso.current.length > 2) {
-      const ctx = maskRef.current?.getContext("2d");
-      if (ctx) {
-        ctx.save();
-        ctx.globalCompositeOperation = "source-over";
-        ctx.fillStyle = "rgba(212, 162, 76, 0.85)";
-        ctx.beginPath();
-        lasso.current.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-      }
-      lasso.current = [];
     }
   };
 
@@ -241,7 +244,31 @@ export function SeedPaint({
     actx.putImageData(out, 0, 0);
     const dataUrl = alpha.toDataURL("image/png");
     lastMaskKey.current = dataUrl;
+    dirty.current = false;
     onCommit(dataUrl);
+  };
+
+  const onPointerUp = () => {
+    if (!drawing.current) return;
+    drawing.current = false;
+    if (tool === "lasso" && lasso.current.length > 2) {
+      const ctx = maskRef.current?.getContext("2d");
+      if (ctx) {
+        ctx.save();
+        ctx.globalCompositeOperation = "source-over";
+        ctx.fillStyle = "rgba(212, 162, 76, 0.85)";
+        ctx.beginPath();
+        lasso.current.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+        dirty.current = true;
+      }
+      lasso.current = [];
+    }
+    if (autoCommitOnStrokeEnd && dirty.current && !disabled && ready) {
+      commit();
+    }
   };
 
   const localClear = () => {
@@ -249,53 +276,81 @@ export function SeedPaint({
     const ctx = mask?.getContext("2d");
     if (mask && ctx) ctx.clearRect(0, 0, mask.width, mask.height);
     lastMaskKey.current = null;
+    dirty.current = false;
     onClear();
   };
 
+  const tools = (
+    <div className="seed-tools">
+      <button
+        type="button"
+        className={`btn ${tool === "brush" ? "primary" : ""}`}
+        disabled={disabled}
+        title="Ecset: alany hozzáadása a kézi maszkhoz."
+        onClick={() => setTool("brush")}
+      >
+        Ecset
+      </button>
+      <button
+        type="button"
+        className={`btn ${tool === "erase" ? "primary" : ""}`}
+        disabled={disabled}
+        title="Radír: téves maszkterület törlése."
+        onClick={() => setTool("erase")}
+      >
+        Radír
+      </button>
+      <button
+        type="button"
+        className={`btn ${tool === "lasso" ? "primary" : ""}`}
+        disabled={disabled}
+        title="Lasszó: zárt terület kijelölése a maszkhoz."
+        onClick={() => setTool("lasso")}
+      >
+        Lasszó
+      </button>
+      <label className="brush-size" title="Ecset / radír mérete.">
+        Méret
+        <input
+          type="range"
+          min={8}
+          max={72}
+          value={brush}
+          disabled={disabled}
+          onChange={(e) => setBrush(Number(e.target.value))}
+        />
+      </label>
+    </div>
+  );
+
+  const actions = (
+    <div className="seed-actions">
+      <button
+        type="button"
+        className="btn accent"
+        disabled={disabled || !ready}
+        onClick={commit}
+        title="Kézi maszk mentése a szerverre (scrub után is megmarad)."
+      >
+        Maszk mentése
+      </button>
+      <button
+        type="button"
+        className="btn"
+        disabled={disabled}
+        onClick={localClear}
+        title="Kézi maszk törlése."
+      >
+        Maszk törlése
+      </button>
+    </div>
+  );
+
   return (
-    <div className="seed-paint">
-      <div className="seed-tools">
-        <button
-          type="button"
-          className={`btn ${tool === "brush" ? "primary" : ""}`}
-          disabled={disabled}
-          title="Ecset: alany hozzáadása a kézi maszkhoz."
-          onClick={() => setTool("brush")}
-        >
-          Ecset
-        </button>
-        <button
-          type="button"
-          className={`btn ${tool === "erase" ? "primary" : ""}`}
-          disabled={disabled}
-          title="Radír: téves maszkterület törlése."
-          onClick={() => setTool("erase")}
-        >
-          Radír
-        </button>
-        <button
-          type="button"
-          className={`btn ${tool === "lasso" ? "primary" : ""}`}
-          disabled={disabled}
-          title="Lasszó: zárt terület kijelölése a maszkhoz."
-          onClick={() => setTool("lasso")}
-        >
-          Lasszó
-        </button>
-        <label className="brush-size" title="Ecset / radír mérete.">
-          Méret
-          <input
-            type="range"
-            min={8}
-            max={72}
-            value={brush}
-            disabled={disabled}
-            onChange={(e) => setBrush(Number(e.target.value))}
-          />
-        </label>
-      </div>
+    <div className={`seed-paint${overlay ? " seed-paint--overlay" : ""}`}>
+      {tools}
       <div className="seed-stage">
-        <canvas ref={bgRef} className="seed-bg" />
+        {!overlay ? <canvas ref={bgRef} className="seed-bg" /> : null}
         <canvas
           ref={maskRef}
           className="seed-mask"
@@ -306,30 +361,17 @@ export function SeedPaint({
           title="Fesd a kézi maszkot a forrás képkockára."
         />
       </div>
-      <div className="seed-actions">
-        <button
-          type="button"
-          className="btn accent"
-          disabled={disabled || !ready}
-          onClick={commit}
-          title="Kézi maszk mentése a szerverre (scrub után is megmarad)."
-        >
-          Maszk mentése
-        </button>
-        <button
-          type="button"
-          className="btn"
-          disabled={disabled}
-          onClick={localClear}
-          title="Kézi maszk törlése."
-        >
-          Maszk törlése
-        </button>
-      </div>
-      <p className="seed-hint">
-        Forrás a maszk alatt. A kézi maszk scrub után is megmarad. Export → Max minőség /
-        MatAnyone2.
-      </p>
+      {actions}
+      {!overlay ? (
+        <p className="seed-hint">
+          Forrás a maszk alatt. A kézi maszk scrub után is megmarad. Export → Max minőség /
+          MatAnyone2.
+        </p>
+      ) : (
+        <p className="seed-hint seed-hint--overlay">
+          Festés az Előnézeten · stroke után élő cutout frissül
+        </p>
+      )}
     </div>
   );
 }

@@ -30,8 +30,8 @@ from hybrid_editor.engines.base import (
 from hybrid_editor.engines.vram import acquire_cuda, release_cuda
 from hybrid_editor.export.composer import (
     AudioSegment,
+    finalize_bgcut_exports,
     media_has_audio,
-    try_prores_alpha,
     write_preview_mp4,
 )
 from hybrid_editor.media.video_io import (
@@ -457,17 +457,33 @@ class FastEngine(MattingEngine):
         self._lanes: Optional[ProxyLaneCache] = None
         self._last_frame_idx = 0
         self._proxy_long = int(os.environ.get("HYBRID_PROXY_LONG", "720") or "720")
-        # Gyors scrub: MobileNet + low ds. Max backbone: ResNet when available + CapCut BEST ds.
+        # Gyors scrub: MobileNet + low ds. Max backbone: ResNet when available.
+        # Max bake defaults to FULL-RES RVM (ds=1.0) — 768 long was leaving residual BG islands.
         self._prefer_quality = bool(prefer_quality)
         self._matte_downsample = 0.40 if self._prefer_quality else 0.25
-        # CapCut BEST target_long_side=768; Max preview/bake should match Videoeditor left side.
-        self._matte_target_long = 768 if self._prefer_quality else 480
-        # Allow env override for Max quality long-side (full-res feel on 1080p → ds≈0.71).
+        # Preview may use a long-side cap; bake sets full_res_matte=True → ds=1.0.
+        self._matte_target_long = 1080 if self._prefer_quality else 480
+        self._full_res_matte = False
         if self._prefer_quality:
-            env_long = os.environ.get("HYBRID_MAX_RVM_LONG", "").strip()
-            if env_long.isdigit():
+            env_long = os.environ.get("HYBRID_MAX_RVM_LONG", "").strip().lower()
+            if env_long in {"0", "full", "native", "1.0", "fullres"}:
+                self._full_res_matte = True
+                self._matte_target_long = 10**9
+            elif env_long.isdigit():
                 self._matte_target_long = max(480, int(env_long))
+            else:
+                # Default Max: full-res inference (RTX 3060 handles 1080p ResNet).
+                self._full_res_matte = True
+                self._matte_target_long = 10**9
         self._load_rvm()
+
+    def set_full_res_matte(self, enabled: bool = True) -> None:
+        """Max bake: force native-resolution RVM (no long-side downsample)."""
+        self._full_res_matte = bool(enabled)
+        if self._full_res_matte:
+            self._matte_target_long = 10**9
+        elif self._prefer_quality:
+            self._matte_target_long = 1080
 
     def _load_rvm(self) -> None:
         prefer = "quality" if self._prefer_quality else "fast"
@@ -601,7 +617,12 @@ class FastEngine(MattingEngine):
         return proxy
 
     def _downsample_for(self, bgr: np.ndarray) -> float:
-        """RVM downsample ratio from long-side target (CapCut-like)."""
+        """RVM downsample ratio from long-side target (CapCut-like).
+
+        Max bake / prefer_quality with full_res_matte → 1.0 (native).
+        """
+        if getattr(self, "_full_res_matte", False):
+            return 1.0
         h, w = bgr.shape[:2]
         long = max(h, w)
         if long <= 0:
@@ -804,23 +825,42 @@ class FastEngine(MattingEngine):
                 audio_duration_sec=end_t - start_t,
             )
             audio_ok = bool(preview_mp4) and media_has_audio(preview_mp4)
-            if os.environ.get("HYBRID_EXPORT_PRORES", "").strip() in {"1", "true", "yes"}:
-                if progress:
-                    progress(0.95, "Export ProRes alpha…")
-                prores = try_prores_alpha(frames_bgra, out_dir / "master_alpha.mov", fps=fps)
+            if progress:
+                progress(0.95, "Export C:\\bgcut *_full_nobg.mov…")
+            # Always write Videoeditor-style alpha MOV (ProRes → qtrle fallback).
+            prores, companion = finalize_bgcut_exports(
+                media_stem=path.stem,
+                out_dir=out_dir,
+                preview_mp4=preview_mp4,
+                frames_bgra=frames_bgra,
+                fps=fps,
+            )
+            if companion:
+                preview_mp4 = companion
             if progress:
                 progress(1.0, "Bake kész")
 
         audio_note = " · audio AAC" if audio_ok else ""
+        mov_note = f" · {Path(prores).name}" if prores else ""
+        dur_note = f" · {end_t - start_t:.2f}s / {written} frame"
         return BakeResult(
             ok=written > 0,
             out_dir=str(out_dir.resolve()),
             frames_written=written,
             engine="FastEngine",
             backend=self._backend,
-            message=f"Wrote {written} alpha frames + preview{audio_note} ({self._backend})",
+            message=(
+                f"Wrote {written} alpha frames + preview{audio_note}{mov_note}"
+                f"{dur_note} ({self._backend})"
+            ),
             alpha_preview=str(alpha_dir / "000000.png") if written else None,
             preview_mp4=preview_mp4,
             prores_mov=prores,
-            bake_range={"in_sec": start_t, "out_sec": end_t, "audio": audio_ok},
+            bake_range={
+                "in_sec": start_t,
+                "out_sec": end_t,
+                "audio": audio_ok,
+                "duration_sec": end_t - start_t,
+                "max_frames_cap": max_frames,
+            },
         )

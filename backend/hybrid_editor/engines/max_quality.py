@@ -27,12 +27,12 @@ from hybrid_editor.engines.quality_pipeline import (
     apply_quality_pass,
     warmup_alpha,
 )
-from hybrid_editor.engines.videoeditor_polish import BEST_SPEC, polish_videoeditor
+from hybrid_editor.engines.videoeditor_polish import BEST_SPEC, apply_color_polish, polish_videoeditor
 from hybrid_editor.engines.vram import acquire_cuda, force_release_all, release_cuda
 from hybrid_editor.export.composer import (
     AudioSegment,
+    finalize_bgcut_exports,
     media_has_audio,
-    try_prores_alpha,
     write_preview_mp4,
 )
 from hybrid_editor.media.video_io import (
@@ -51,7 +51,9 @@ class MaxQualityEngine(MattingEngine):
 
     def __init__(self) -> None:
         # Prefer ResNet50 when present — MobileNet is Gyors/scrub only.
+        # Full-res RVM for Max (bake + sharp preview base matte).
         self._fast = FastEngine(prefer_quality=True)
+        self._fast.set_full_res_matte(True)
         self._adapter = MatAnyone2Adapter()
         self._status = probe_matanyone2()
         self._media: Optional[MediaInfo] = None
@@ -259,16 +261,33 @@ class MaxQualityEngine(MattingEngine):
             if is_matte_empty(alpha):
                 alpha = self._ensure_nonempty_alpha(bgr, alpha)
                 recovered = not is_matte_empty(alpha)
+            # CapCut fringe / cyan spill on cutout RGB (Éles szélek)
+            cut_bgr = bgr
+            if self.sharp_edges and alpha is not None and not is_matte_empty(alpha):
+                cut_bgr = apply_color_polish(
+                    bgr,
+                    alpha,
+                    decontaminate=float(BEST_SPEC.decontaminate),
+                    despill=float(BEST_SPEC.despill),
+                )
             jpg, png, w, h, src, empty = encode_preview_pair(
-                bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
+                cut_bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
             )
         except Exception as exc:  # noqa: BLE001
             matte_error = str(exc)[:240]
             try:
                 alpha = self._ensure_nonempty_alpha(bgr, None)
                 recovered = not is_matte_empty(alpha)
+                cut_bgr = bgr
+                if self.sharp_edges and not is_matte_empty(alpha):
+                    cut_bgr = apply_color_polish(
+                        bgr,
+                        alpha,
+                        decontaminate=float(BEST_SPEC.decontaminate),
+                        despill=float(BEST_SPEC.despill),
+                    )
                 jpg, png, w, h, src, empty = encode_preview_pair(
-                    bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
+                    cut_bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
                 )
             except Exception as exc2:  # noqa: BLE001
                 matte_error = f"{matte_error}; recover: {str(exc2)[:120]}"
@@ -279,8 +298,16 @@ class MaxQualityEngine(MattingEngine):
             # Final hard retry before admitting empty to the UI.
             alpha = self._ensure_nonempty_alpha(bgr, alpha)
             if not is_matte_empty(alpha):
+                cut_bgr = bgr
+                if self.sharp_edges:
+                    cut_bgr = apply_color_polish(
+                        bgr,
+                        alpha,
+                        decontaminate=float(BEST_SPEC.decontaminate),
+                        despill=float(BEST_SPEC.despill),
+                    )
                 jpg, png, w, h, src, empty = encode_preview_pair(
-                    bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
+                    cut_bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
                 )
                 recovered = True
             else:
@@ -308,6 +335,8 @@ class MaxQualityEngine(MattingEngine):
             "sharp_edges": self.sharp_edges,
             "cutout_format": "png" if self.sharp_edges else "jpeg",
             "polish": "videoeditor" if self.sharp_edges else "trimap-soft",
+            "color_polish": bool(self.sharp_edges),
+            "rvm_full_res": bool(getattr(self._fast, "_full_res_matte", False)),
             "rvm_weights": Path(weights).name if weights else None,
             "preview_long_side": preview_long,
         }
@@ -371,6 +400,8 @@ class MaxQualityEngine(MattingEngine):
     ) -> BakeResult:
         assert self._media is not None
         self.reset()
+        # Full-res RVM for Max bake (sibling may also touch in/out range — keep this local).
+        self._fast.set_full_res_matte(True)
         path = Path(self._media.path)
         fps = self._media.fps or 25.0
         start_t = max(0.0, float(in_sec))
@@ -409,16 +440,25 @@ class MaxQualityEngine(MattingEngine):
                             progress(written / max(total_est, 1), "Max re-warmup…")
                         self._fast.reset()
                         alpha = self._polish(bgr, warmup=True)
+                # CapCut RGB fringe / cyan spill before writing BGRA
+                cut_bgr = bgr
+                if self.sharp_edges:
+                    cut_bgr = apply_color_polish(
+                        bgr,
+                        alpha,
+                        decontaminate=float(BEST_SPEC.decontaminate),
+                        despill=float(BEST_SPEC.despill),
+                    )
                 a8 = (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
                 cv2.imwrite(str(alpha_dir / f"{idx:06d}.png"), a8)
                 # preview.mp4 may use a display proxy; ProRes / sharp export keeps full-res BGRA.
                 preview_long = 1080 if self.sharp_edges else 720
-                proxy = downscale_long_side(bgr, preview_long)
+                proxy = downscale_long_side(cut_bgr, preview_long)
                 a_p = cv2.resize(alpha, (proxy.shape[1], proxy.shape[0]), interpolation=cv2.INTER_LINEAR)
                 frames_bgr.append(proxy)
                 frames_alpha.append(a_p)
                 if self.sharp_edges:
-                    bgra = cv2.cvtColor(bgr, cv2.COLOR_BGR2BGRA)
+                    bgra = cv2.cvtColor(cut_bgr, cv2.COLOR_BGR2BGRA)
                     bgra[:, :, 3] = a8
                 else:
                     bgra = cv2.cvtColor(proxy, cv2.COLOR_BGR2BGRA)
@@ -454,13 +494,24 @@ class MaxQualityEngine(MattingEngine):
                 audio_duration_sec=end_t - start_t,
             )
             audio_ok = bool(preview_mp4) and media_has_audio(preview_mp4)
-            if os.environ.get("HYBRID_EXPORT_PRORES", "").strip() in {"1", "true", "yes"}:
-                prores = try_prores_alpha(frames_bgra, out_dir / "master_alpha.mov", fps=fps)
+            if progress:
+                progress(0.95, "Export C:\\bgcut *_full_nobg.mov…")
+            prores, companion = finalize_bgcut_exports(
+                media_stem=path.stem,
+                out_dir=out_dir,
+                preview_mp4=preview_mp4,
+                frames_bgra=frames_bgra,
+                fps=fps,
+            )
+            if companion:
+                preview_mp4 = companion
             if progress:
                 progress(1.0, "Bake kész")
 
         audio_note = " · audio AAC" if audio_ok else ""
         sharp_note = " · éles szélek" if self.sharp_edges else ""
+        mov_note = f" · {Path(prores).name}" if prores else ""
+        dur_note = f" · {end_t - start_t:.2f}s / {written} frame"
         weights = self._fast.capabilities().weights_path
         w_note = f" · {Path(weights).name}" if weights else ""
         return BakeResult(
@@ -471,7 +522,7 @@ class MaxQualityEngine(MattingEngine):
             backend=self._backend,
             message=(
                 f"Quality pipeline wrote {written} frames + preview{audio_note}"
-                f"{sharp_note}{w_note} (full-res alpha · {self._backend})"
+                f"{sharp_note}{mov_note}{dur_note}{w_note} (full-res alpha · {self._backend})"
             ),
             alpha_preview=str(alpha_dir / "000000.png") if written else None,
             preview_mp4=preview_mp4,
@@ -482,6 +533,10 @@ class MaxQualityEngine(MattingEngine):
                 "audio": audio_ok,
                 "sharp_edges": self.sharp_edges,
                 "full_res_alpha": True,
+                "full_res_rvm": bool(getattr(self._fast, "_full_res_matte", False)),
+                "color_polish": bool(self.sharp_edges),
+                "duration_sec": end_t - start_t,
+                "max_frames_cap": max_frames,
             },
         )
 
@@ -567,6 +622,12 @@ class MaxQualityEngine(MattingEngine):
             # Same CapCut polish as quality-pipeline Max — kill halo / fill hair holes.
             if self.sharp_edges:
                 aa = polish_videoeditor(aa, frames_bgr[i], spec=BEST_SPEC)
+                frames_bgr[i] = apply_color_polish(
+                    frames_bgr[i],
+                    aa,
+                    decontaminate=float(BEST_SPEC.decontaminate),
+                    despill=float(BEST_SPEC.despill),
+                )
             a8 = (np.clip(aa, 0, 1) * 255).astype(np.uint8)
             cv2.imwrite(str(alpha_dir / f"{i:06d}.png"), a8)
             a = aa  # for proxy resize below
@@ -596,17 +657,25 @@ class MaxQualityEngine(MattingEngine):
             audio_segments=audio_segs,
             audio_duration_sec=end_t - start_t,
         )
-        prores = None
-        if os.environ.get("HYBRID_EXPORT_PRORES", "").strip() in {"1", "true", "yes"}:
-            prores = try_prores_alpha(frames_bgra, out_dir / "master_alpha.mov", fps=fps)
+        prores, companion = finalize_bgcut_exports(
+            media_stem=path.stem,
+            out_dir=out_dir,
+            preview_mp4=preview_mp4,
+            frames_bgra=frames_bgra,
+            fps=fps,
+        )
+        if companion:
+            preview_mp4 = companion
 
         # Restore Fast backbone for further preview (CPU/heuristic or ORT as available)
         self._fast = FastEngine(prefer_quality=True)
+        self._fast.set_full_res_matte(True)
         if self._media:
             self._fast.open_media(Path(self._media.path))
 
         audio_ok = bool(preview_mp4) and media_has_audio(preview_mp4)
         audio_note = " · audio AAC" if audio_ok else ""
+        mov_note = f" · {Path(prores).name}" if prores else ""
         return BakeResult(
             ok=True,
             out_dir=str(out_dir.resolve()),
@@ -614,11 +683,17 @@ class MaxQualityEngine(MattingEngine):
             engine="MaxQualityEngine",
             backend="matanyone2-adapter",
             message=(
-                f"MatAnyone2 adapter wrote {len(alphas)} frames + preview{audio_note} "
-                "(S-Lab NC, local)"
+                f"MatAnyone2 adapter wrote {len(alphas)} frames + preview{audio_note}"
+                f"{mov_note} (S-Lab NC, local)"
             ),
             alpha_preview=str(alpha_dir / "000000.png"),
             preview_mp4=preview_mp4,
             prores_mov=prores,
-            bake_range={"in_sec": start_t, "out_sec": end_t, "audio": audio_ok},
+            bake_range={
+                "in_sec": start_t,
+                "out_sec": end_t,
+                "audio": audio_ok,
+                "duration_sec": end_t - start_t,
+                "max_frames_cap": max_frames,
+            },
         )

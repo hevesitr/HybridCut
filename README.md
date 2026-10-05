@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-05-perfect-matte` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-05-hybrid-polish` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-05-perfect-matte
+# expect: 2026-10-05-hybrid-polish
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA+cuDNN: .\hybrid_cut\start_hybrid_cuda.ps1
@@ -72,6 +72,30 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 ---
 
+## Hybrid polish (this stamp) — merges three fixes
+
+Supersedes `full-bake-bgcut` · `max-accuracy` · `simple-preview`.
+
+### Full-duration bake + bgcut path
+
+- Exportálás hanggal bakes full In/Out (`max_frames` default **`null`**, not 48)
+- Default out dir **`C:\bgcut\`** (`HYBRID_BGCUT_DIR` override)
+- Alpha MOV `{stem}_full_nobg.mov` + companion `{stem}_full_nobg_preview.mp4`
+
+### Max cutout accuracy
+
+- **Full-res RVM** for Max bake/preview backbone (no 768 long-side downsample)
+- **ResNet50 preferred** when present (`prefer_quality`)
+- **Residual BG island kill** via hard-core support (`suppress_residual_bg`) — neck/shoulder leftovers
+- **Cyan / white fringe**: CapCut `decontaminate_fringe` + `suppress_color_spill` on cutout RGB
+- CapCut Videoeditor refine path (no aggressive morph-open that creates islands)
+
+### Simple preview UX
+
+- **Kézi finomítás on Előnézet**: Ecset / Radír / Lasszó (+ Méret) overlay on Cutout / Maszk / Forrás — paint the same canvas you see; stroke auto-commits seed + live cutout.
+- **Nagy seed panel** optional (collapsed by default) — no duplicate paint stage required.
+- **Összehasonlítás**: drag the vertical wipe line on the image; separate wipe slider chrome removed.
+
 ## Person matte (this stamp)
 
 - **Max without MatAnyone2 weights** → RVM quality pipeline person alpha (never empty fake MatAnyone2)
@@ -86,7 +110,8 @@ cd $env:USERPROFILE\Documents\Videoeditor
 - Preview default: **Forrás** on load — Előnézet after matte → **Cutout**
 - View toggle: **Forrás | Maszk | Cutout | Összehasonlítás**
 - Weak/empty matte → source underlay + clear „Nincs ember-maszk” cue
-- Help line: `1) Videó betöltése 2) Előnézet 3) Exportálás`
+- Help line: `1) Videó betöltése 2) Előnézet 3) Exportálás → C:\bgcut\*_full_nobg.mov (teljes hossz)`
+- Export: full In/Out (no 48-frame preview cap); default dir `C:\bgcut\`; ProRes/qtrle `{stem}_full_nobg.mov` + companion preview. See [`docs/full-bake-bgcut-restart.md`](docs/full-bake-bgcut-restart.md).
 
 ## Phase 5 + cuDNN PATH
 

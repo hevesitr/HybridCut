@@ -246,9 +246,10 @@ export const api = {
       "/api/seed",
     ),
   clearSeed: () => json<EditorStatus>("/api/seed", { method: "DELETE" }),
-  bake: (max_frames = 48, async_job = true, queue_if_busy = true, label = "") =>
+  bake: (max_frames: number | null = null, async_job = true, queue_if_busy = true, label = "") =>
     json<BakeStart>("/api/bake", {
       method: "POST",
+      // null max_frames = full In/Out (or full media). Do NOT send 48 — that was the ~1s bug.
       body: JSON.stringify({ max_frames, async_job, queue_if_busy, label }),
     }),
   bakeProgress: () =>

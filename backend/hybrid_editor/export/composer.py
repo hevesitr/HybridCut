@@ -336,7 +336,11 @@ def write_windows_companion(
     *,
     stem: str = "HybridCut_preview",
 ) -> Optional[str]:
-    """Copy preview next to bake as a clear Windows Films&TV / VLC companion name."""
+    """Copy preview next to bake as a clear Windows Films&TV / VLC companion name.
+
+    Prefer Videoeditor naming: pass ``stem="{media}_full_nobg_preview"`` so the
+    file lands as ``{stem}.mp4`` (e.g. ``29308762a_full_nobg_preview.mp4``).
+    """
     if not preview_mp4:
         return None
     src = Path(preview_mp4)
@@ -360,16 +364,20 @@ def try_prores_alpha(
     *,
     fps: float = 25.0,
 ) -> Optional[str]:
-    """Best-effort ProRes 4444 with alpha via ffmpeg image pipe. Optional."""
+    """Best-effort ProRes 4444 with alpha (Videoeditor ``*_full_nobg.mov``).
+
+    Falls back to qtrle/png QuickTime Animation when ProRes mux is unavailable.
+    """
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg or not frames_bgra:
         return None
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    h, w = frames_bgra[0].shape[:2]
-    # Write PNG sequence then encode — more reliable than raw pipe on Windows
     seq = out_path.parent / "_prores_seq"
     seq.mkdir(parents=True, exist_ok=True)
+    n = len(frames_bgra)
+    timeout = max(180.0, 2.0 * n + 60.0)
+    ok = False
     try:
         for i, bgra in enumerate(frames_bgra):
             cv2.imwrite(str(seq / f"{i:06d}.png"), bgra)
@@ -388,11 +396,60 @@ def try_prores_alpha(
             "yuva444p10le",
             str(out_path),
         ]
-        subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        subprocess.run(cmd, check=True, capture_output=True, timeout=timeout)
+        ok = out_path.is_file() and out_path.stat().st_size > 0
+    except Exception as exc:  # noqa: BLE001
+        logger.info("ProRes alpha export unavailable (%s) — trying qtrle fallback", exc)
+        ok = False
+    finally:
+        for p in seq.glob("*.png"):
+            p.unlink(missing_ok=True)
+        try:
+            seq.rmdir()
+        except OSError:
+            pass
+    if ok:
+        return str(out_path.resolve())
+    return try_qtrle_alpha(frames_bgra, out_path, fps=fps)
+
+
+def try_qtrle_alpha(
+    frames_bgra: list[np.ndarray],
+    out_path: Path,
+    *,
+    fps: float = 25.0,
+) -> Optional[str]:
+    """Fallback QuickTime Animation (qtrle) alpha MOV when ProRes mux is hard."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg or not frames_bgra:
+        return None
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    seq = out_path.parent / "_qtrle_seq"
+    seq.mkdir(parents=True, exist_ok=True)
+    n = len(frames_bgra)
+    timeout = max(120.0, 1.5 * n + 45.0)
+    try:
+        for i, bgra in enumerate(frames_bgra):
+            cv2.imwrite(str(seq / f"{i:06d}.png"), bgra)
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-framerate",
+            str(float(fps) or 25.0),
+            "-i",
+            str(seq / "%06d.png"),
+            "-c:v",
+            "qtrle",
+            "-pix_fmt",
+            "argb",
+            str(out_path),
+        ]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=timeout)
         if out_path.is_file() and out_path.stat().st_size > 0:
             return str(out_path.resolve())
     except Exception as exc:  # noqa: BLE001
-        logger.info("ProRes alpha export unavailable (%s)", exc)
+        logger.info("qtrle alpha export unavailable (%s)", exc)
     finally:
         for p in seq.glob("*.png"):
             p.unlink(missing_ok=True)
@@ -401,3 +458,41 @@ def try_prores_alpha(
         except OSError:
             pass
     return None
+
+
+def finalize_bgcut_exports(
+    *,
+    media_stem: str,
+    out_dir: Path,
+    preview_mp4: Optional[str],
+    frames_bgra: list[np.ndarray],
+    fps: float,
+    scope: str = "full",
+) -> tuple[Optional[str], Optional[str]]:
+    """Write Videoeditor-style ``{stem}_full_nobg.mov`` + companion preview.
+
+    Returns ``(prores_or_qtrle_mov, companion_preview_mp4)``.
+    """
+    from hybrid_editor.export.bgcut import ensure_bgcut_dir, nobg_mov_path, nobg_preview_path, nobg_stem
+
+    out_dir = ensure_bgcut_dir(out_dir)
+    mov = nobg_mov_path(media_stem, out_dir=out_dir, scope=scope)
+    prores = try_prores_alpha(frames_bgra, mov, fps=fps) if frames_bgra else None
+    # Companion preview next to the MOV (Videoeditor open-output pattern)
+    companion_stem = f"{nobg_stem(media_stem, scope)}_preview"
+    # write_windows_companion appends .mp4 — pass stem without extension suffix handling
+    # nobg_preview_path is `{stem}_full_nobg_preview.mp4`; companion uses stem without .mp4
+    companion = write_windows_companion(
+        preview_mp4,
+        out_dir,
+        stem=companion_stem,
+    )
+    # Prefer canonical preview path name
+    expected = nobg_preview_path(media_stem, out_dir=out_dir, scope=scope)
+    if companion and Path(companion).is_file() and Path(companion).resolve() != expected.resolve():
+        try:
+            shutil.copy2(companion, expected)
+            companion = str(expected.resolve())
+        except OSError:
+            pass
+    return prores, companion

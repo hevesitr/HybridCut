@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useRef, useState, useTransition } from "react";
+import { useEffect, useEffectEvent, useRef, useState, useTransition, type PointerEvent as ReactPointerEvent } from "react";
 import { ModeSwitcher } from "./components/ModeSwitcher";
 import { SeedPaint } from "./components/SeedPaint";
 import { TimelineTrack } from "./components/TimelineTrack";
@@ -212,11 +212,12 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState("Nyiss meg egy videót, vagy tölts be mintát.");
-  const [showSeed, setShowSeed] = useState(false);
+  /** Optional large duplicate seed panel below — default paint is on Előnézet. */
+  const [showLargeSeed, setShowLargeSeed] = useState(false);
   const [seedPng, setSeedPng] = useState<string | null>(null);
   /** Alapnézet: teljes forrás RGB — Előnézet után Cutout, ha van ember-maszk. */
   const [viewMode, setViewMode] = useState<ViewMode>("source");
-  const [wipe, setWipe] = useState(100);
+  const [wipe, setWipe] = useState(50);
   const [dragOver, setDragOver] = useState(false);
   const [assist, setAssist] = useState<AssistStatus | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -226,11 +227,44 @@ export default function App() {
   const brollRef = useRef<HTMLInputElement>(null);
   const scrubTimer = useRef<number | null>(null);
   const toastTimer = useRef<number | null>(null);
+  const wipeStageRef = useRef<HTMLDivElement>(null);
+  const wipeDragging = useRef(false);
 
   const showToast = (msg: string) => {
     setToast(msg);
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(null), 4200);
+  };
+
+  const wipeFromClientX = (clientX: number) => {
+    const el = wipeStageRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const pct = ((clientX - rect.left) / rect.width) * 100;
+    setWipe(Math.max(0, Math.min(100, pct)));
+  };
+
+  const onWipePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    wipeDragging.current = true;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    wipeFromClientX(e.clientX);
+  };
+
+  const onWipePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!wipeDragging.current) return;
+    wipeFromClientX(e.clientX);
+  };
+
+  const onWipePointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!wipeDragging.current) return;
+    wipeDragging.current = false;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
   };
 
   const syncTrimFromStatus = (st: EditorStatus) => {
@@ -587,12 +621,15 @@ export default function App() {
         playhead_sec: tSec,
         clip_id: clipId,
       });
-      const res = await api.bake(48, true, true, `bake-${Date.now().toString(36)}`);
+      const res = await api.bake(null, true, true, `bake-${Date.now().toString(36)}`);
       setStatus(res.status);
+      const dur =
+        status?.timeline?.duration_sec ?? status?.media?.duration_sec ?? outSec - inSec;
       setNote(
         res.queued
           ? res.message || "Export sorba téve"
-          : res.message || "Export fut… (hang AAC)",
+          : res.message ||
+              `Export fut… teljes hossz (~${Math.max(0, dur).toFixed(1)}s) · C:\\bgcut\\*_full_nobg.mov`,
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -658,6 +695,37 @@ export default function App() {
   const afterMime = matteEmpty ? "image/jpeg" : cutoutMime;
   const sharpEdges = status?.sharp_edges !== false;
   const statusText = smartStatusLine(status, note, busy, error, matteEmpty, preview);
+  /** Paint tools live on main Előnézet for Cutout / Maszk / Forrás (not Összehasonlítás). */
+  const paintOnPreview =
+    !!preview && (viewMode === "cutout" || viewMode === "mask" || viewMode === "source");
+
+  const commitSeed = async (png: string, opts?: { quiet?: boolean }) => {
+    const quiet = !!opts?.quiet;
+    if (!quiet) setBusy(true);
+    try {
+      const st = await api.setSeed(png);
+      setStatus(st);
+      setSeedPng(st.seed_mask_png_b64 ?? png);
+      setNote("Kézi finomítás mentve — auto ember-maszk + festés unió");
+      await runPreview(tSec, st, undefined, { preferCutout: true });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (!quiet) setBusy(false);
+    }
+  };
+
+  const clearSeedMask = async () => {
+    try {
+      const st = await api.clearSeed();
+      setStatus(st);
+      setSeedPng(null);
+      setNote("Kézi finomítás törölve — auto RVM marad");
+      await runPreview(tSec, st, undefined, { preferCutout: true });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   const onSharpEdges = (enabled: boolean) => {
     startTransition(() => {
@@ -689,7 +757,7 @@ export default function App() {
     {
       id: "compare",
       label: "Összehasonlítás",
-      title: "Csúsztatható összehasonlítás: maszk ↔ cutout (alapból teljesen Utána).",
+      title: "Húzd a függőleges vonalat a képen: maszk ↔ cutout.",
     },
   ];
 
@@ -921,7 +989,7 @@ export default function App() {
                 className={`btn ${mode === "max" ? "accent" : "primary"}`}
                 disabled={(!status?.media && !clips.length) || !!status?.analyse_running}
                 onClick={onBake}
-                title="Exportálás hanggal — ha fut egy export, a következő a sorba kerül."
+                title="Exportálás hanggal — teljes In/Out hossz · C:\\bgcut\\{stem}_full_nobg.mov"
               >
                 {status?.bake_running ? "Export sorba +" : "Exportálás hanggal"}
               </button>
@@ -930,12 +998,14 @@ export default function App() {
                 className="btn"
                 disabled={!status?.last_bake?.ok && !status?.last_bake?.out_dir}
                 onClick={() => void onOpenOutput()}
-                title="Utolsó export kimeneti mappájának megnyitása."
+                title="Utolsó export kimeneti mappájának megnyitása (C:\\bgcut)."
               >
                 Kimenet mappa
               </button>
             </div>
-            <p className="action-help">1) Videó betöltése 2) Előnézet 3) Exportálás</p>
+            <p className="action-help">
+              1) Videó betöltése 2) Előnézet 3) Exportálás → C:\bgcut\*_full_nobg.mov (teljes hossz)
+            </p>
           </div>
 
           {clips.length > 0 && (
@@ -1160,7 +1230,11 @@ export default function App() {
             <div>
               <h2>Előnézet</h2>
               <p className="lead">
-                Forrás betöltéskor · Előnézet után Cutout, ha van ember-maszk
+                {viewMode === "compare"
+                  ? "Húzd a vonalat a képen — maszk balra, cutout jobbra"
+                  : paintOnPreview
+                    ? "Ecset / Radír / Lasszó az Előnézeten · Forrás → Cutout maszk után"
+                    : "Forrás betöltéskor · Előnézet után Cutout, ha van ember-maszk"}
               </p>
             </div>
             <div className="preview-tools" role="radiogroup" aria-label="Előnézet nézet">
@@ -1175,7 +1249,7 @@ export default function App() {
                   title={v.title}
                   onClick={() => {
                     setViewMode(v.id);
-                    if (v.id === "compare") setWipe(100);
+                    if (v.id === "compare") setWipe(50);
                   }}
                 >
                   {v.label}
@@ -1183,45 +1257,6 @@ export default function App() {
               ))}
             </div>
           </div>
-
-          {viewMode === "compare" ? (
-            <div className="wipe-controls">
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setWipe(0)}
-                title="Csak a maszk / Előtte oldal."
-              >
-                Előtte
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setWipe(50)}
-                title="Fele-fele összehasonlítás."
-              >
-                50%
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setWipe(100)}
-                title="Csak a cutout / forrás (Utána) oldal."
-              >
-                Utána
-              </button>
-              <input
-                className="wipe-slider"
-                type="range"
-                min={0}
-                max={100}
-                value={wipe}
-                onChange={(e) => setWipe(Number(e.target.value))}
-                aria-label="Összehasonlítás csúszka"
-                title="Húzd: balra maszk, jobbra cutout/forrás."
-              />
-            </div>
-          ) : null}
 
           <div className={`preview-stage ${viewMode === "source" || matteEmpty ? "source-solid" : "checker-subtle"}`}>
             {toast ? (
@@ -1253,23 +1288,40 @@ export default function App() {
                 ) : null}
                 {viewMode === "compare" && beforeSrc && afterSrc ? (
                   <div className="wipe-compare">
-                    <div className="wipe-labels">
-                      <span>{matteEmpty ? "Előtte (nincs maszk)" : "Előtte (maszk)"}</span>
-                      <span>{matteEmpty ? "Utána (forrás)" : "Utána (cutout)"}</span>
+                    <div className="wipe-labels" aria-hidden>
+                      <span>{matteEmpty ? "Előtte" : "Maszk"}</span>
+                      <span>{matteEmpty ? "Forrás" : "Cutout"}</span>
                     </div>
-                    <div className="wipe-stage checker-subtle">
+                    <div
+                      ref={wipeStageRef}
+                      className="wipe-stage checker-subtle"
+                      role="slider"
+                      aria-label="Összehasonlítás vonal"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={Math.round(wipe)}
+                      title="Húzd a vonalat a képen: balra maszk, jobbra cutout."
+                      onPointerDown={onWipePointerDown}
+                      onPointerMove={onWipePointerMove}
+                      onPointerUp={onWipePointerUp}
+                      onPointerCancel={onWipePointerUp}
+                    >
                       <img
                         src={`data:${beforeMime};base64,${beforeSrc}`}
                         alt={matteEmpty ? "Forrás — nincs maszk" : "Alpha maszk"}
                         className="wipe-base"
+                        draggable={false}
                       />
                       <img
                         src={`data:${afterMime};base64,${afterSrc}`}
                         alt={matteEmpty ? "Forrás képkocka" : "Cutout"}
                         className="wipe-fg"
+                        draggable={false}
                         style={{ clipPath: `inset(0 ${100 - wipe}% 0 0)` }}
                       />
-                      <div className="wipe-divider" style={{ left: `${wipe}%` }} />
+                      <div className="wipe-divider" style={{ left: `${wipe}%` }}>
+                        <span className="wipe-handle" aria-hidden />
+                      </div>
                     </div>
                   </div>
                 ) : singleSrc ? (
@@ -1285,7 +1337,19 @@ export default function App() {
                     }
                   />
                 ) : null}
-                {seedPng && mode === "max" && viewMode !== "mask" ? (
+                {paintOnPreview ? (
+                  <SeedPaint
+                    variant="overlay"
+                    autoCommitOnStrokeEnd
+                    imageJpegB64={preview?.source_jpeg_b64 || preview?.jpeg_b64 || null}
+                    initialMaskPngB64={seedPng}
+                    width={preview?.width ?? 480}
+                    height={preview?.height ?? 360}
+                    disabled={!!status?.bake_running || !!status?.analyse_running || !preview}
+                    onCommit={(png) => void commitSeed(png, { quiet: true })}
+                    onClear={() => void clearSeedMask()}
+                  />
+                ) : seedPng && mode === "max" && viewMode !== "mask" ? (
                   <img
                     className="seed-overlay-preview"
                     src={
@@ -1342,53 +1406,36 @@ export default function App() {
           <div className="seed-toggle">
             <button
               type="button"
-              className={`btn ${showSeed ? "accent" : ""}`}
+              className={`btn ${showLargeSeed ? "accent" : ""}`}
               disabled={!preview}
-              title="Opcionális kézi finomítás — az ember-maszk automatikus (nem kötelező)."
+              title="Nagy seed panel — csak ha a külön forrás+maszk nézet kell (alapból az Előnézeten fests)."
               onClick={() => {
-                setShowSeed((v) => {
+                setShowLargeSeed((v) => {
                   const next = !v;
                   if (next) void refreshSeed();
                   return next;
                 });
               }}
             >
-              {showSeed ? "Kézi finomítás elrejtése" : "Kézi finomítás (opcionális)"}
+              {showLargeSeed ? "Nagy seed panel elrejtése" : "Nagy seed panel"}
             </button>
+            {paintOnPreview ? (
+              <span className="seed-toggle-hint" title="Ecset / Radír / Lasszó az Előnézet tetején.">
+                Kézi finomítás: az Előnézeten
+              </span>
+            ) : null}
           </div>
 
-          {showSeed && (
+          {showLargeSeed && (
             <SeedPaint
+              variant="panel"
               imageJpegB64={preview?.source_jpeg_b64 || preview?.jpeg_b64 || null}
               initialMaskPngB64={seedPng}
               width={preview?.width ?? 480}
               height={preview?.height ?? 360}
               disabled={locked || !preview}
-              onCommit={async (png) => {
-                setBusy(true);
-                try {
-                  const st = await api.setSeed(png);
-                  setStatus(st);
-                  setSeedPng(st.seed_mask_png_b64 ?? png);
-                  setNote("Kézi finomítás mentve — auto ember-maszk + festés unió");
-                  await runPreview(tSec, st, undefined, { preferCutout: true });
-                } catch (e) {
-                  setError(e instanceof Error ? e.message : String(e));
-                } finally {
-                  setBusy(false);
-                }
-              }}
-              onClear={async () => {
-                try {
-                  const st = await api.clearSeed();
-                  setStatus(st);
-                  setSeedPng(null);
-                  setNote("Kézi finomítás törölve — auto RVM marad");
-                  await runPreview(tSec, st, undefined, { preferCutout: true });
-                } catch (e) {
-                  setError(e instanceof Error ? e.message : String(e));
-                }
-              }}
+              onCommit={(png) => void commitSeed(png)}
+              onClear={() => void clearSeedMask()}
             />
           )}
         </section>

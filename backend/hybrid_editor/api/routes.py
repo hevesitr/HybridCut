@@ -37,7 +37,8 @@ class PreviewBody(BaseModel):
 
 
 class BakeBody(BaseModel):
-    max_frames: Optional[int] = 48
+    # None = full In/Out (or full media). Never default to a preview sample (was 48 ≈ 1–2s).
+    max_frames: Optional[int] = None
     out_dir: Optional[str] = None
     async_job: bool = True
     queue_if_busy: bool = True
@@ -253,8 +254,11 @@ def clear_seed() -> dict:
 
 @router.post("/bake")
 def bake(body: BakeBody) -> dict:
-    out = Path(body.out_dir) if body.out_dir else ROOT / "cache" / "bake" / SESSION.mode.value
-    out.mkdir(parents=True, exist_ok=True)
+    from hybrid_editor.export.bgcut import default_bgcut_dir, ensure_bgcut_dir
+
+    # Default: Videoeditor-style C:\bgcut\ (create if missing). Override via out_dir / HYBRID_BGCUT_DIR.
+    out = Path(body.out_dir) if body.out_dir else default_bgcut_dir()
+    ensure_bgcut_dir(out)
     try:
         result = SESSION.bake(
             out,
