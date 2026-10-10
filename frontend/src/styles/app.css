@@ -477,13 +477,94 @@ input {
   line-height: 1.35;
 }
 
-.mode-btn em {
+.mode-btn em,
+.mode-btn .mode-eta {
   display: block;
-  margin-top: 0.25rem;
-  font-size: 0.66rem;
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
   font-style: normal;
-  letter-spacing: 0.02em;
-  color: rgba(230, 240, 234, 0.45);
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  color: var(--accent-2);
+}
+
+.mode-btn.max .mode-eta,
+.mode-btn.max em {
+  color: var(--accent);
+}
+
+.eta-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem;
+  margin: 0 0 0.65rem;
+}
+
+.eta-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.5rem 0.55rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.eta-card.active {
+  border-color: rgba(184, 240, 0, 0.45);
+  background: rgba(184, 240, 0, 0.06);
+}
+
+.eta-card:last-child.active {
+  border-color: rgba(255, 122, 26, 0.5);
+  background: rgba(255, 122, 26, 0.08);
+}
+
+.eta-card-mode {
+  display: block;
+  font-size: 0.62rem;
+  color: var(--mist);
+  margin-bottom: 0.2rem;
+  line-height: 1.3;
+}
+
+.eta-card strong {
+  font-family: var(--font-display);
+  font-size: 0.92rem;
+  font-weight: 650;
+}
+
+.export-eta {
+  margin: 0 0 0.75rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 10px;
+  border: 1px solid rgba(184, 240, 0, 0.22);
+  background: linear-gradient(135deg, rgba(184, 240, 0, 0.1), rgba(255, 122, 26, 0.06));
+  font-size: 0.78rem;
+  color: var(--fog);
+  line-height: 1.4;
+}
+
+.export-eta strong {
+  color: var(--accent-2);
+  font-family: var(--font-display);
+}
+
+.export-eta span {
+  color: var(--mist);
+  font-size: 0.7rem;
+}
+
+.bake-remain {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.primary-flow {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.45rem;
+}
+
+.more-tools {
+  margin-bottom: 0.75rem;
 }
 
 .sharp-toggle {

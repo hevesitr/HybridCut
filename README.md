@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-10-apex` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-10-eta-ui` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-10-apex
+# expect: 2026-10-10-eta-ui
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA+cuDNN: .\hybrid_cut\start_hybrid_cuda.ps1
@@ -72,9 +72,31 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 ---
 
+## Stamp — eta-ui (`2026-10-10-eta-ui`)
+
+On top of `2026-10-10-apex`. CapCut-clean helper UI + **upfront Gyors / Max háttéreltávolítás ETA**.
+
+### ETA (RTX 3060-class)
+
+- Mode cards + export strip show **both** Gyors and Max estimates before bake
+- Live update when Be/Ki, clip, fps, or resolution changes
+- During bake: remaining time from `written/total` frames (fallback: progress %)
+- Hungarian labels: „Kb. 12 mp” / „Kb. 1 perc 20 mp”
+- Formula: `frames × sec/frame(mode, resolution) + mux` — calibrated `0.028` / `0.165` s/frame @ 1080p
+
+### Simple helper UX
+
+- Visible 1-2-3: Megnyitás → Előnézet/Cutout → Export (ETA on Export)
+- Timeline/tech controls under **Részletek** · lime/orange HybridCut identity kept
+- Apex cutout/export quality unchanged
+
+Restart: [`docs/eta-ui-restart.md`](docs/eta-ui-restart.md) · store [`../hybrid-eta-ui-restart.md`](../hybrid-eta-ui-restart.md)
+
+---
+
 ## Stamp — apex (`2026-10-10-apex`)
 
-Overdevelop on top of `2026-10-10-peak`. CapCut-clean one-click cutout + stronger Max polish — **no MatAnyone2 weights shipped**.
+Included in eta-ui. CapCut-clean one-click cutout + stronger Max polish — **no MatAnyone2 weights shipped**.
 
 ### Cutout quality (Max + Éles szélek)
 

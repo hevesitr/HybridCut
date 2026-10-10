@@ -1,4 +1,4 @@
-"""UI contracts for nobg result card + stamp ``2026-10-10-apex``."""
+"""UI contracts for nobg result card + stamp ``2026-10-10-eta-ui``."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ SYNC = ROOT / "SYNC_VERSION.txt"
 README = ROOT / "README.md"
 
 
-def test_sync_stamp_apex():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-10-apex"
+def test_sync_stamp_eta_ui():
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-10-eta-ui"
 
 
 def test_app_result_card_and_explorer():
@@ -40,6 +40,11 @@ def test_app_result_card_and_explorer():
     # CapCut-simple one-click flow
     assert "Megnyitás → auto Cutout → Exportálás" in text
     assert "flow-steps" in text
+    # Upfront Gyors + Max ETA
+    assert "export-eta" in text
+    assert "eta-pair" in text
+    assert "Hátravan" in text
+    assert "bothModeEtas" in text
     # Tech chips folded under Részletek (RVM not in intel strip)
     assert "intelFromPreview" in text
     assert "rvmChip(status)" not in text.split("function intelFromPreview")[1].split("function smartStatusLine")[0]
@@ -59,8 +64,11 @@ def test_css_result_and_checker_motion():
     assert "--accent-2: #b8f000" in css
     assert "Sora" in css
     assert "Manrope" in css
+    assert ".eta-pair" in css
+    assert ".export-eta" in css
+    assert ".mode-eta" in css
 
 
-def test_readme_mentions_apex_stamp():
+def test_readme_mentions_eta_ui_stamp():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-10-apex" in readme
+    assert "2026-10-10-eta-ui" in readme

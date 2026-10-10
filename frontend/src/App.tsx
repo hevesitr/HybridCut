@@ -3,6 +3,13 @@ import { ModeSwitcher } from "./components/ModeSwitcher";
 import { SeedPaint } from "./components/SeedPaint";
 import { TimelineTrack } from "./components/TimelineTrack";
 import { api, type AssistStatus, type EditorStatus, type PreviewResult } from "./lib/api";
+import {
+  bothModeEtas,
+  clipDurationSec,
+  formatEtaHu,
+  remainingBakeSec,
+  type BakeMode,
+} from "./lib/eta";
 
 /** Előnézet nézet: alapból Forrás (teljes RGB), nem wipe / nem csak alpha. */
 type ViewMode = "source" | "mask" | "cutout" | "compare";
@@ -645,11 +652,17 @@ export default function App() {
       setStatus(res.status);
       const dur =
         status?.timeline?.duration_sec ?? status?.media?.duration_sec ?? outSec - inSec;
+      const etaNow = bothModeEtas(
+        clipDurationSec(inSec, outSec, dur),
+        status?.timeline?.fps || status?.media?.fps || 25,
+        status?.media?.width ?? 1920,
+        status?.media?.height ?? 1080,
+      )[mode]?.labelHu;
       setNote(
         res.queued
           ? res.message || "Export sorba téve"
           : res.message ||
-              `Export fut… teljes hossz (~${Math.max(0, dur).toFixed(1)}s) · C:\\bgcut\\*_full_nobg.mov`,
+              `Export fut… ${etaNow || "Kb. —"} · ~${Math.max(0, dur).toFixed(1)}s klip · C:\\bgcut\\*_full_nobg.mov`,
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -682,7 +695,7 @@ export default function App() {
   };
 
   const duration = status?.timeline?.duration_sec ?? status?.media?.duration_sec ?? 0;
-  const mode = status?.mode ?? "gyors";
+  const mode = (status?.mode ?? "gyors") as BakeMode;
   const bakePct = Math.round((status?.bake_progress ?? 0) * 100);
   const analysePct = Math.round((status?.analyse_progress ?? 0) * 100);
   const plan = status?.frame_plan;
@@ -690,6 +703,24 @@ export default function App() {
   const selected = status?.timeline?.selected_clip_id ?? null;
   const locked = busy || !!status?.bake_running || !!status?.analyse_running;
   const hasMedia = !!status?.media || clips.length > 0;
+  const mediaW = status?.media?.width ?? 1920;
+  const mediaH = status?.media?.height ?? 1080;
+  const mediaFps = status?.timeline?.fps || status?.media?.fps || 25;
+  const bakeSpanSec = clipDurationSec(inSec, outSec, duration);
+  const etas = bothModeEtas(bakeSpanSec, mediaFps, mediaW, mediaH);
+  const selectedEta = etas[mode]?.labelHu ?? "Kb. —";
+  const remainSec = status?.bake_running
+    ? remainingBakeSec({
+        durationSec: bakeSpanSec,
+        fps: mediaFps,
+        width: mediaW,
+        height: mediaH,
+        mode,
+        bakeProgress: status?.bake_progress ?? 0,
+        bakeStatus: status?.bake_status ?? "",
+      })
+    : 0;
+  const remainLabel = status?.bake_running ? formatEtaHu(remainSec) : "";
   const chips = intelFromPreview(preview, status);
   const matteEmpty = Boolean(preview?.meta?.matte_empty || preview?.meta?.source_fallback);
   const cutoutIsPng =
@@ -857,7 +888,13 @@ export default function App() {
                 Minta
               </button>
             </div>
-            <ModeSwitcher mode={mode} disabled={locked || pending} onChange={onMode} />
+            <ModeSwitcher
+              mode={mode}
+              disabled={locked || pending}
+              onChange={onMode}
+              etaGyors={etas.gyors.labelHu}
+              etaMax={etas.max.labelHu}
+            />
             <div className="hero-meta">
               {status?.sync_version ?? "…"} · Videoeditor · Róbert Hevesi-Tóth
             </div>
@@ -918,23 +955,35 @@ export default function App() {
             </ol>
             <h2>Cutout</h2>
             <p className="lead">
-              <strong>Gyors</strong> scrub · <strong>Max</strong> apex export
+              1 Megnyitás → 2 Előnézet/Cutout → 3 Export. Válaszd a módot — az ETA élőben frissül.
             </p>
-            <ModeSwitcher mode={mode} disabled={locked || pending} onChange={onMode} />
-            <label
-              className={`sharp-toggle ${sharpEdges ? "on" : ""}`}
-              title="Éles szélek (apex): haj/fringe/spill polish, PNG cutout, teljes felbontású Max bake. Alapból be Max/exportnál."
-            >
-              <input
-                type="checkbox"
-                checked={sharpEdges}
-                disabled={locked || pending}
-                onChange={(e) => onSharpEdges(e.target.checked)}
-              />
-              <span>Éles szélek</span>
-              <em>{mode === "max" ? "Max / export" : "exportnál érvényes"}</em>
-            </label>
-            <div className="actions export-actions">
+            <ModeSwitcher
+              mode={mode}
+              disabled={locked || pending}
+              onChange={onMode}
+              etaGyors={etas.gyors.labelHu}
+              etaMax={etas.max.labelHu}
+            />
+            <div className="eta-pair" aria-live="polite">
+              <div className={`eta-card ${mode === "gyors" ? "active" : ""}`}>
+                <span className="eta-card-mode">Gyors háttéreltávolítás</span>
+                <strong>{etas.gyors.labelHu}</strong>
+              </div>
+              <div className={`eta-card ${mode === "max" ? "active" : ""}`}>
+                <span className="eta-card-mode">Max háttéreltávolítás</span>
+                <strong>{etas.max.labelHu}</strong>
+              </div>
+            </div>
+            <p className="export-eta" title="Becsült bake idő a jelenlegi Be/Ki és felbontás alapján (RTX 3060).">
+              Export előtt · {mode === "max" ? "Max" : "Gyors"}: <strong>{selectedEta}</strong>
+              {bakeSpanSec > 0 ? (
+                <span>
+                  {" "}
+                  · {bakeSpanSec.toFixed(1)}s klip · {mediaW}×{mediaH} · {mediaFps.toFixed(0)} fps
+                </span>
+              ) : null}
+            </p>
+            <div className="actions export-actions primary-flow">
               <button
                 type="button"
                 className="btn accent"
@@ -942,52 +991,25 @@ export default function App() {
                 onClick={() => fileRef.current?.click()}
                 title="Videó betöltése — automatikus Cutout előnézet."
               >
-                Megnyitás
+                1 · Megnyitás
+              </button>
+              <button
+                type="button"
+                className={`btn ${flowStep === 1 ? "accent pulse-cta" : ""}`}
+                disabled={locked || !status?.media}
+                onClick={() => void runPreview(tSec, undefined, undefined, { preferCutout: true })}
+                title="Auto ember-maszk futtatása (RVM) — Cutout nézetre vált, ha kész."
+              >
+                2 · Előnézet Cutout
               </button>
               <button
                 type="button"
                 className={`btn ${flowStep === 2 ? "accent pulse-cta" : mode === "max" ? "accent" : "primary"}`}
                 disabled={(!status?.media && !clips.length) || !!status?.analyse_running}
                 onClick={onBake}
-                title="Exportálás hanggal — teljes In/Out hossz · C:\\bgcut\\{stem}_full_nobg.mov"
+                title={`Exportálás hanggal — ${selectedEta} · C:\\bgcut\\{stem}_full_nobg.mov`}
               >
-                {status?.bake_running ? "Export…" : "Exportálás"}
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || !status?.media}
-                onClick={() => void runPreview(tSec, undefined, undefined, { preferCutout: true })}
-                title="Auto ember-maszk futtatása (RVM) — Cutout nézetre vált, ha kész."
-              >
-                Előnézet Cutout
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked}
-                onClick={onSample}
-                title="Beépített minta videó betöltése."
-              >
-                Minta
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked}
-                onClick={() => appendRef.current?.click()}
-                title="További klip hozzáadása az V1 sávhoz."
-              >
-                + V1
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked}
-                onClick={() => brollRef.current?.click()}
-                title="B-roll videó hozzáadása a V2 sávhoz."
-              >
-                + B-roll
+                {status?.bake_running ? "Export…" : `3 · Exportálás · ${selectedEta}`}
               </button>
               <input
                 ref={fileRef}
@@ -1010,15 +1032,6 @@ export default function App() {
                 hidden
                 onChange={(e) => onUpload(e.target.files?.[0] ?? null, true, true)}
               />
-              <button
-                type="button"
-                className="btn"
-                disabled={!status?.last_bake?.ok && !status?.last_bake?.out_dir}
-                onClick={() => void onOpenOutput()}
-                title="Explorer: kijelöli a *_full_nobg.mov fájlt."
-              >
-                Megnyitás Explorerben
-              </button>
             </div>
             <p className="action-help">
               Megnyitás → auto Cutout → Exportálás · master:{" "}
@@ -1048,72 +1061,7 @@ export default function App() {
           )}
 
           <div className="trim-block">
-            <h3>Idővonal</h3>
-            <div className="actions tight">
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || !clips.length}
-                onClick={() => runAction("duplicate")}
-                title="Kijelölt klip másolása."
-              >
-                Duplikál
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || clips.length < 2}
-                onClick={() => runAction("remove")}
-                title="Kijelölt klip törlése."
-              >
-                Töröl
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || !clips.length}
-                onClick={() => runAction("cut", { t_sec: tSec })}
-                title="Klip felvágása a lejátszási fejnél."
-              >
-                Vágás
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || !selected}
-                onClick={() => runAction("move", { clip_id: selected ?? undefined, direction: -1 })}
-                title="Klip léptetése balra."
-              >
-                ←
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || !selected}
-                onClick={() => runAction("move", { clip_id: selected ?? undefined, direction: 1 })}
-                title="Klip léptetése jobbra."
-              >
-                →
-              </button>
-              <button
-                type="button"
-                className="btn accent"
-                disabled={locked || !selected}
-                onClick={() => runAction("to_broll", { clip_id: selected ?? undefined })}
-                title="Kijelölt klip áthelyezése a V2 B-roll sávra."
-              >
-                → B-roll
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || !selected}
-                onClick={() => runAction("to_v1", { clip_id: selected ?? undefined })}
-                title="Kijelölt klip visszarakása az V1 sávra."
-              >
-                → V1
-              </button>
-            </div>
+            <h3>Be / Ki · ETA frissül</h3>
             <div className="trim-row">
               <label title="Klip kezdőpontja másodpercben.">
                 Be
@@ -1144,7 +1092,7 @@ export default function App() {
                 onClick={applyTrim}
                 title="Be/Ki pontok alkalmazása a kijelölt klipre."
               >
-                Vágás alkalmaz
+                Alkalmaz
               </button>
             </div>
           </div>
@@ -1167,6 +1115,9 @@ export default function App() {
               </div>
               <div className="bake-label">
                 Export {bakePct}% · {status?.bake_status || "…"}
+                {remainLabel && remainLabel !== "Kb. —" ? (
+                  <span className="bake-remain"> · Hátravan {remainLabel.replace(/^Kb\.\s*/, "")}</span>
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -1248,7 +1199,121 @@ export default function App() {
           ) : null}
 
           <details className="meta-fold">
-            <summary>Részletek · motor / VRAM</summary>
+            <summary>Részletek · idővonal / motor / VRAM</summary>
+            <div className="actions tight more-tools">
+              <button
+                type="button"
+                className="btn"
+                disabled={locked}
+                onClick={onSample}
+                title="Beépített minta videó betöltése."
+              >
+                Minta
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={locked}
+                onClick={() => appendRef.current?.click()}
+                title="További klip hozzáadása az V1 sávhoz."
+              >
+                + V1
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={locked}
+                onClick={() => brollRef.current?.click()}
+                title="B-roll videó hozzáadása a V2 sávhoz."
+              >
+                + B-roll
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={!status?.last_bake?.ok && !status?.last_bake?.out_dir}
+                onClick={() => void onOpenOutput()}
+                title="Explorer: kijelöli a *_full_nobg.mov fájlt."
+              >
+                Explorer
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={locked || !clips.length}
+                onClick={() => runAction("duplicate")}
+                title="Kijelölt klip másolása."
+              >
+                Duplikál
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={locked || clips.length < 2}
+                onClick={() => runAction("remove")}
+                title="Kijelölt klip törlése."
+              >
+                Töröl
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={locked || !clips.length}
+                onClick={() => runAction("cut", { t_sec: tSec })}
+                title="Klip felvágása a lejátszási fejnél."
+              >
+                Vágás
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={locked || !selected}
+                onClick={() => runAction("move", { clip_id: selected ?? undefined, direction: -1 })}
+                title="Klip léptetése balra."
+              >
+                ←
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={locked || !selected}
+                onClick={() => runAction("move", { clip_id: selected ?? undefined, direction: 1 })}
+                title="Klip léptetése jobbra."
+              >
+                →
+              </button>
+              <button
+                type="button"
+                className="btn accent"
+                disabled={locked || !selected}
+                onClick={() => runAction("to_broll", { clip_id: selected ?? undefined })}
+                title="Kijelölt klip áthelyezése a V2 B-roll sávra."
+              >
+                → B-roll
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={locked || !selected}
+                onClick={() => runAction("to_v1", { clip_id: selected ?? undefined })}
+                title="Kijelölt klip visszarakása az V1 sávra."
+              >
+                → V1
+              </button>
+            </div>
+            <label
+              className={`sharp-toggle ${sharpEdges ? "on" : ""}`}
+              title="Éles szélek (apex): haj/fringe/spill polish, PNG cutout, teljes felbontású Max bake. Alapból be Max/exportnál."
+            >
+              <input
+                type="checkbox"
+                checked={sharpEdges}
+                disabled={locked || pending}
+                onChange={(e) => onSharpEdges(e.target.checked)}
+              />
+              <span>Éles szélek</span>
+              <em>{mode === "max" ? "Max / export" : "exportnál érvényes"}</em>
+            </label>
             <div className="meta">
               <div title={rvm.title}>
                 RVM: <code>{rvm.label}</code>
@@ -1280,6 +1345,12 @@ export default function App() {
                   </code>
                 </div>
               ) : null}
+              <div>
+                ETA kalibráció:{" "}
+                <code>
+                  Gyors {etas.gyors.labelHu} · Max {etas.max.labelHu} · RTX 3060
+                </code>
+              </div>
               {plan && !plan.empty ? (
                 <div>
                   Képterv:{" "}
