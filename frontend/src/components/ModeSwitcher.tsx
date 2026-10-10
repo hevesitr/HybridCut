@@ -13,12 +13,11 @@ export function ModeSwitcher({ mode, disabled, onChange }: Props) {
         role="radio"
         aria-checked={mode === "gyors"}
         disabled={disabled}
-        title="Gyors = gyors/lágyabb élő előnézet (MobileNet scrub, MaszkTár, proxy)."
+        title="Gyors = élő scrub, gyors előnézet."
         onClick={() => onChange("gyors")}
       >
         <strong>Gyors</strong>
-        <span>gyors / lágyabb</span>
-        <em>MobileNet · élő scrub</em>
+        <span>élő scrub</span>
       </button>
       <button
         type="button"
@@ -26,12 +25,11 @@ export function ModeSwitcher({ mode, disabled, onChange }: Props) {
         role="radio"
         aria-checked={mode === "max"}
         disabled={disabled}
-        title="Max = élesebb export (ResNet50 ha van, szűk trimap, teljes felbontású bake)."
+        title="Max = apex export (ResNet50 ha van, APEX polish, teljes felbontású bake)."
         onClick={() => onChange("max")}
       >
         <strong>Max</strong>
-        <span>élesebb export</span>
-        <em>ResNet / pipeline · bake</em>
+        <span>apex export</span>
       </button>
     </div>
   );

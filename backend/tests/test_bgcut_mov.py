@@ -71,5 +71,9 @@ def test_finalize_bgcut_primary_mov(tmp_path: Path):
     assert mov is not None
     assert Path(mov).name == "29308762a_full_nobg.mov"
     assert Path(mov).is_file()
+    # Checker companion always synthesized when preview_mp4 was missing
+    assert prev is not None
+    assert Path(prev).is_file()
+    assert Path(prev).name == "29308762a_full_nobg_preview.mp4"
     # alpha/ not created by finalize
     assert not (tmp_path / "alpha").exists()

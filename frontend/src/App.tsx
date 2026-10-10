@@ -66,67 +66,65 @@ function personMatteChip(status: EditorStatus | null, preview: PreviewResult | n
     status?.person_matte?.matanyone2_active
   );
   if (status?.mode === "max") {
+    // Short strip label — full HU string lives in status line / meta-fold.
+    const short = active ? "MatAnyone2" : "RVM ember";
     return {
       key: "person",
-      label: label || (active ? "MatAnyone2 aktív" : "MatAnyone2 nincs — RVM ember-maszk"),
+      label: short,
       on: true,
       warn: !active,
-      title: active
-        ? "MatAnyone2 helyi súlyokkal fut."
-        : "Nincs MatAnyone2 súly — Max mód RVM minőségi pipeline-nal ad ember-maszkot.",
+      title:
+        label ||
+        (active
+          ? "MatAnyone2 helyi súlyokkal fut."
+          : "Nincs MatAnyone2 súly — Max mód RVM minőségi pipeline-nal ad ember-maszkot (több személy)."),
     };
   }
   return {
     key: "person",
-    label: label || "Gyors RVM ember-maszk",
+    label: "RVM ember",
     on: true,
     warn: false,
-    title: "Gyors mód: automatikus RVM ember-maszk (kézi maszk nem kötelező).",
+    title: label || "Gyors mód: automatikus RVM ember-maszk (kézi maszk nem kötelező).",
   };
 }
 
 function intelFromPreview(preview: PreviewResult | null, status: EditorStatus | null) {
-  /** First-view strip: only active / decision chips — less dense log noise. */
-  const meta = preview?.meta ?? {};
+  /** Apex strip: mode + export only — RVM / person / Ollama live under Részletek. */
   const q = status?.bake_queue_len ?? 0;
+  const matteReady = !!(
+    preview &&
+    !preview.meta?.matte_empty &&
+    !preview.meta?.source_fallback
+  );
   const chips = [
     {
       key: "mode",
-      label: status?.mode === "max" ? "Max · élesebb" : "Gyors · lágyabb",
+      label: status?.mode === "max" ? "Max" : "Gyors",
       on: true,
       warn: status?.mode === "max",
       title:
         status?.mode === "max"
-          ? "Max: ResNet50 ha van + élesebb export / teljes felbontású bake."
-          : "Gyors: MobileNet scrub — gyors/lágyabb élő előnézet.",
+          ? "Max apex: ResNet50 + APEX polish (haj/spill/fringe) · teljes felbontású bake · több személy."
+          : "Gyors: MobileNet scrub / proxy — gyors előnézet, Max bake a csúcs minőség.",
     },
-    rvmChip(status),
-    personMatteChip(status, preview),
   ];
-  if (status?.seed_mask || meta.user_seed) {
+  if (matteReady && !status?.bake_running && !(status?.last_bake?.ok && status.last_bake.prores_mov)) {
     chips.push({
-      key: "seed",
-      label: "Kézi finomítás ✓",
+      key: "cutout",
+      label: "Cutout ✓",
       on: true,
       warn: false,
-      title: "Opcionális kézi maszk — csak finomítás; az ember-maszk automatikus.",
+      title: "Ember-maszk kész — Exportálás a következő lépés.",
     });
   }
   if (status?.bake_running || q > 0) {
     chips.push({
       key: "queue",
-      label: status?.bake_running ? "Export fut…" : `Export sor ${q}`,
+      label: status?.bake_running ? "Export…" : `Sor ${q}`,
       on: true,
       warn: false,
       title: "Várakozó vagy futó export (bake) feladatok.",
-    });
-  } else if (status?.last_bake?.ok && status.last_bake.prores_mov) {
-    chips.push({
-      key: "export",
-      label: "nobg MOV ✓",
-      on: true,
-      warn: false,
-      title: status.last_bake.prores_mov,
     });
   } else if (status?.last_bake && !status.last_bake.ok) {
     chips.push({
@@ -136,16 +134,13 @@ function intelFromPreview(preview: PreviewResult | null, status: EditorStatus | 
       warn: true,
       title: status.last_bake.message || "Nincs *_full_nobg.mov",
     });
-  }
-  if (status?.analyse_running || (status?.analyse_masks ?? 0) > 0) {
+  } else if (status?.last_bake?.ok && status.last_bake.prores_mov) {
     chips.push({
-      key: "analyse",
-      label: status?.analyse_running
-        ? "Elemzés…"
-        : `Elemzés ${status?.analyse_masks}`,
+      key: "export",
+      label: "nobg ✓",
       on: true,
       warn: false,
-      title: "Ritka maszk-elemzés a timeline mentén.",
+      title: status.last_bake.prores_mov,
     });
   }
   return chips;
@@ -437,24 +432,25 @@ export default function App() {
       setPreview(frame);
       const empty = Boolean(frame.meta?.matte_empty || frame.meta?.source_fallback);
       const personLabel = String(frame.meta?.person_matte_label_hu || "");
-      const storeHit = frame.meta?.mask_store ? " · MaszkTár" : "";
       const seedHit = frame.meta?.user_seed ? " · kézi finomítás ✓" : "";
-      const emptyHit = empty ? " · Nincs ember-maszk" : "";
-      const personHit = personLabel ? ` · ${personLabel}` : "";
-      const failHit = frame.meta?.source_fallback ? " · RVM soft-fail" : "";
       const ov = (frame.meta?.overlay_layers as unknown[] | undefined)?.length ?? 0;
       const ovHit = ov ? ` · B-roll ×${ov}` : "";
-      const lanes = frame.meta?.proxy_lanes as { stats?: { hot_hits?: number } } | undefined;
-      const laneHit = lanes?.stats?.hot_hits ? ` · HOT ${lanes.stats.hot_hits}` : "";
+      // Apex: short human status — tech detail stays under Részletek.
       setNote(
         noteOverride ??
-          `${frame.engine} · ${frame.backend}${personHit}${storeHit}${seedHit}${emptyHit}${failHit}${ovHit}${laneHit} · t=${frame.t_sec.toFixed(2)}s`,
+          (empty
+            ? "Nincs ember-maszk — futtasd az Előnézetet"
+            : `Cutout kész${seedHit}${ovHit} · t=${frame.t_sec.toFixed(2)}s`),
       );
       // Explicit Előnézet / upload: jump to Cutout when matte ready (scrub stays put).
       if (opts?.preferCutout) {
         if (!empty) {
           setViewMode("cutout");
-          showToast(personLabel || "Ember-maszk kész — Cutout nézet");
+          showToast(
+            personLabel
+              ? `${personLabel} — Exportálás a következő lépés`
+              : "Cutout kész — Exportálás a következő lépés",
+          );
         } else if (frame.meta?.matte_error || frame.meta?.source_fallback) {
           showToast("Ember-maszk sikertelen — RVM/heuristic nem adott maszkot");
         } else {
@@ -791,7 +787,7 @@ export default function App() {
           setStatus(st);
           setNote(
             enabled
-              ? "Éles szélek be — szűk trimap, PNG cutout, teljes felbontású Max bake"
+              ? "Éles szélek be — apex polish, PNG cutout, teljes felbontású Max bake"
               : "Éles szélek ki — lágyabb feather / Gyors-szerű szélek",
           );
           if (st.media) await runPreview(tSec, st);
@@ -802,7 +798,18 @@ export default function App() {
   };
 
   const rvm = rvmChip(status);
-  const rvmDetail = status?.rvm;
+  const personChip = personMatteChip(status, preview);
+  const matteReady = !!(
+    preview &&
+    !preview.meta?.matte_empty &&
+    !preview.meta?.source_fallback
+  );
+  const flowStep: 1 | 2 | 3 =
+    status?.last_bake?.ok && status.last_bake.prores_mov
+      ? 3
+      : matteReady
+        ? 2
+        : 1;
 
   const viewButtons: { id: ViewMode; label: string; title: string }[] = [
     { id: "source", label: "Forrás", title: "Eredeti videókép — teljes RGB, sakktábla nélkül." },
@@ -826,11 +833,20 @@ export default function App() {
         <section className="hero">
           <div className="hero-inner">
             <div className="brand-mark">HybridCut</div>
-            <p className="hero-tag">Helyi cutout szerkesztő — tölts be videót, nézd meg, exportálj.</p>
+            <p className="hero-tag">Egy kattintás a helyi cutoutra.</p>
             <p className="hero-sub">
-              1) Videó betöltése · 2) Előnézet · 3) Exportálás — RTX 3060 · csak helyi / ingyenes.
+              Megnyitás → auto Cutout → Exportálás. Lime · orange · RTX 3060 · csak helyi.
             </p>
             <div className="hero-cta">
+              <button
+                type="button"
+                className="btn accent hero-cta-primary"
+                disabled={locked}
+                onClick={() => fileRef.current?.click()}
+                title="Videó megnyitása — automatikus Cutout előnézet."
+              >
+                Megnyitás
+              </button>
               <button
                 type="button"
                 className="btn primary"
@@ -838,53 +854,10 @@ export default function App() {
                 onClick={onSample}
                 title="Beépített minta videó betöltése a kipróbáláshoz."
               >
-                Minta videó
-              </button>
-              <button
-                type="button"
-                className="btn accent"
-                disabled={locked}
-                onClick={() => fileRef.current?.click()}
-                title="Videófájl megnyitása a gépről."
-              >
-                Videó betöltése
+                Minta
               </button>
             </div>
             <ModeSwitcher mode={mode} disabled={locked || pending} onChange={onMode} />
-            <div className="hero-chips" aria-label="Futás állapot">
-              <span
-                className={`intel-chip ${rvm.on ? "on" : ""} ${rvm.warn ? "warn" : ""}`}
-                title={rvm.title}
-              >
-                {rvm.label}
-              </span>
-              <span
-                className={`intel-chip ${rvmDetail?.onnx_found ? "on" : ""}`}
-                title="RVM ONNX modell elérhetősége."
-              >
-                {rvmDetail?.onnx_found
-                  ? `ONNX ${rvmDetail.onnx_name || "✓"}`
-                  : "ONNX hiányzik"}
-              </span>
-              <span
-                className={`intel-chip ${rvmDetail?.ort_available ? "on" : ""}`}
-                title="ONNX Runtime telepítve van-e."
-              >
-                {rvmDetail?.ort_available ? "ORT ✓" : "ORT —"}
-              </span>
-              <span
-                className={`intel-chip ${assist?.ok ? "on" : ""}`}
-                title="Helyi Ollama asszisztens (llama3)."
-              >
-                {assist?.ok ? "Ollama ✓" : "Ollama —"}
-              </span>
-            </div>
-            <p className="hero-hint">
-              {rvmDetail?.onnx_found
-                ? `RVM: ${rvmDetail.source === "parent_videoeditor" ? "szülő Videoeditor models" : rvmDetail.source || "felismerve"}`
-                : "Ha a CapCut Videoeditor models\\ mappában van rvm_*.onnx, a Gyors motor automatikusan felismeri."}
-              {" · "}Húzd ide a videófájlt, vagy kattints a gombra.
-            </p>
             <div className="hero-meta">
               {status?.sync_version ?? "…"} · Videoeditor · Róbert Hevesi-Tóth
             </div>
@@ -913,7 +886,7 @@ export default function App() {
         </div>
         <div className="sync">
           <div className="sync-stamp">{status?.sync_version ?? "…"}</div>
-          <div>RTX 3060 · Ollama localhost</div>
+          <div>RTX 3060 · helyi</div>
         </div>
       </header>
 
@@ -927,27 +900,30 @@ export default function App() {
             {c.label}
           </span>
         ))}
-        {assist ? (
-          <span
-            className={`intel-chip ${assist.ok ? "on" : ""}`}
-            title={assist.message || "Helyi Ollama asszisztens állapota."}
-          >
-            {assist.ok ? "Ollama ✓" : "Ollama —"}
-          </span>
-        ) : null}
       </div>
 
       <main className="workspace">
         <aside className="rail">
           <div className="rail-block">
-            <h2>Matting motor</h2>
+            <ol className="flow-steps" aria-label="Egy kattintásos folyamat">
+              <li className={flowStep >= 1 ? "done" : ""} data-step="1">
+                Megnyitás
+              </li>
+              <li className={flowStep >= 2 ? "done" : flowStep === 1 ? "next" : ""} data-step="2">
+                Cutout
+              </li>
+              <li className={flowStep >= 3 ? "done" : flowStep === 2 ? "next" : ""} data-step="3">
+                Exportálás
+              </li>
+            </ol>
+            <h2>Cutout</h2>
             <p className="lead">
-              <strong>Gyors</strong> = gyors/lágyabb · <strong>Max</strong> = élesebb export
+              <strong>Gyors</strong> scrub · <strong>Max</strong> apex export
             </p>
             <ModeSwitcher mode={mode} disabled={locked || pending} onChange={onMode} />
             <label
               className={`sharp-toggle ${sharpEdges ? "on" : ""}`}
-              title="Éles szélek: szűk trimap, kevesebb Gaussian feather, PNG cutout, teljes felbontású Max bake. Alapból be Max/exportnál."
+              title="Éles szélek (apex): haj/fringe/spill polish, PNG cutout, teljes felbontású Max bake. Alapból be Max/exportnál."
             >
               <input
                 type="checkbox"
@@ -958,10 +934,37 @@ export default function App() {
               <span>Éles szélek</span>
               <em>{mode === "max" ? "Max / export" : "exportnál érvényes"}</em>
             </label>
-            <div className="actions">
+            <div className="actions export-actions">
               <button
                 type="button"
-                className="btn primary"
+                className="btn accent"
+                disabled={locked}
+                onClick={() => fileRef.current?.click()}
+                title="Videó betöltése — automatikus Cutout előnézet."
+              >
+                Megnyitás
+              </button>
+              <button
+                type="button"
+                className={`btn ${flowStep === 2 ? "accent pulse-cta" : mode === "max" ? "accent" : "primary"}`}
+                disabled={(!status?.media && !clips.length) || !!status?.analyse_running}
+                onClick={onBake}
+                title="Exportálás hanggal — teljes In/Out hossz · C:\\bgcut\\{stem}_full_nobg.mov"
+              >
+                {status?.bake_running ? "Export…" : "Exportálás"}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={locked || !status?.media}
+                onClick={() => void runPreview(tSec, undefined, undefined, { preferCutout: true })}
+                title="Auto ember-maszk futtatása (RVM) — Cutout nézetre vált, ha kész."
+              >
+                Előnézet Cutout
+              </button>
+              <button
+                type="button"
+                className="btn"
                 disabled={locked}
                 onClick={onSample}
                 title="Beépített minta videó betöltése."
@@ -972,23 +975,14 @@ export default function App() {
                 type="button"
                 className="btn"
                 disabled={locked}
-                onClick={() => fileRef.current?.click()}
-                title="Videó betöltése a gépről (új projekt)."
+                onClick={() => appendRef.current?.click()}
+                title="További klip hozzáadása az V1 sávhoz."
               >
-                Megnyitás
+                + V1
               </button>
               <button
                 type="button"
                 className="btn"
-                disabled={locked}
-                onClick={() => appendRef.current?.click()}
-                title="További klip hozzáadása az V1 sávhoz."
-              >
-                + V1 klip
-              </button>
-              <button
-                type="button"
-                className="btn accent"
                 disabled={locked}
                 onClick={() => brollRef.current?.click()}
                 title="B-roll videó hozzáadása a V2 sávhoz."
@@ -1019,33 +1013,6 @@ export default function App() {
               <button
                 type="button"
                 className="btn"
-                disabled={locked || !status?.media}
-                onClick={() => void runPreview(tSec, undefined, undefined, { preferCutout: true })}
-                title="Auto ember-maszk futtatása (RVM) — Cutout nézetre vált, ha kész."
-              >
-                Előnézet
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || !status?.media}
-                onClick={onAnalyse}
-                title="Ritka maszk-elemzés a timeline mentén (előtöltéshez)."
-              >
-                Elemzés
-              </button>
-              <button
-                type="button"
-                className={`btn ${mode === "max" ? "accent" : "primary"}`}
-                disabled={(!status?.media && !clips.length) || !!status?.analyse_running}
-                onClick={onBake}
-                title="Exportálás hanggal — teljes In/Out hossz · C:\\bgcut\\{stem}_full_nobg.mov"
-              >
-                {status?.bake_running ? "Export sorba +" : "Exportálás hanggal"}
-              </button>
-              <button
-                type="button"
-                className="btn"
                 disabled={!status?.last_bake?.ok && !status?.last_bake?.out_dir}
                 onClick={() => void onOpenOutput()}
                 title="Explorer: kijelöli a *_full_nobg.mov fájlt."
@@ -1054,7 +1021,7 @@ export default function App() {
               </button>
             </div>
             <p className="action-help">
-              1) Videó 2) Előnézet 3) Export → teljes útvonal a kártyán · master:{" "}
+              Megnyitás → auto Cutout → Exportálás · master:{" "}
               <code>{"C:\\bgcut\\{stem}_full_nobg.mov"}</code>
             </p>
           </div>
@@ -1211,7 +1178,7 @@ export default function App() {
             >
               {status.last_bake.ok && status.last_bake.prores_mov ? (
                 <>
-                  <div className="export-result-eyebrow">Átlátszó nobg kész</div>
+                  <div className="export-result-eyebrow">Átlátszó nobg kész · apex</div>
                   <p className="export-result-path" title={status.last_bake.prores_mov}>
                     {status.last_bake.prores_mov}
                   </p>
@@ -1283,6 +1250,12 @@ export default function App() {
           <details className="meta-fold">
             <summary>Részletek · motor / VRAM</summary>
             <div className="meta">
+              <div title={rvm.title}>
+                RVM: <code>{rvm.label}</code>
+              </div>
+              <div title={personChip.title}>
+                Ember-maszk: <code>{personChip.label}</code>
+              </div>
               <div>
                 Motor: <code>{status?.engine ?? "—"}</code>
               </div>
@@ -1320,9 +1293,31 @@ export default function App() {
               <div>{status?.detail}</div>
               {assist ? (
                 <div title={assist.message}>
-                  Assist: <code>{assist.ok ? "llama3 @ 11434" : assist.message}</code>
+                  Assist / Ollama: <code>{assist.ok ? "llama3 @ 11434" : assist.message}</code>
                 </div>
               ) : null}
+              {status?.rvm ? (
+                <div>
+                  RVM fájl:{" "}
+                  <code>
+                    {status.rvm.onnx_found
+                      ? `${status.rvm.onnx_name || "onnx"} · ORT ${status.rvm.ort_available ? "✓" : "—"}`
+                      : "onnx hiányzik"}
+                  </code>
+                </div>
+              ) : null}
+              <div>
+                Elemzés:{" "}
+                <button
+                  type="button"
+                  className="btn linkish"
+                  disabled={locked || !status?.media}
+                  onClick={onAnalyse}
+                  title="Ritka maszk-elemzés a timeline mentén (előtöltéshez)."
+                >
+                  Ritka elemzés
+                </button>
+              </div>
             </div>
             <div className="license">{status?.license_note}</div>
           </details>

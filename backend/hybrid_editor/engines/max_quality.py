@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -27,13 +29,19 @@ from hybrid_editor.engines.quality_pipeline import (
     apply_quality_pass,
     warmup_alpha,
 )
-from hybrid_editor.engines.videoeditor_polish import BEST_SPEC, apply_color_polish, polish_videoeditor
+from hybrid_editor.engines.videoeditor_polish import (
+    APEX_SPEC,
+    apply_color_polish,
+    polish_videoeditor,
+)
 from hybrid_editor.engines.vram import acquire_cuda, force_release_all, release_cuda
 from hybrid_editor.export.composer import (
     AudioSegment,
     finalize_bgcut_exports,
     media_has_audio,
+    try_prores_alpha_from_png_dir,
     write_preview_mp4,
+    write_windows_companion,
 )
 from hybrid_editor.media.video_io import (
     downscale_long_side,
@@ -57,7 +65,8 @@ class MaxQualityEngine(MattingEngine):
         self._adapter = MatAnyone2Adapter()
         self._status = probe_matanyone2()
         self._media: Optional[MediaInfo] = None
-        self._stabilizer = AnchorMemoryStabilizer(strength=0.4, jump_threshold=0.18)
+        # Apex: slightly stronger temporal prior (MatAnyone2-inspired anchor)
+        self._stabilizer = AnchorMemoryStabilizer(strength=0.45, jump_threshold=0.15)
         self._seed: Optional[np.ndarray] = None
         self._user_seed: Optional[np.ndarray] = None  # painted / lasso first-frame mask
         # Default on: CapCut-like sharp bake / preview (toggle via session).
@@ -222,10 +231,10 @@ class MaxQualityEngine(MattingEngine):
         # Soft-boost painted FG on the live alpha too (same union rule).
         if self._user_seed is not None:
             a = self._seed_for(bgr, a)
-        # Éles szélek (default): CapCut Videoeditor polish — NO wide trimap fuse
+        # Éles szélek (default): CapCut APEX polish — NO wide trimap fuse
         # (trimap erode/dilate was the thick halo / hair-hole source on the right side).
         if self.sharp_edges:
-            polished = polish_videoeditor(a, bgr, spec=BEST_SPEC, seed=self._seed)
+            polished = polish_videoeditor(a, bgr, spec=APEX_SPEC, seed=self._seed)
             return self._stabilizer.update(polished)
         return apply_quality_pass(
             a,
@@ -261,14 +270,16 @@ class MaxQualityEngine(MattingEngine):
             if is_matte_empty(alpha):
                 alpha = self._ensure_nonempty_alpha(bgr, alpha)
                 recovered = not is_matte_empty(alpha)
-            # CapCut fringe / cyan spill on cutout RGB (Éles szélek)
+            # CapCut fringe / cyan + bright spill on cutout RGB (Éles szélek / apex)
             cut_bgr = bgr
             if self.sharp_edges and alpha is not None and not is_matte_empty(alpha):
                 cut_bgr = apply_color_polish(
                     bgr,
                     alpha,
-                    decontaminate=float(BEST_SPEC.decontaminate),
-                    despill=float(BEST_SPEC.despill),
+                    decontaminate=float(APEX_SPEC.decontaminate),
+                    despill=float(APEX_SPEC.despill),
+                    bright_fringe=float(APEX_SPEC.bright_fringe),
+                    micro_despill=float(APEX_SPEC.micro_despill),
                 )
             jpg, png, w, h, src, empty = encode_preview_pair(
                 cut_bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
@@ -283,8 +294,10 @@ class MaxQualityEngine(MattingEngine):
                     cut_bgr = apply_color_polish(
                         bgr,
                         alpha,
-                        decontaminate=float(BEST_SPEC.decontaminate),
-                        despill=float(BEST_SPEC.despill),
+                        decontaminate=float(APEX_SPEC.decontaminate),
+                        despill=float(APEX_SPEC.despill),
+                        bright_fringe=float(APEX_SPEC.bright_fringe),
+                        micro_despill=float(APEX_SPEC.micro_despill),
                     )
                 jpg, png, w, h, src, empty = encode_preview_pair(
                     cut_bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
@@ -303,8 +316,10 @@ class MaxQualityEngine(MattingEngine):
                     cut_bgr = apply_color_polish(
                         bgr,
                         alpha,
-                        decontaminate=float(BEST_SPEC.decontaminate),
-                        despill=float(BEST_SPEC.despill),
+                        decontaminate=float(APEX_SPEC.decontaminate),
+                        despill=float(APEX_SPEC.despill),
+                        bright_fringe=float(APEX_SPEC.bright_fringe),
+                        micro_despill=float(APEX_SPEC.micro_despill),
                     )
                 jpg, png, w, h, src, empty = encode_preview_pair(
                     cut_bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
@@ -334,11 +349,14 @@ class MaxQualityEngine(MattingEngine):
             "matte_recovered": recovered,
             "sharp_edges": self.sharp_edges,
             "cutout_format": "png" if self.sharp_edges else "jpeg",
-            "polish": "videoeditor" if self.sharp_edges else "trimap-soft",
+            "polish": "videoeditor-apex" if self.sharp_edges else "trimap-soft",
             "color_polish": bool(self.sharp_edges),
+            "peak_spec": bool(self.sharp_edges),
+            "apex_spec": bool(self.sharp_edges),
             "rvm_full_res": bool(getattr(self._fast, "_full_res_matte", False)),
             "rvm_weights": Path(weights).name if weights else None,
             "preview_long_side": preview_long,
+            "stamp": "2026-10-10-apex",
         }
         if matte_error and empty:
             meta["matte_error"] = matte_error
@@ -419,12 +437,24 @@ class MaxQualityEngine(MattingEngine):
         limit = max_frames if max_frames is not None else 10**9
         if limit <= 0:
             limit = 10**9
+        # Accurate frame count: prefer container frame count in trim window
         total_est = int(max(1, round((end_t - start_t) * fps)))
+        try:
+            n_cont = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            if n_cont > 0 and fps > 1e-6:
+                i0 = int(max(0, round(start_t * fps)))
+                i1 = int(min(n_cont, max(i0 + 1, round(end_t * fps))))
+                total_est = max(1, i1 - i0)
+        except Exception:
+            pass
         if max_frames is not None:
             total_est = min(total_est, max_frames)
         frames_bgr: list[np.ndarray] = []
         frames_alpha: list[np.ndarray] = []
-        frames_bgra: list[np.ndarray] = []
+        # Apex: stream full-res BGRA to disk (RTX 3060 RAM) — keep only preview proxies in RAM
+        stream_dir = Path(tempfile.mkdtemp(prefix="hybrid-apex-bgra-"))
+        frames_bgra_fallback: list[np.ndarray] = []
+        stream_mode = bool(self.sharp_edges)
         try:
             idx = 0
             while written < limit:
@@ -441,17 +471,22 @@ class MaxQualityEngine(MattingEngine):
                     drift = float(np.mean(np.abs(alpha - self._seed)))
                     if drift > 0.28:
                         if progress:
-                            progress(written / max(total_est, 1), "Max re-warmup…")
+                            progress(
+                                written / max(total_est, 1),
+                                f"Max re-warmup… {written}/{total_est} frame",
+                            )
                         self._fast.reset()
                         alpha = self._polish(bgr, warmup=True)
-                # CapCut RGB fringe / cyan spill before writing BGRA
+                # CapCut RGB fringe / cyan + bright spill before writing BGRA
                 cut_bgr = bgr
                 if self.sharp_edges:
                     cut_bgr = apply_color_polish(
                         bgr,
                         alpha,
-                        decontaminate=float(BEST_SPEC.decontaminate),
-                        despill=float(BEST_SPEC.despill),
+                        decontaminate=float(APEX_SPEC.decontaminate),
+                        despill=float(APEX_SPEC.despill),
+                        bright_fringe=float(APEX_SPEC.bright_fringe),
+                        micro_despill=float(APEX_SPEC.micro_despill),
                     )
                 a8 = (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
                 if alpha_dir is not None:
@@ -462,59 +497,131 @@ class MaxQualityEngine(MattingEngine):
                 a_p = cv2.resize(alpha, (proxy.shape[1], proxy.shape[0]), interpolation=cv2.INTER_LINEAR)
                 frames_bgr.append(proxy)
                 frames_alpha.append(a_p)
-                if self.sharp_edges:
+                if stream_mode:
                     bgra = cv2.cvtColor(cut_bgr, cv2.COLOR_BGR2BGRA)
                     bgra[:, :, 3] = a8
+                    cv2.imwrite(str(stream_dir / f"{written:06d}.png"), bgra)
                 else:
                     bgra = cv2.cvtColor(proxy, cv2.COLOR_BGR2BGRA)
                     bgra[:, :, 3] = (a_p * 255).astype(np.uint8)
-                frames_bgra.append(bgra)
+                    frames_bgra_fallback.append(bgra)
                 written += 1
                 idx += 1
+                # Live-correct total when stream runs longer than estimate
+                if written > total_est:
+                    total_est = written
                 if progress:
-                    progress(min(0.85, written / max(total_est, 1)), f"Max bake {written}/{total_est}")
+                    pct = min(0.85, written / max(total_est, 1))
+                    progress(pct, f"Max bake {written}/{total_est} frame")
         finally:
             cap.release()
 
         preview_mp4 = None
         prores = None
         audio_ok = False
-        if written:
-            if progress:
-                progress(0.9, "Export preview.mp4 + audio…")
-            audio_segs = [
-                AudioSegment(
-                    path=str(path),
-                    in_sec=start_t,
-                    out_sec=end_t,
-                    timeline_start_sec=0.0,
+        companion = None
+        try:
+            if written:
+                if progress:
+                    progress(0.88, f"Export preview.mp4 + audio… ({written} frame)")
+                audio_segs = [
+                    AudioSegment(
+                        path=str(path),
+                        in_sec=start_t,
+                        out_sec=end_t,
+                        timeline_start_sec=0.0,
+                    )
+                ]
+                preview_mp4 = write_preview_mp4(
+                    frames_bgr,
+                    frames_alpha,
+                    out_dir / "preview.mp4",
+                    fps=fps,
+                    audio_segments=audio_segs,
+                    audio_duration_sec=end_t - start_t,
                 )
-            ]
-            preview_mp4 = write_preview_mp4(
-                frames_bgr,
-                frames_alpha,
-                out_dir / "preview.mp4",
-                fps=fps,
-                audio_segments=audio_segs,
-                audio_duration_sec=end_t - start_t,
-            )
-            audio_ok = bool(preview_mp4) and media_has_audio(preview_mp4)
-            if progress:
-                progress(0.95, "Export C:\\bgcut *_full_nobg.mov…")
-            prores, companion = finalize_bgcut_exports(
-                media_stem=path.stem,
-                out_dir=out_dir,
-                preview_mp4=preview_mp4,
-                frames_bgra=frames_bgra,
-                fps=fps,
-            )
-            if companion:
-                preview_mp4 = companion
-            if progress:
-                progress(1.0, "Bake kész")
+                audio_ok = bool(preview_mp4) and media_has_audio(preview_mp4)
+                if progress:
+                    progress(0.94, f"Export *_full_nobg.mov… ({written} frame)")
+                if stream_mode and written:
+                    from hybrid_editor.export.bgcut import (
+                        ensure_bgcut_dir,
+                        nobg_mov_path,
+                        nobg_preview_path,
+                        nobg_stem,
+                    )
+
+                    bgcut = ensure_bgcut_dir(out_dir)
+                    mov_path = nobg_mov_path(path.stem, out_dir=bgcut)
+                    prores = try_prores_alpha_from_png_dir(
+                        stream_dir, mov_path, fps=fps, n_frames=written
+                    )
+                    expected_prev = nobg_preview_path(path.stem, out_dir=bgcut)
+                    companion = write_windows_companion(
+                        preview_mp4,
+                        bgcut,
+                        stem=f"{nobg_stem(path.stem)}_preview",
+                    )
+                    if companion and Path(companion).is_file():
+                        try:
+                            if Path(companion).resolve() != expected_prev.resolve():
+                                shutil.copy2(companion, expected_prev)
+                                companion = str(expected_prev.resolve())
+                        except OSError:
+                            pass
+                    if not companion or not Path(str(companion)).is_file():
+                        # Synthesize checker from proxy frames already in RAM
+                        companion = write_preview_mp4(
+                            frames_bgr, frames_alpha, expected_prev, fps=fps
+                        )
+                    if not prores:
+                        # Fallback: load streamed PNGs into memory for classic mux
+                        frames_bgra_fallback = []
+                        for i in range(written):
+                            fr = cv2.imread(str(stream_dir / f"{i:06d}.png"), cv2.IMREAD_UNCHANGED)
+                            if fr is not None:
+                                if fr.ndim == 2:
+                                    continue
+                                if fr.shape[2] == 3:
+                                    bgra = cv2.cvtColor(fr, cv2.COLOR_BGR2BGRA)
+                                    bgra[:, :, 3] = 255
+                                    frames_bgra_fallback.append(bgra)
+                                else:
+                                    frames_bgra_fallback.append(fr)
+                        prores, companion2 = finalize_bgcut_exports(
+                            media_stem=path.stem,
+                            out_dir=out_dir,
+                            preview_mp4=preview_mp4,
+                            frames_bgra=frames_bgra_fallback,
+                            fps=fps,
+                        )
+                        if companion2:
+                            companion = companion2
+                else:
+                    prores, companion = finalize_bgcut_exports(
+                        media_stem=path.stem,
+                        out_dir=out_dir,
+                        preview_mp4=preview_mp4,
+                        frames_bgra=frames_bgra_fallback,
+                        fps=fps,
+                    )
+                if companion:
+                    preview_mp4 = companion
+                # Bulletproof: if MOV ok but checker missing, force companion from proxies
+                if prores and (not preview_mp4 or not Path(str(preview_mp4)).is_file()) and frames_bgr:
+                    from hybrid_editor.export.bgcut import ensure_bgcut_dir, nobg_preview_path
+
+                    forced = nobg_preview_path(path.stem, out_dir=ensure_bgcut_dir(out_dir))
+                    preview_mp4 = write_preview_mp4(
+                        frames_bgr, frames_alpha, forced, fps=fps
+                    ) or preview_mp4
+                if progress:
+                    progress(1.0, f"Bake kész · {written}/{written} frame")
+        finally:
+            shutil.rmtree(stream_dir, ignore_errors=True)
 
         audio_note = " · audio AAC" if audio_ok else ""
-        sharp_note = " · éles szélek" if self.sharp_edges else ""
+        sharp_note = " · éles szélek · apex" if self.sharp_edges else ""
         mov_note = f" · {prores}" if prores else " · HIÁNYZIK: *_full_nobg.mov"
         dur_note = f" · {end_t - start_t:.2f}s / {written} frame"
         weights = self._fast.capabilities().weights_path
@@ -530,7 +637,7 @@ class MaxQualityEngine(MattingEngine):
             backend=self._backend,
             message=(
                 f"{msg_core} · {written} frame{audio_note}"
-                f"{sharp_note}{mov_note}{dur_note}{w_note} (full-res · {self._backend})"
+                f"{sharp_note}{mov_note}{dur_note}{w_note} (full-res · stream · {self._backend})"
             ),
             alpha_preview=(str(alpha_dir / "000000.png") if alpha_dir is not None and written else None),
             preview_mp4=preview_mp4,
@@ -543,9 +650,15 @@ class MaxQualityEngine(MattingEngine):
                 "full_res_alpha": True,
                 "full_res_rvm": bool(getattr(self._fast, "_full_res_matte", False)),
                 "color_polish": bool(self.sharp_edges),
+                "peak_spec": bool(self.sharp_edges),
+                "apex_spec": bool(self.sharp_edges),
+                "stream_bgra": stream_mode,
                 "duration_sec": end_t - start_t,
+                "frames_written": written,
+                "frames_total_est": total_est,
                 "max_frames_cap": max_frames,
                 "mov_path": prores,
+                "stamp": "2026-10-10-apex",
             },
         )
 
@@ -630,23 +743,30 @@ class MaxQualityEngine(MattingEngine):
                 aa = cv2.resize(aa, (frames_bgr[i].shape[1], frames_bgr[i].shape[0]), interpolation=cv2.INTER_LINEAR)
             # Same CapCut polish as quality-pipeline Max — kill halo / fill hair holes.
             if self.sharp_edges:
-                aa = polish_videoeditor(aa, frames_bgr[i], spec=BEST_SPEC)
+                aa = polish_videoeditor(aa, frames_bgr[i], spec=APEX_SPEC)
                 frames_bgr[i] = apply_color_polish(
                     frames_bgr[i],
                     aa,
-                    decontaminate=float(BEST_SPEC.decontaminate),
-                    despill=float(BEST_SPEC.despill),
+                    decontaminate=float(APEX_SPEC.decontaminate),
+                    despill=float(APEX_SPEC.despill),
+                    bright_fringe=float(APEX_SPEC.bright_fringe),
+                    micro_despill=float(APEX_SPEC.micro_despill),
                 )
             a8 = (np.clip(aa, 0, 1) * 255).astype(np.uint8)
             if alpha_dir is not None:
                 cv2.imwrite(str(alpha_dir / f"{i:06d}.png"), a8)
             a = aa  # for proxy resize below
-            proxy = downscale_long_side(frames_bgr[i], 720)
+            # Preview proxy stays lean; MOV uses full-res BGRA when sharp (peak)
+            proxy = downscale_long_side(frames_bgr[i], 1080 if self.sharp_edges else 720)
             a_p = cv2.resize(a8.astype(np.float32) / 255.0, (proxy.shape[1], proxy.shape[0]))
             frames_proxy.append(proxy)
             frames_alpha.append(a_p)
-            bgra = cv2.cvtColor(proxy, cv2.COLOR_BGR2BGRA)
-            bgra[:, :, 3] = (a_p * 255).astype(np.uint8)
+            if self.sharp_edges:
+                bgra = cv2.cvtColor(frames_bgr[i], cv2.COLOR_BGR2BGRA)
+                bgra[:, :, 3] = a8
+            else:
+                bgra = cv2.cvtColor(proxy, cv2.COLOR_BGR2BGRA)
+                bgra[:, :, 3] = (a_p * 255).astype(np.uint8)
             frames_bgra.append(bgra)
             if progress:
                 progress(0.05 + 0.8 * (i + 1) / max(len(alphas), 1), f"MatAnyone2 {i + 1}")

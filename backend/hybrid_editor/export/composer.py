@@ -507,6 +507,82 @@ def _png_seq_mov(
     return None
 
 
+def try_prores_alpha_from_png_dir(
+    seq_dir: Path,
+    out_path: Path,
+    *,
+    fps: float = 25.0,
+    n_frames: int = 0,
+) -> Optional[str]:
+    """Mux ``%06d.png`` BGRA sequence → ``*_full_nobg.mov`` (peak streaming bake).
+
+    Avoids holding full-res BGRA in RAM on RTX 3060 / long clips.
+    """
+    from hybrid_editor.export.ffmpeg_bin import resolve_ffmpeg
+
+    ffmpeg = resolve_ffmpeg("ffmpeg")
+    if not ffmpeg:
+        logger.warning(
+            "FFmpeg not found — cannot write *_full_nobg.mov. Install ffmpeg or set FFMPEG_PATH."
+        )
+        return None
+    seq_dir = Path(seq_dir)
+    pattern = seq_dir / "%06d.png"
+    if not (seq_dir / "000000.png").is_file():
+        return None
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    n = int(n_frames) if n_frames > 0 else len(list(seq_dir.glob("*.png")))
+    timeout = max(180.0, 2.5 * max(n, 1) + 90.0)
+    attempts = [
+        (
+            "ProRes",
+            [
+                "-c:v",
+                "prores_ks",
+                "-profile:v",
+                "4444",
+                "-pix_fmt",
+                "yuva444p10le",
+                "-vendor",
+                "apl0",
+                "-alpha_bits",
+                "16",
+            ],
+        ),
+        ("qtrle", ["-c:v", "qtrle", "-pix_fmt", "argb"]),
+        ("png", ["-c:v", "png", "-pix_fmt", "rgba"]),
+    ]
+    for label, vcodec_args in attempts:
+        try:
+            if out_path.is_file():
+                out_path.unlink()
+        except OSError:
+            pass
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-framerate",
+            str(float(fps) or 25.0),
+            "-i",
+            str(pattern),
+            *vcodec_args,
+            "-f",
+            "mov",
+            str(out_path),
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=timeout)
+            if out_path.is_file() and out_path.stat().st_size > 256:
+                return str(out_path.resolve())
+        except Exception as exc:  # noqa: BLE001
+            logger.info("%s from PNG dir failed: %s", label, exc)
+    return None
+
+
 def try_prores_alpha(
     frames_bgra: list[np.ndarray],
     out_path: Path,
@@ -607,6 +683,27 @@ def try_qtrle_alpha(
     )
 
 
+def _checker_preview_from_bgra(
+    frames_bgra: list[np.ndarray],
+    out_path: Path,
+    *,
+    fps: float,
+) -> Optional[str]:
+    """Build checkerboard H.264 preview directly from baked BGRA (no silent alpha-only)."""
+    if not frames_bgra:
+        return None
+    frames_bgr: list[np.ndarray] = []
+    frames_alpha: list[np.ndarray] = []
+    for fr in frames_bgra:
+        if fr.ndim != 3 or fr.shape[2] < 4:
+            continue
+        frames_bgr.append(fr[:, :, :3].copy())
+        frames_alpha.append((fr[:, :, 3].astype(np.float32) / 255.0))
+    if not frames_bgr:
+        return None
+    return write_preview_mp4(frames_bgr, frames_alpha, out_path, fps=fps)
+
+
 def finalize_bgcut_exports(
     *,
     media_stem: str,
@@ -616,19 +713,23 @@ def finalize_bgcut_exports(
     fps: float,
     scope: str = "full",
 ) -> tuple[Optional[str], Optional[str]]:
-    """Write Videoeditor-style ``{stem}_full_nobg.mov`` + companion preview.
+    """Write Videoeditor-style ``{stem}_full_nobg.mov`` + companion ``_preview.mp4``.
 
     Returns ``(prores_or_qtrle_or_png_mov, companion_preview_mp4)``.
     Primary deliverable is the ``.mov`` — not ``alpha/*.png``.
+    When an in-memory preview path is missing, synthesizes the checker companion
+    from ``frames_bgra`` so the UI never ends with MOV-only / silent alpha dumps.
     """
     from hybrid_editor.export.bgcut import ensure_bgcut_dir, nobg_mov_path, nobg_preview_path, nobg_stem
 
     out_dir = ensure_bgcut_dir(out_dir)
     mov = nobg_mov_path(media_stem, out_dir=out_dir, scope=scope)
+    expected = nobg_preview_path(media_stem, out_dir=out_dir, scope=scope)
     prores = try_prores_alpha(frames_bgra, mov, fps=fps) if frames_bgra else None
     if frames_bgra and not prores:
         logger.error(
-            "PRIMARY OUTPUT MISSING: failed to write %s — only debug alpha dumps may exist",
+            "MUX FAIL: cannot write %s (ffmpeg/ProRes/qtrle/png). "
+            "Do not use alpha/ PNG dumps as the deliverable — set FFMPEG_PATH and re-export.",
             mov,
         )
     # Companion preview next to the MOV (Videoeditor open-output pattern)
@@ -638,11 +739,26 @@ def finalize_bgcut_exports(
         out_dir,
         stem=companion_stem,
     )
-    expected = nobg_preview_path(media_stem, out_dir=out_dir, scope=scope)
     if companion and Path(companion).is_file() and Path(companion).resolve() != expected.resolve():
         try:
             shutil.copy2(companion, expected)
             companion = str(expected.resolve())
         except OSError:
             pass
+    # Guarantee checker _preview.mp4 whenever we have baked frames (UI + Films&TV).
+    if (not companion or not Path(companion).is_file()) and frames_bgra:
+        logger.info("Synthesizing checker companion preview → %s", expected)
+        companion = _checker_preview_from_bgra(frames_bgra, expected, fps=fps)
+    if prores and (not companion or not Path(str(companion)).is_file()):
+        logger.error(
+            "PREVIEW MISSING after bake: %s exists but checker %s was not written",
+            prores,
+            expected,
+        )
+    if not prores and frames_bgra:
+        # Never report success on alpha-only leftovers — companion alone is not the master.
+        logger.error(
+            "PRIMARY OUTPUT MISSING: %s — alpha PNG dumps (if any) are debug-only",
+            mov,
+        )
     return prores, companion

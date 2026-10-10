@@ -42,12 +42,15 @@ def _candidate_ffmpeg_paths(name: str = "ffmpeg") -> list[Path]:
         home = os.environ.get("USERPROFILE", "")
         fixed = [
             Path(r"C:\ffmpeg\bin") / exe,
+            Path(r"C:\ffmpeg") / exe,
             Path(r"C:\tools\ffmpeg\bin") / exe,
             Path(pf) / "ffmpeg" / "bin" / exe,
             Path(pf) / "FFmpeg" / "bin" / exe,
             Path(pf) / "Gyan" / "FFmpeg" / "bin" / exe,
+            Path(pf) / "Gyan.FFmpeg" / "bin" / exe,
             Path(pf86) / "ffmpeg" / "bin" / exe,
             Path(r"C:\ProgramData\chocolatey\bin") / exe,
+            Path(r"C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin") / exe,
         ]
         if local:
             fixed.extend(

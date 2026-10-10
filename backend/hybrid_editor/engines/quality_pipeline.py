@@ -22,7 +22,8 @@ DEFAULT_DILATE_K = 10
 # Max / export: CapCut-like tighter guidance (less foggy halo)
 SHARP_ERODE_K = 4
 SHARP_DILATE_K = 5
-DEFAULT_WARMUP = 8
+# Peak (2026-10-10): settle RVM recurrent state like MatAnyone2 n_warmup≈10
+DEFAULT_WARMUP = 10
 DEFAULT_MEM_EVERY = 5
 
 

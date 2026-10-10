@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-05-ui-nobg` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-10-apex` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-05-ui-nobg
+# expect: 2026-10-10-apex
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA+cuDNN: .\hybrid_cut\start_hybrid_cuda.ps1
@@ -72,24 +72,77 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 ---
 
-## Stamp — UI polish + visible nobg (`2026-10-05-ui-nobg`)
+## Stamp — apex (`2026-10-10-apex`)
 
-Supersedes `2026-10-05-paint-fix` (includes bgcut MOV + RVM state + paint UX).
+Overdevelop on top of `2026-10-10-peak`. CapCut-clean one-click cutout + stronger Max polish — **no MatAnyone2 weights shipped**.
 
-### See transparent nobg
+### Cutout quality (Max + Éles szélek)
 
-- After bake: **result card** replaces the progress bar (not stuck at 79%/100%).
-- Big success line with full path: `C:\bgcut\{stem}_full_nobg.mov`
-- **Megnyitás Explorerben** selects that `.mov` (NLE master)
-- In-app `<video>` plays checker-composited `_preview.mp4` (Chrome-friendly); ProRes/qtrle `.mov` stays the deliverable
-- Mux failure → red **Export sikertelen** card (not silent `alpha/` folder)
+- **`APEX_SPEC`** Max default (on top of `PEAK_SPEC`): hair strand recover, micro rim despill, stronger unknown-band / bright-fringe / edge sharpen
+- Multi-person keep retained · Gyors scrub stays MobileNet-fast
+
+### One-click UX
+
+- Hero: HybridCut brand-first · Megnyitás → auto Cutout → Exportálás
+- Fewer chips (mode + cutout/export) · RVM / Ollama / VRAM under **Részletek**
+- Lime `#b8f000` · orange `#ff7a1a` · Sora + Manrope · flow-steps + result card
+
+### Export
+
+- Always `_full_nobg.mov` + checker `_preview.mp4` · progress shows accurate `written/total` frame count
+
+Restart: [`docs/apex-restart.md`](docs/apex-restart.md) · store [`../hybrid-apex-restart.md`](../hybrid-apex-restart.md)
+
+---
+
+## Stamp — peak (`2026-10-10-peak`)
+
+Included in apex. CapCut left-side cutout bar + MatAnyone2 ideas (warmup×10, tight unknown-band hair, fringe/spill).
+
+### Cutout quality (Max + Éles szélek)
+
+- **`PEAK_SPEC`**: stronger hair / decontam / despill + unknown-band refine + bright-fringe kill + edge-gradient sharpen
+- Multi-person keep (≥20% of largest) retained from continue
+- Residual BG island kill + cyan/white fringe clean on cutout RGB
+
+### Speed (RTX 3060 8GB)
+
+- **Gyors** scrub: MobileNet + proxy/downsample (unchanged fast path)
+- **Max** bake: full-res RVM + polish; BGRA streamed to disk before MOV mux
+
+### Export + UX
+
+- Always `C:\bgcut\{stem}_full_nobg.mov` + checker `_preview.mp4` · UI result card · bulletproof `resolve_ffmpeg`
+
+Restart: [`docs/peak-restart.md`](docs/peak-restart.md) · store [`../hybrid-peak-restart.md`](../hybrid-peak-restart.md)
+
+---
+
+## Stamp — continue (`2026-10-10-continue`)
+
+Supersedes `2026-10-05-ui-nobg`. Multi-person Max matte + export reliability + leaner chrome. Included in peak.
+
+### Multi-person Max cutout
+
+- `keep_person_instances_soft` / `suppress_residual_bg` keep **all person-sized** CCs (≥20% of largest), not only the single largest
+- Secondary subjects no longer left as a solid BG plate after Max + Éles szélek
+
+### Export reliability
+
+- After bake: always `{stem}_full_nobg.mov` + checker `{stem}_full_nobg_preview.mp4` (synthesized from BGRA if in-memory preview missing)
+- Mux fail → clear log + red **Export sikertelen** (never silent `alpha/` success)
+- Full In/Out bake · default `C:\bgcut\` · RVM recurrent size reset unchanged
 
 ### UI polish
 
-- Slimmer intel strip (mode / RVM / person / live export only)
-- Stronger HybridCut lime→orange brand mark; stamp in sync chip
-- Motor/VRAM details collapsed under **Részletek**
-- Stronger checker under cutout; progress shimmer + result-card motion
+- Compact intel chips (Max/Gyors · RVM · RVM ember · export/seed when needed)
+- Hero: one ONNX+ORT chip (Ollama / motor detail under **Részletek**)
+- Paint tools stay in chrome above the frame; lime→orange HybridCut identity
+
+### Prior — UI polish + visible nobg (`2026-10-05-ui-nobg`)
+
+- Result card + Explorer + in-app checker `_preview.mp4`
+- Slimmer strip / meta-fold / checker motion
 
 ### Prior — paint UX + bgcut MOV + RVM (`2026-10-05-paint-fix`)
 

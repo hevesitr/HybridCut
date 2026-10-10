@@ -1,4 +1,4 @@
-"""UI contracts for nobg result card + stamp ``2026-10-05-ui-nobg``."""
+"""UI contracts for nobg result card + stamp ``2026-10-10-apex``."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ SYNC = ROOT / "SYNC_VERSION.txt"
 README = ROOT / "README.md"
 
 
-def test_sync_stamp_ui_nobg():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-05-ui-nobg"
+def test_sync_stamp_apex():
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-10-apex"
 
 
 def test_app_result_card_and_explorer():
@@ -30,9 +30,19 @@ def test_app_result_card_and_explorer():
     # Mux failure surfaces error, not silent alpha folder success
     assert "Export sikertelen" in text
     assert "FFMPEG_PATH" in text
-    # Dense intel strip trimmed — no always-on Prefetch / Proxy / Hang chips
+    # Dense intel strip trimmed — no always-on Prefetch / Proxy / Hang / Ollama chips
     assert 'label: `Előtöltés' not in text
     assert 'label: hot > 0 ? `Proxy HOT' not in text
+    assert "Ollama ✓" not in text  # Ollama folded into Részletek, not chip strip
+    # Compact chip labels + apex Max copy
+    assert 'label: status?.mode === "max" ? "Max" : "Gyors"' in text
+    assert "APEX polish" in text or "apex polish" in text
+    # CapCut-simple one-click flow
+    assert "Megnyitás → auto Cutout → Exportálás" in text
+    assert "flow-steps" in text
+    # Tech chips folded under Részletek (RVM not in intel strip)
+    assert "intelFromPreview" in text
+    assert "rvmChip(status)" not in text.split("function intelFromPreview")[1].split("function smartStatusLine")[0]
 
 
 def test_css_result_and_checker_motion():
@@ -43,8 +53,14 @@ def test_css_result_and_checker_motion():
     assert "@keyframes bake-shimmer" in css
     assert ".meta-fold" in css
     assert "--checker-a: #1a2420" in css
+    assert ".flow-steps" in css
+    assert "@keyframes cta-glow" in css
+    assert "--accent: #ff7a1a" in css
+    assert "--accent-2: #b8f000" in css
+    assert "Sora" in css
+    assert "Manrope" in css
 
 
-def test_readme_mentions_ui_nobg():
+def test_readme_mentions_apex_stamp():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-05-ui-nobg" in readme
+    assert "2026-10-10-apex" in readme
