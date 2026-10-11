@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-10-look2` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-11-concat-flow` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-10-look2
+# expect: 2026-10-11-concat-flow
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA PATH (no remount pip): .\hybrid_cut\start_hybrid_cuda.ps1
@@ -72,7 +72,13 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 ---
 
-## Stamp — look2 (`2026-10-10-look2`)
+## Stamp — concat-flow (`2026-10-11-concat-flow`)
+
+On top of `2026-10-10-look2`. **Concat-like project flow:** **Új projekt** clears timeline/media/seed/bake (confirm if dirty) back to full-bleed empty drop; **+ V1 klip** / drop append stacks clips on V1 after existing; B-roll on V2. **Preview fill:** Forrás / Cutout / Maszk use `width/height: 100%` + `object-fit: contain` so proxy frames fill the stage (wipe/Összehasonlítás stays split). Lime/orange look2 shell retained.
+
+Restart: [`docs/concat-flow-restart.md`](docs/concat-flow-restart.md) · store [`../hybrid-concat-flow-restart.md`](../hybrid-concat-flow-restart.md)
+
+## Prior — look2 (`2026-10-10-look2`)
 
 On top of `2026-10-10-look`. **Full-bleed workspace:** empty state and editor use the same viewport-width shell — compact topbar, full-width Megnyitás/Minta CTA row, Gyors/Max as slim horizontal chips in the left rail, drop stage fills remaining width/height. No skinny centered marketing column (`min(720px)` removed). Syne + Figtree, lime `#b8f000` / orange `#ff7a1a` retained.
 

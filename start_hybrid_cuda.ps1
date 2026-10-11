@@ -46,7 +46,7 @@ if (-not ($parentRoot -and (Test-Path -LiteralPath (Join-Path $parentRoot "run_g
 Write-Host "=== HybridCut CUDA start ==="
 Write-Host ("Root: " + $Root)
 Write-Host ("Parent: " + $parentRoot)
-Write-Host "Stamp: 2026-10-10-look2 (no remount pip upgrade by default)"
+Write-Host "Stamp: 2026-10-11-concat-flow (no remount pip upgrade by default)"
 
 # Resolve python: hybrid .venv or parent CapCut .venv
 $hybridPy = Join-Path $Root ".venv\Scripts\python.exe"

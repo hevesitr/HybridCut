@@ -25,8 +25,8 @@ APP = ROOT / "frontend" / "src" / "App.tsx"
 SYNC = ROOT / "SYNC_VERSION.txt"
 
 
-def test_sync_stamp_look2():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-10-look2"
+def test_sync_stamp_concat_flow():
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-concat-flow"
 
 
 def test_gyors_faster_than_max_same_clip():

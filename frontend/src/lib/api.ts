@@ -194,6 +194,9 @@ export const api = {
       body: JSON.stringify({ enabled }),
     }),
   loadSample: () => json<EditorStatus>("/api/demo/sample"),
+  /** Új projekt — clears timeline, media, seeds, bake state. */
+  newProject: () =>
+    json<EditorStatus>("/api/project/new", { method: "POST", body: "{}" }),
   openPath: (path: string, append = false, as_broll = false) =>
     json<EditorStatus>("/api/open", {
       method: "POST",

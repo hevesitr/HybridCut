@@ -1,4 +1,12 @@
-import { useEffect, useEffectEvent, useRef, useState, useTransition, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+  useTransition,
+  type ChangeEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { ModeSwitcher } from "./components/ModeSwitcher";
 import { SeedPaint } from "./components/SeedPaint";
 import { TimelineTrack } from "./components/TimelineTrack";
@@ -218,6 +226,9 @@ export default function App() {
   const fileRef = useRef<HTMLInputElement>(null);
   const appendRef = useRef<HTMLInputElement>(null);
   const brollRef = useRef<HTMLInputElement>(null);
+  /** Fresh status for drop/append — avoid stale closure blocking second clip. */
+  const statusRef = useRef<EditorStatus | null>(null);
+  statusRef.current = status;
   const scrubTimer = useRef<number | null>(null);
   const toastTimer = useRef<number | null>(null);
   const seedCommitTimer = useRef<number | null>(null);
@@ -305,53 +316,6 @@ export default function App() {
       });
     api.assistStatus().then(setAssist).catch(() => setAssist(null));
   }, []);
-
-  useEffect(() => {
-    let dragDepth = 0;
-    const onDragEnter = (e: DragEvent) => {
-      if (!e.dataTransfer?.types?.includes("Files")) return;
-      e.preventDefault();
-      dragDepth += 1;
-      // Empty hero only — never cover a loaded timeline with „Ejtés: klip…”.
-      if (!(status?.media || (status?.timeline?.clips?.length ?? 0) > 0)) {
-        setDragOver(true);
-      }
-    };
-    const onDragOver = (e: DragEvent) => {
-      if (!e.dataTransfer?.types?.includes("Files")) return;
-      e.preventDefault();
-    };
-    const onDragLeave = (e: DragEvent) => {
-      if (!e.dataTransfer?.types?.includes("Files")) return;
-      dragDepth = Math.max(0, dragDepth - 1);
-      if (dragDepth === 0) setDragOver(false);
-    };
-    const onDrop = (e: DragEvent) => {
-      e.preventDefault();
-      dragDepth = 0;
-      setDragOver(false);
-      const file = e.dataTransfer?.files?.[0];
-      if (file && file.type.startsWith("video/")) {
-        const append = !!(status?.timeline?.clips?.length);
-        void onUpload(file, append, false);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDragOver(false);
-    };
-    window.addEventListener("dragenter", onDragEnter);
-    window.addEventListener("dragover", onDragOver);
-    window.addEventListener("dragleave", onDragLeave);
-    window.addEventListener("drop", onDrop);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("dragenter", onDragEnter);
-      window.removeEventListener("dragover", onDragOver);
-      window.removeEventListener("dragleave", onDragLeave);
-      window.removeEventListener("drop", onDrop);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [status?.timeline?.clips?.length, status?.media]);
 
   const pollBake = useEffectEvent(async () => {
     try {
@@ -547,33 +511,138 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const st = await api.upload(file, append, asBroll);
+      // asBroll always appends on V2; append=true stacks V1 after existing clips.
+      const useAppend = asBroll ? true : append;
+      const st = await api.upload(file, useAppend, asBroll);
       setStatus(st);
-      if (!append && !asBroll) {
+      if (!useAppend && !asBroll) {
         setTSec(0);
         setViewMode("source");
       }
       syncTrimFromStatus(st);
       await runPreview(
-        append || asBroll ? (st.timeline?.playhead_sec ?? 0) : 0,
+        useAppend || asBroll ? (st.timeline?.playhead_sec ?? 0) : 0,
         st,
         undefined,
-        { preferCutout: !append && !asBroll },
+        { preferCutout: !useAppend && !asBroll },
       );
       setNote(
         asBroll
           ? "B-roll a V2 sávon"
-          : append
-            ? "Klip hozzáadva (V1)"
+          : useAppend
+            ? "Új klip az idővonalon (V1)"
             : "Videó betöltve — auto ember-maszk fut",
       );
-      if (!append && !asBroll) await refreshSeed();
+      if (!useAppend && !asBroll) await refreshSeed();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
   };
+
+  const onNewProject = async () => {
+    const st = statusRef.current;
+    const dirty = !!(
+      st?.media ||
+      (st?.timeline?.clips?.length ?? 0) > 0 ||
+      st?.seed_mask ||
+      st?.last_bake
+    );
+    if (
+      dirty &&
+      !window.confirm(
+        "Új projekt? Az idővonal, a médiák, a seed maszk és a bake állapot törlődik.",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await api.newProject();
+      setStatus(next);
+      setPreview(null);
+      setTSec(0);
+      setInSec(0);
+      setOutSec(0);
+      setSeedPng(null);
+      setShowLargeSeed(false);
+      setViewMode("source");
+      setWipe(50);
+      setBakePreviewKey(0);
+      setToast(null);
+      setNote("Új projekt — húzd ide a videót, vagy nyisd meg.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onFilePicked = (
+    e: ChangeEvent<HTMLInputElement>,
+    append: boolean,
+    asBroll: boolean,
+  ) => {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = "";
+    void onUpload(file, append, asBroll);
+  };
+
+  /** Latest onUpload + status for window drop (append when media already open). */
+  const dropUpload = useEffectEvent((file: File) => {
+    const st = statusRef.current;
+    const append = !!(st?.media || (st?.timeline?.clips?.length ?? 0) > 0);
+    void onUpload(file, append, false);
+  });
+
+  useEffect(() => {
+    let dragDepth = 0;
+    const onDragEnter = (e: DragEvent) => {
+      if (!e.dataTransfer?.types?.includes("Files")) return;
+      e.preventDefault();
+      dragDepth += 1;
+      const st = statusRef.current;
+      // Empty hero only — never cover a loaded timeline with „Ejtés: klip…”.
+      if (!(st?.media || (st?.timeline?.clips?.length ?? 0) > 0)) {
+        setDragOver(true);
+      }
+    };
+    const onDragOver = (e: DragEvent) => {
+      if (!e.dataTransfer?.types?.includes("Files")) return;
+      e.preventDefault();
+    };
+    const onDragLeave = (e: DragEvent) => {
+      if (!e.dataTransfer?.types?.includes("Files")) return;
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) setDragOver(false);
+    };
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      dragDepth = 0;
+      setDragOver(false);
+      const file = e.dataTransfer?.files?.[0];
+      if (file && file.type.startsWith("video/")) {
+        dropUpload(file);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDragOver(false);
+    };
+    window.addEventListener("dragenter", onDragEnter);
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("dragenter", onDragEnter);
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, []);
 
   const applyTrim = async () => {
     setBusy(true);
@@ -948,7 +1017,7 @@ export default function App() {
           type="file"
           accept="video/*"
           hidden
-          onChange={(e) => onUpload(e.target.files?.[0] ?? null, false, false)}
+          onChange={(e) => onFilePicked(e, false, false)}
         />
       </div>
     );
@@ -979,6 +1048,15 @@ export default function App() {
           </div>
         </div>
         <div className="sync">
+          <button
+            type="button"
+            className="btn ghost topbar-new-project"
+            disabled={locked}
+            onClick={() => void onNewProject()}
+            title="Új projekt / Kilépés — törli az idővonalat, médiát, seedet és bake állapotot."
+          >
+            Új projekt
+          </button>
           <div className="sync-stamp">{status?.sync_version ?? "…"}</div>
         </div>
       </header>
@@ -1040,7 +1118,7 @@ export default function App() {
                 className="btn primary"
                 disabled={locked}
                 onClick={() => fileRef.current?.click()}
-                title="Videó betöltése — automatikus Cutout előnézet."
+                title="Videó betöltése (csere) — automatikus Cutout előnézet."
               >
                 1 · Megnyitás
               </button>
@@ -1062,31 +1140,55 @@ export default function App() {
               >
                 {status?.bake_running ? "Export…" : `3 · Exportálás · ${selectedEta}`}
               </button>
+              <div className="clip-add-row" role="group" aria-label="Több klip">
+                <button
+                  type="button"
+                  className="btn accent"
+                  disabled={locked || !hasMedia}
+                  onClick={() => appendRef.current?.click()}
+                  title="Új klip alá — további videó az V1 sávra, a meglévő után."
+                >
+                  + V1 klip
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={locked || !hasMedia}
+                  onClick={() => brollRef.current?.click()}
+                  title="B-roll videó a V2 sávra (playheadnél)."
+                >
+                  + B-roll
+                </button>
+              </div>
               <input
                 ref={fileRef}
                 type="file"
                 accept="video/*"
                 hidden
-                onChange={(e) => onUpload(e.target.files?.[0] ?? null, false, false)}
+                onChange={(e) => onFilePicked(e, false, false)}
               />
               <input
                 ref={appendRef}
                 type="file"
                 accept="video/*"
                 hidden
-                onChange={(e) => onUpload(e.target.files?.[0] ?? null, true, false)}
+                onChange={(e) => onFilePicked(e, true, false)}
               />
               <input
                 ref={brollRef}
                 type="file"
                 accept="video/*"
                 hidden
-                onChange={(e) => onUpload(e.target.files?.[0] ?? null, true, true)}
+                onChange={(e) => onFilePicked(e, true, true)}
               />
             </div>
             <p className="action-help">
               Megnyitás → auto Cutout → Exportálás ·{" "}
               <code>{"C:\\bgcut\\*_full_nobg.mov"}</code>
+              {" · "}
+              <span title="Második videó: + V1 klip vagy ejtsd a fájlt (append=true).">
+                Új klip alá
+              </span>
             </p>
           </div>
 
@@ -1264,20 +1366,29 @@ export default function App() {
               <button
                 type="button"
                 className="btn"
-                disabled={locked}
+                disabled={locked || !hasMedia}
                 onClick={() => appendRef.current?.click()}
-                title="További klip hozzáadása az V1 sávhoz."
+                title="Új klip alá — V1 sáv, meglévő után."
               >
-                + V1
+                + V1 klip
               </button>
               <button
                 type="button"
                 className="btn"
-                disabled={locked}
+                disabled={locked || !hasMedia}
                 onClick={() => brollRef.current?.click()}
-                title="B-roll videó hozzáadása a V2 sávhoz."
+                title="B-roll videó a V2 sávra."
               >
                 + B-roll
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                disabled={locked}
+                onClick={() => void onNewProject()}
+                title="Új projekt / Kilépés — üres drop képernyő."
+              >
+                Új projekt
               </button>
               <button
                 type="button"

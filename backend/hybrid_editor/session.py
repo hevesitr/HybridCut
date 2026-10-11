@@ -208,6 +208,38 @@ class EditorSession:
             self._sync_sharp_to_engine()
             return self.status()
 
+    def new_project(self) -> dict[str, Any]:
+        """Új projekt / Kilépés — clear timeline, media, seeds, bake; empty drop again."""
+        from hybrid_editor.cache.analyse import AnalyseStatus
+
+        with self._lock:
+            if self.bake_running:
+                raise RuntimeError("Bake fut — várj, mielőtt új projektet nyitsz")
+            self.analyser.cancel()
+            self.analyser.state = AnalyseStatus()
+            self._bake_queue.clear()
+            self.last_bake = None
+            self.bake_progress = 0.0
+            self.bake_status = ""
+            self._seed_alpha = None
+            self.media = None
+            self.timeline = None
+            self._open_path = None
+            try:
+                self.engine.reset()
+            except Exception:  # noqa: BLE001
+                pass
+            fast = getattr(self.engine, "_fast", None) or self.engine
+            store = getattr(fast, "_mask_store", None)
+            if store is not None and hasattr(store, "clear_memory"):
+                store.clear_memory()
+            prefetch = getattr(fast, "_prefetch", None)
+            if prefetch is not None and hasattr(prefetch, "reset"):
+                prefetch.reset()
+            if isinstance(self.engine, MaxQualityEngine):
+                self.engine.clear_user_seed()
+            return self.status()
+
     def _apply_seed_to_engine(self, seed: Optional[np.ndarray]) -> None:
         self._seed_alpha = seed
         if isinstance(self.engine, MaxQualityEngine):

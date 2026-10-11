@@ -1,4 +1,4 @@
-"""UI contracts for nobg result card + stamp ``2026-10-10-look2``."""
+"""UI contracts for nobg result card + stamp ``2026-10-11-concat-flow``."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ README = ROOT / "README.md"
 HTML = ROOT / "frontend" / "index.html"
 
 
-def test_sync_stamp_look2():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-10-look2"
+def test_sync_stamp_concat_flow():
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-concat-flow"
 
 
 def test_app_result_card_and_explorer():
@@ -95,7 +95,10 @@ def test_css_result_and_checker_motion():
     assert ".empty-workspace" in css
     assert ".empty-drop" in css
     assert "min(720px" not in css
-    assert "2026-10-10-look2" in css
+    assert "2026-10-11-concat-flow" in css
+    # Concat-flow: Forrás/Cutout/Maszk fill stage (not tiny intrinsic proxy)
+    assert "place-items: stretch" in css
+    assert ".clip-add-row" in css
 
 
 def test_fonts_loaded():
@@ -104,8 +107,8 @@ def test_fonts_loaded():
     assert "Figtree" in html
 
 
-def test_readme_mentions_look2_stamp():
+def test_readme_mentions_concat_flow_stamp():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-10-look2" in readme
-    assert "2026-10-10-look" in readme  # prior retained in history
+    assert "2026-10-11-concat-flow" in readme
+    assert "2026-10-10-look2" in readme  # prior retained in history
     assert "2026-10-10-layout-fix" in readme

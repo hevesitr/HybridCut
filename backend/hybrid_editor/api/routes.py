@@ -95,6 +95,15 @@ def status() -> dict:
     return SESSION.status()
 
 
+@router.post("/project/new")
+def new_project() -> dict:
+    """Új projekt — clear timeline / media / seed / bake; back to empty drop."""
+    try:
+        return SESSION.new_project()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.post("/mode")
 def set_mode(body: ModeBody) -> dict:
     try:
