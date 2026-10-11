@@ -1,6 +1,8 @@
-# HybridCut restart — auto-person (`2026-10-11-auto-person`)
+# HybridCut restart — auto-person (`2026-10-11-auto-person`) — superseded
 
-Feature stamp: **`2026-10-11-auto-person`**.
+> **Tip stamp moved:** use **`2026-10-11-person-restore`** — MaskStore purge + Max-on-open full-person RVM. See [`person-restore-restart.md`](person-restore-restart.md).
+
+Feature stamp (historical): **`2026-10-11-auto-person`**.
 
 Includes prior: look-peak (UI) · ai-tracks (AI sáv + Polírozás) · person-fix2 matte harden · nobg-layer · concat-look.
 

@@ -29,7 +29,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_timeline_bg():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-auto-person"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-matte-visible"
 
 
 def test_remove_extra_v1_and_v2():
@@ -218,7 +218,7 @@ def test_ui_timeline_drag_trim_wand():
     assert "trim_edge" in api
     assert "set_track" in api
     css = CSS.read_text(encoding="utf-8")
-    assert "auto-person" in css or "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
+    assert "person-restore" in css or "auto-person" in css or "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
     assert ".clip-bin-del" in css
     assert ".tl-handle" in css
     assert ".tl-chrome-bar" in css
@@ -229,7 +229,7 @@ def test_ui_timeline_drag_trim_wand():
 
 def test_readme_and_dist():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-11-auto-person" in readme or "2026-10-11-paint-face" in readme
+    assert "2026-10-11-matte-visible" in readme or "2026-10-11-paint-face" in readme
     assert "2026-10-11-concat-look" in readme
     assert "concat-look" in readme
     assets = list(DIST_ASSETS.glob("index-*.js")) + list(DIST_ASSETS.glob("index-*.css"))

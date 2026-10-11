@@ -496,12 +496,33 @@ class _OrtRvmSession:
             self._rec_key = rec_key
             self._zero_recurrent_feeds(feeds, inputs, dtype)
             outs = self.session.run(None, feeds)
+        # Prefer named ``pha`` (CapCut rvm_onnx layout: fgr, pha, r1o..r4o).
+        # Blind "first C=1 tensor" can grab a wrong map and yield a flat slab.
+        from hybrid_editor.media.video_io import normalize_alpha
+
         pha = None
-        for o in outs:
-            if isinstance(o, np.ndarray) and o.ndim >= 3:
-                if o.ndim == 4 and o.shape[1] == 1:
-                    pha = o
-                    break
+        try:
+            out_metas = list(self.session.get_outputs())
+        except Exception:  # noqa: BLE001
+            out_metas = []
+        for meta, o in zip(out_metas, outs):
+            name = str(getattr(meta, "name", "") or "").lower()
+            if name in {"pha", "alpha", "matte", "output_pha"} and isinstance(o, np.ndarray):
+                pha = o
+                break
+        if pha is None:
+            for o in outs:
+                if isinstance(o, np.ndarray) and o.ndim == 4 and o.shape[1] == 1:
+                    # Skip tiny recurrent-looking grids when a full-res C=1 exists later.
+                    if o.shape[2] >= h // 4 and o.shape[3] >= w // 4:
+                        pha = o
+                        break
+        if pha is None:
+            for o in outs:
+                if isinstance(o, np.ndarray) and o.ndim >= 3:
+                    if o.ndim == 4 and o.shape[1] == 1:
+                        pha = o
+                        break
         if pha is None:
             pha = outs[1] if len(outs) > 1 else outs[0]
         alpha = np.squeeze(pha).astype(np.float32)
@@ -515,7 +536,8 @@ class _OrtRvmSession:
             self._r2 = np.ascontiguousarray(outs[3], dtype=dtype)
             self._r3 = np.ascontiguousarray(outs[4], dtype=dtype)
             self._r4 = np.ascontiguousarray(outs[5], dtype=dtype)
-        return np.clip(alpha, 0.0, 1.0)
+        # Scale 0–255-ish ORT floats before clip (bare clip → all-ones gray Maszk).
+        return normalize_alpha(alpha)
 
 
 class FastEngine(MattingEngine):
@@ -652,6 +674,9 @@ class FastEngine(MattingEngine):
         store_dir = mask_dir(ROOT, self._media.path, subject="person")
         model_id = Path(self._rvm.model_path).stem if self._rvm else "heuristic"
         self._mask_store = MaskStore(store_dir, model_id=model_id)
+        # Drop wand-era / face-only disk caches so Gyors/Max never skip ORT
+        # with a poisoned part-matte (person-restore).
+        self._mask_store.purge()
         cold = ROOT / "cache" / "proxy" / Path(self._media.path).stem
         self._lanes = ProxyLaneCache(
             hot_size=12,
@@ -710,12 +735,15 @@ class FastEngine(MattingEngine):
         return float(min(1.0, max(0.125, target / float(long))))
 
     def _matte(self, bgr: np.ndarray) -> np.ndarray:
-        """Person alpha for one frame — never return an empty matte when heuristic can help.
+        """Person alpha for one frame — never return an empty/degenerate matte when heuristic can help.
 
         Max quality polish calls this directly (not preview_frame). Empty ORT / soft-fail
         used to skip the heuristic retry that only lived in preview_frame → Max looked
-        like it found no person mask.
+        like it found no person mask. Degenerate all-ones slabs (solid gray Maszk) are
+        also rejected so Cutout never claims success with an opaque full frame.
         """
+        from hybrid_editor.media.video_io import is_matte_degenerate, matte_failure_reason
+
         alpha: Optional[np.ndarray] = None
         if self._rvm is not None:
             try:
@@ -726,11 +754,19 @@ class FastEngine(MattingEngine):
         if alpha is not None and not is_matte_empty(alpha):
             return alpha
         if alpha is not None and is_matte_empty(alpha):
+            why = matte_failure_reason(alpha) or "empty"
+            kind = "degenerate slab" if is_matte_degenerate(alpha) else "empty"
             logger.warning(
-                "RVM returned empty matte on %s — heuristic person alpha",
+                "RVM returned %s matte on %s (%s) — heuristic person alpha",
+                kind,
                 self._backend,
+                why,
             )
-        return heuristic_person_alpha(bgr)
+        heur = heuristic_person_alpha(bgr)
+        if not is_matte_empty(heur):
+            return heur
+        # Last resort: do not ship a flat gray / opaque full-frame as "success".
+        return np.zeros(bgr.shape[:2], dtype=np.float32)
 
     def preview_frame(self, t_sec: float) -> PreviewFrame:
         if self._media is None:
@@ -782,6 +818,10 @@ class FastEngine(MattingEngine):
                     matte_error = f"{matte_error}; heuristic: {str(exc2)[:120]}"
                     alpha = np.zeros(bgr.shape[:2], dtype=np.float32)
 
+        from hybrid_editor.media.video_io import matte_failure_reason
+
+        if alpha is not None and is_matte_empty(alpha) and matte_error is None:
+            matte_error = matte_failure_reason(alpha)
         try:
             jpg, png, w, h, src, empty = encode_preview_pair(bgr, alpha)
         except Exception as exc:  # noqa: BLE001
@@ -791,6 +831,8 @@ class FastEngine(MattingEngine):
             empty = True
         if empty or is_matte_empty(alpha):
             empty = True
+            if matte_error is None and alpha is not None:
+                matte_error = matte_failure_reason(alpha)
         lane_meta = self._lanes.status() if self._lanes else {}
         meta: dict[str, Any] = {
             "mode": self.mode.value,
@@ -799,6 +841,7 @@ class FastEngine(MattingEngine):
             "frame_idx": frame_idx,
             "proxy_lanes": lane_meta,
             "matte_empty": empty,
+            "stamp": "2026-10-11-matte-visible",
         }
         if matte_error:
             meta["matte_error"] = matte_error

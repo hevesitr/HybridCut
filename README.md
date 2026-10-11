@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-11-auto-person` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-11-matte-visible` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-11-auto-person
+# expect: 2026-10-11-matte-visible
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA PATH (no remount pip): .\hybrid_cut\start_hybrid_cuda.ps1
@@ -72,11 +72,27 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 ---
 
-## Stamp — auto-person (`2026-10-11-auto-person`)
+## Stamp — matte-visible (`2026-10-11-matte-visible`)
 
-On top of look-peak / ai-tracks / person-fix2. **Delete/Backspace** removes any selected V1 / AI sáv clip (trash UI kept). **Varázsceruza + Ecset/Radír/Lasszó permanently removed** — auto full-person RVM is the only selection path (Megnyitás / drop / Polírozás). Sticky seed / face_pick dead paths purged. Nobg layer move + AI sáv Polírozás kept.
+Screenshots after person-restore: **Maszk** = solid light-gray rectangle on checker; **Cutout** = opaque full source; chip still **Gyors**. Cause: near-uniform / all-ones alpha (ORT 0–255 clip or wrong pha) counted as success → gray slab + no BG punch + false Cutout ✓. Fix: `is_matte_degenerate`, RVM `normalize_alpha` + named `pha`, refuse slab cache, toast on failure, Max-on-open kept.
 
-Restart: [`docs/auto-person-restart.md`](docs/auto-person-restart.md) · store [`../hybrid-auto-person-restart.md`](../hybrid-auto-person-restart.md)
+Restart: [`docs/matte-visible-restart.md`](docs/matte-visible-restart.md) · store [`../hybrid-matte-visible-restart.md`](../hybrid-matte-visible-restart.md)
+
+---
+
+## Prior — person-restore (`2026-10-11-person-restore`)
+
+Wand-era face scraps in MaskStore + Gyors skip RVM. Megnyitás purge + Max + Éles. Superseded by **matte-visible** for the gray-slab / opaque-cutout failure.
+
+Restart (historical): [`docs/person-restore-restart.md`](docs/person-restore-restart.md)
+
+---
+
+## Prior — auto-person (`2026-10-11-auto-person`)
+
+Removed wand/paint UI + Delete-key clip delete. Incomplete for recognition (MaskStore disk not purged; open stayed Gyors). Superseded by **person-restore**.
+
+Restart (historical): [`docs/auto-person-restart.md`](docs/auto-person-restart.md)
 
 ---
 

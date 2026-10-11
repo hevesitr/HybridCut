@@ -94,6 +94,50 @@ class EditorSession:
             except OSError:
                 pass
 
+    def _purge_mask_store(self, media_path: Optional[str] = None) -> None:
+        """Purge MaskStore memory + disk (wand face scraps must not shadow RVM)."""
+        import shutil
+
+        from hybrid_editor.cache.mask_store import mask_dir
+
+        fast = getattr(self.engine, "_fast", None) or self.engine
+        store = getattr(fast, "_mask_store", None)
+        if store is not None and hasattr(store, "purge"):
+            store.purge()
+        elif store is not None and hasattr(store, "clear_memory"):
+            store.clear_memory()
+        path = media_path or self._seed_media_path()
+        if not path and self.media is not None:
+            path = self.media.path
+        if path:
+            d = mask_dir(ROOT, path, subject="person")
+            if d.is_dir():
+                shutil.rmtree(d, ignore_errors=True)
+
+    def _ensure_full_person_max(self, media_path: Optional[str] = None) -> None:
+        """Megnyitás auto-person: Max + Éles szélek (pre-wand recognition path)."""
+        path = media_path or (self.media.path if self.media else None)
+        if self.mode is not EngineMode.MAX:
+            old = self.engine
+            try:
+                old.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.mode = EngineMode.MAX
+            self.engine = create_engine(EngineMode.MAX)
+            self.sharp_edges = True
+            self._sync_sharp_to_engine()
+            if path:
+                self.media = self.engine.open_media(Path(path))
+                self._open_path = path
+        else:
+            self.sharp_edges = True
+            self._sync_sharp_to_engine()
+            if path and self._open_path != path:
+                self.media = self.engine.open_media(Path(path))
+                self._open_path = path
+        self._apply_seed_to_engine(None)
+
     def _load_seed_for_selection(self) -> None:
         """Auto-person only: purge any leftover seed PNG and never re-arm paint/wand.
 
@@ -102,9 +146,11 @@ class EditorSession:
         sp = self._seed_path()
         if sp is not None and sp.is_file():
             self._purge_seed_disk(sp)
+        self._purge_mask_store()
         self._apply_seed_to_engine(None)
         if isinstance(self.engine, MaxQualityEngine):
-            self.engine._seed = None  # noqa: SLF001
+            # Keep auto guidance seed; only drop sticky user/paint state.
+            self.engine.set_user_seed(None)
 
     def _preview_matte_long(self) -> int:
         """Long-side for timeline composite matte decode — Max keeps near-4K detail."""
@@ -229,18 +275,38 @@ class EditorSession:
             if self.bake_running:
                 raise RuntimeError("Bake fut — várj, vagy ne válts módot közben")
             new_mode = resolve_mode(mode)
-            if new_mode is self.mode and self.engine.mode is new_mode:
-                return self.status()
-            media_path = self.media.path if self.media else None
-            seed = self._seed_alpha
-            # Near-empty kézi seed must not travel into Max (old wipe path / stale UI).
-            if seed is not None:
+
+            def _drop_near_empty_seed(seed: Optional[np.ndarray]) -> Optional[np.ndarray]:
+                if seed is None:
+                    return None
                 s = np.asarray(seed, dtype=np.float32)
                 if s.ndim == 3:
                     s = s[..., 0]
                 if float(s.max()) < 0.05 or float((s > 0.15).mean()) < 0.002:
-                    seed = None
                     self._seed_alpha = None
+                    return None
+                return seed
+
+            if new_mode is self.mode and self.engine.mode is new_mode:
+                # Already on target mode (Megnyitás now opens Max) — still sanitize
+                # near-empty paint leftovers and recommend Előnézet.
+                seed = _drop_near_empty_seed(self._seed_alpha)
+                if seed is None:
+                    self._apply_seed_to_engine(None)
+                st = self.status()
+                if new_mode is EngineMode.MAX:
+                    st = {
+                        **st,
+                        "auto_preview_recommended": True,
+                        "person_matte_hint_hu": (
+                            st.get("person_matte_label_hu")
+                            or "MatAnyone2 nincs — RVM ember-maszk"
+                        ),
+                    }
+                return st
+            media_path = self.media.path if self.media else None
+            # Near-empty kézi seed must not travel into Max (old wipe path / stale UI).
+            seed = _drop_near_empty_seed(self._seed_alpha)
             old = self.engine
             old.close()
             self.mode = new_mode
@@ -422,23 +488,37 @@ class EditorSession:
                 # Do not wipe V1 seed when adding B-roll / nobg overlay
                 if use_track == 0:
                     self._seed_alpha = None
-                    if isinstance(self.engine, MaxQualityEngine):
-                        self.engine.clear_user_seed()
+                    self._purge_seed_disk()
+                    self._purge_mask_store(info.path)
+                    if not is_nobg:
+                        self._ensure_full_person_max(info.path)
+                    elif isinstance(self.engine, MaxQualityEngine):
+                        self.engine.set_user_seed(None)
             else:
-                self.media = self.engine.open_media(path)
-                self._open_path = info.path
                 self.last_bake = None
                 self.bake_progress = 0.0
                 self.bake_status = ""
                 self._seed_alpha = None
                 self._seed_mode = "union"
                 self._seed_part = None
-                if isinstance(self.engine, MaxQualityEngine):
-                    self.engine.clear_user_seed()
-                self._ensure_timeline(reset=True, has_alpha=is_nobg)
-                # Auto-person only: purge leftover paint/wand seed PNGs — never reload.
+                # Auto-person restore: Max + Éles before first open so MaskStore
+                # binds to ResNet quality model_id and wand face scraps are purged.
                 if not is_nobg:
                     self._purge_seed_disk()
+                    if self.mode is not EngineMode.MAX:
+                        try:
+                            self.engine.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        self.mode = EngineMode.MAX
+                        self.engine = create_engine(EngineMode.MAX)
+                    self.sharp_edges = True
+                    self._sync_sharp_to_engine()
+                self.media = self.engine.open_media(path)
+                self._open_path = info.path
+                self._ensure_timeline(reset=True, has_alpha=is_nobg)
+                if isinstance(self.engine, MaxQualityEngine):
+                    self.engine.set_user_seed(None)
                 self._apply_seed_to_engine(None)
             return self.status()
 
@@ -628,6 +708,7 @@ class EditorSession:
             # Ensure Max + Éles szélek — auto full-person RVM only (no paint/wand seed).
             self._apply_seed_to_engine(None)
             self._purge_seed_disk()
+            self._purge_mask_store(clip.media_path)
             if self.mode is not EngineMode.MAX:
                 media_path = clip.media_path
                 old = self.engine
@@ -675,9 +756,9 @@ class EditorSession:
         self.media = self.engine.open_media(Path(media_path))
         self._open_path = media_path
         # Auto-person only — never re-arm paint/wand seed when switching media.
+        # open_media already purged MaskStore disk for this path.
         if isinstance(self.engine, MaxQualityEngine):
             self.engine.clear_user_seed()
-            self.engine._seed = None  # noqa: SLF001
         self._seed_alpha = None
         self._seed_mode = "union"
         self._seed_part = None
@@ -751,9 +832,9 @@ class EditorSession:
                     )
                     source_t = matte_layer.source_t_sec
                     self._ensure_engine_media(matte_layer.media_path)
-                    # Auto-person only — no paint/wand seed on preview matte.
+                    # Auto-person only — drop paint/wand user seed; keep auto `_seed`.
                     if isinstance(self.engine, MaxQualityEngine):
-                        self.engine.clear_user_seed()
+                        self.engine.set_user_seed(None)
                     if overlays or getattr(matte_layer, "has_alpha", False):
                         overlay_meta = {
                             "overlay_layers": [
@@ -842,6 +923,19 @@ class EditorSession:
                     jpg, png, w, h, src, empty = encode_preview_pair(
                         bgr, alpha, sharp_cutout=sharp and self.mode is EngineMode.MAX
                     )
+                    meta_extra: dict[str, Any] = {
+                        "matte_empty": empty,
+                        "has_alpha_clip": bool(getattr(matte_layer, "has_alpha", False)),
+                        "stamp": "2026-10-11-matte-visible",
+                        **overlay_meta,
+                    }
+                    if empty:
+                        from hybrid_editor.media.video_io import matte_failure_reason
+
+                        why = matte_failure_reason(alpha)
+                        if why:
+                            meta_extra["matte_error"] = why
+                            meta_extra["source_fallback"] = True
                     frame = PreviewFrame(
                         t_sec=t,
                         width=w,
@@ -850,11 +944,7 @@ class EditorSession:
                         alpha_png_b64=png,
                         engine=self.engine.capabilities().name,
                         backend=self.engine.capabilities().backend,
-                        meta={
-                            "matte_empty": empty,
-                            "has_alpha_clip": bool(getattr(matte_layer, "has_alpha", False)),
-                            **overlay_meta,
-                        },
+                        meta=meta_extra,
                         source_jpeg_b64=src,
                     )
                 except Exception as exc:  # noqa: BLE001

@@ -1,4 +1,6 @@
-"""MaxQualityEngine — MatAnyone2 adapter when available, else hardened quality pipeline."""
+"""person-restore / matte-visible Max quality polish.
+
+MaxQualityEngine — MatAnyone2 adapter when available, else hardened quality pipeline."""
 
 from __future__ import annotations
 
@@ -113,15 +115,18 @@ class MaxQualityEngine(MattingEngine):
     ) -> None:
         """No-op for paint/wand — auto full-person RVM is the only selection path.
 
-        Passing ``alpha=None`` (or any value) clears leftover sticky seed state.
+        Clears leftover sticky *user* seed only. Does **not** wipe ``_seed``
+        (auto RVM guidance prior) — auto-person's clear-``_seed`` was too
+        aggressive and forced every preview to rebuild the prior from scratch
+        while MaskStore still served poisoned face scraps on Gyors.
         """
         del alpha, mode, part
         self._user_seed = None
         self._seed_mode = "union"
         self._seed_part = None
-        self._seed = None
 
     def clear_user_seed(self) -> None:
+        """Clear paint/wand user seed + auto guidance (media switch / reset)."""
         self._user_seed = None
         self._seed_mode = "union"
         self._seed_part = None
@@ -364,8 +369,12 @@ class MaxQualityEngine(MattingEngine):
             "rvm_full_res": bool(getattr(self._fast, "_full_res_matte", False)),
             "rvm_weights": Path(weights).name if weights else None,
             "preview_long_side": preview_long,
-            "stamp": "2026-10-11-auto-person",
+            "stamp": "2026-10-11-matte-visible",
         }
+        if empty and matte_error is None and alpha is not None:
+            from hybrid_editor.media.video_io import matte_failure_reason
+
+            matte_error = matte_failure_reason(alpha)
         if matte_error and empty:
             meta["matte_error"] = matte_error
             meta["source_fallback"] = True

@@ -31,7 +31,9 @@ def test_mask_store_put_nearest(tmp_path: Path):
 
 def test_mask_store_async_and_resize(tmp_path: Path):
     store = MaskStore(tmp_path / "masks2")
-    a = np.ones((40, 40), np.float32) * 0.7
+    # Structured person-ish matte (uniform 0.7 is rejected as degenerate slab).
+    a = np.zeros((40, 40), np.float32)
+    a[6:34, 10:30] = 0.7
     store.put_async(1.0, a)
     deadline = time.time() + 2.0
     while len(store) < 1 and time.time() < deadline:

@@ -21,6 +21,12 @@ CHECKER_LIGHT = 0x35  # #353535
 EMPTY_ALPHA_MAX = 0.05
 EMPTY_ALPHA_COVER = 0.04  # fraction of pixels with a > 0.15 (was 0.002 — feet-only noise hid video)
 EMPTY_ALPHA_MEAN = 0.03  # mean alpha below this ⇒ treat as empty / weak
+# Degenerate full-frame slab: near-uniform high alpha → Maszk = solid gray, Cutout = opaque source.
+# (RVM 0–255 clip bug, wrong ORT tensor, or poisoned all-ones MaskStore.)
+DEGENERATE_COVER = 0.90  # fraction a > 0.15
+DEGENERATE_STD = 0.05  # spatial std below this + high cover ⇒ flat slab
+DEGENERATE_MEAN = 0.85  # mean alpha with low std also useless
+DEGENERATE_OPAQUE = 0.90  # fraction a >= 0.99
 # Weak-but-not-empty: still prefer source underlay over checker domination.
 WEAK_ALPHA_COVER = 0.08
 # When matte is empty, keep source nearly full brightness (optional slight dim).
@@ -180,7 +186,11 @@ def downscale_long_side(bgr: np.ndarray, max_long: int = 720) -> np.ndarray:
 
 
 def normalize_alpha(alpha: np.ndarray) -> np.ndarray:
-    """Return float32 HxW alpha in [0, 1]."""
+    """Return float32 HxW alpha in [0, 1].
+
+    Some ORT RVM exports emit 0–255-ish floats; clipping those without scaling
+    produces an all-ones slab (solid gray Maszk + opaque Cutout).
+    """
     a = np.asarray(alpha)
     if a.ndim == 3:
         a = a[..., 0]
@@ -190,8 +200,75 @@ def normalize_alpha(alpha: np.ndarray) -> np.ndarray:
     return np.clip(a, 0.0, 1.0)
 
 
+def is_matte_degenerate(alpha: np.ndarray) -> bool:
+    """True when alpha is a near-uniform full-frame slab (no person silhouette).
+
+    Matches user Maszk screenshot: solid light-gray rectangle on checkerboard —
+    ``visualize_alpha_matte`` with a≈1 everywhere paints ~210 gray over the frame.
+    Cutout then stays fully opaque (BG never punched).
+    """
+    if alpha is None:
+        return False
+    a = normalize_alpha(alpha)
+    if a.size == 0:
+        return False
+    cover = float((a > 0.15).mean())
+    std = float(a.std())
+    mean = float(a.mean())
+    opaque = float((a >= 0.99).mean())
+    if opaque >= DEGENERATE_OPAQUE:
+        return True
+    if cover >= DEGENERATE_COVER and std < DEGENERATE_STD:
+        return True
+    if mean >= DEGENERATE_MEAN and std < DEGENERATE_STD * 1.6:
+        return True
+    # Opaque border + near-full cover ⇒ full-frame fill, not a person cutout.
+    h, w = a.shape[:2]
+    if h >= 8 and w >= 8:
+        b = max(2, min(h, w) // 40)
+        border = np.concatenate(
+            [
+                a[:b, :].ravel(),
+                a[-b:, :].ravel(),
+                a[:, :b].ravel(),
+                a[:, -b:].ravel(),
+            ]
+        )
+        if cover >= 0.85 and float(border.mean()) >= 0.85 and std < 0.12:
+            return True
+    return False
+
+
+def matte_failure_reason(alpha: np.ndarray) -> Optional[str]:
+    """Short HU/tech reason when matte is useless for Cutout, else None."""
+    if alpha is None:
+        return "nincs alpha"
+    a = normalize_alpha(alpha)
+    if a.size == 0:
+        return "üres alpha"
+    if is_matte_degenerate(a):
+        return (
+            "egyenletes/teljes-keret maszk (hibás RVM vagy 0–255 clip) — "
+            f"cover={float((a > 0.15).mean()):.2f} std={float(a.std()):.3f}"
+        )
+    if float(a.max()) < EMPTY_ALPHA_MAX:
+        return f"gyenge/üres maszk — max={float(a.max()):.3f}"
+    cover = float((a > 0.15).mean())
+    if cover < EMPTY_ALPHA_COVER or float(a.mean()) < EMPTY_ALPHA_MEAN:
+        return (
+            "gyenge/üres maszk — "
+            f"max={float(a.max()):.3f} cover={cover:.3f}"
+        )
+    return None
+
+
 def is_matte_empty(alpha: np.ndarray) -> bool:
-    """True when alpha is missing, all-transparent, or has no useful coverage yet."""
+    """True when alpha is missing, weak, or a degenerate full-frame slab.
+
+    Degenerate all-ones / flat-gray mattes must NOT count as success — they
+    previously showed Cutout ✓ while Maszk was a solid gray rectangle and
+    Cutout kept the full background.
+    """
     if alpha is None:
         return True
     a = normalize_alpha(alpha)
@@ -204,6 +281,8 @@ def is_matte_empty(alpha: np.ndarray) -> bool:
         return True
     if float(a.mean()) < EMPTY_ALPHA_MEAN:
         return True
+    if is_matte_degenerate(a):
+        return True
     return False
 
 
@@ -215,15 +294,15 @@ def source_visible_bgr(bgr: np.ndarray, *, dim: float = EMPTY_SOURCE_DIM) -> np.
     return (bgr.astype(np.float32) * d).astype(np.uint8)
 
 
-def annotate_nincs_maszk(bgr: np.ndarray) -> np.ndarray:
-    """Burn a small 'nincs maszk' label onto a source frame (Előtte / empty matte)."""
+def annotate_nincs_maszk(bgr: np.ndarray, label: str = "nincs maszk") -> np.ndarray:
+    """Burn a small empty/broken-matte label onto a source frame (Előtte / empty matte)."""
     out = bgr.copy()
     h, w = out.shape[:2]
-    label = "nincs maszk"
+    text = str(label or "nincs maszk")[:48]
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = max(0.45, min(w, h) / 640.0)
     thickness = max(1, int(round(scale * 1.6)))
-    (tw, th), baseline = cv2.getTextSize(label, font, scale, thickness)
+    (tw, th), baseline = cv2.getTextSize(text, font, scale, thickness)
     pad = max(4, int(6 * scale))
     x1, y1 = pad, pad
     x2, y2 = x1 + tw + pad * 2, y1 + th + baseline + pad * 2
@@ -232,7 +311,7 @@ def annotate_nincs_maszk(bgr: np.ndarray) -> np.ndarray:
     out = cv2.addWeighted(overlay, 0.55, out, 0.45, 0)
     cv2.putText(
         out,
-        label,
+        text,
         (x1 + pad, y1 + th + pad),
         font,
         scale,
@@ -433,11 +512,17 @@ def visualize_alpha_matte(
     dark: int = CHECKER_DARK,
     light: int = CHECKER_LIGHT,
 ) -> np.ndarray:
-    """Soft alpha / matte view. Empty matte → source + 'nincs maszk' (not pure checker)."""
+    """Soft alpha / matte view. Empty/degenerate → source + label (never solid gray slab)."""
     h, w = bgr.shape[:2]
     a = normalize_alpha(alpha)
     if a.shape[:2] != (h, w):
         a = cv2.resize(a, (w, h), interpolation=cv2.INTER_LINEAR)
+    if is_matte_degenerate(a):
+        # Never paint the flat ~210 gray rectangle users reported as Maszk.
+        return annotate_nincs_maszk(
+            source_visible_bgr(bgr, dim=EMPTY_SOURCE_DIM),
+            label="hibas maszk",
+        )
     if is_matte_empty(a):
         # Előtte with no matte: keep source visible + clear empty-matte cue.
         return annotate_nincs_maszk(source_visible_bgr(bgr, dim=EMPTY_SOURCE_DIM))

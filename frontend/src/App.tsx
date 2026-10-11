@@ -200,8 +200,14 @@ function smartStatusLine(
     status?.person_matte?.person_matte_label_hu ||
     "";
   if (matteEmpty) {
-    if (preview?.meta?.source_fallback || preview?.meta?.matte_error) {
-      return "Ember-maszk sikertelen — próbáld újra az Előnézetet";
+    const err = String(preview?.meta?.matte_error || "");
+    if (/egyenletes|teljes-keret|0–255|0-255/i.test(err)) {
+      return "Hibás egyenletes maszk — ne fogadd el Cutout ✓-ként; futtasd Max Előnézetet";
+    }
+    if (preview?.meta?.source_fallback || err) {
+      return err
+        ? `Ember-maszk sikertelen — ${err.slice(0, 140)}`
+        : "Ember-maszk sikertelen — próbáld újra az Előnézetet";
     }
     return "Nincs ember-maszk — futtasd az Előnézetet";
   }
@@ -435,6 +441,9 @@ export default function App() {
       setPreview(frame);
       const empty = Boolean(frame.meta?.matte_empty || frame.meta?.source_fallback);
       const personLabel = String(frame.meta?.person_matte_label_hu || "");
+      const matteErr = String(frame.meta?.matte_error || "");
+      const degenerate =
+        /egyenletes|teljes-keret|0–255|0-255|hibás RVM|hibas maszk/i.test(matteErr);
       const seedHit = frame.meta?.user_seed ? " · kézi finomítás ✓" : "";
       const ov = (frame.meta?.overlay_layers as unknown[] | undefined)?.length ?? 0;
       const composite = Boolean(frame.meta?.timeline_composite);
@@ -447,9 +456,23 @@ export default function App() {
       setNote(
         noteOverride ??
           (empty
-            ? "Nincs ember-maszk — futtasd az Előnézetet"
+            ? degenerate
+              ? "Hibás egyenletes maszk — RVM újrafuttatás / Max mód"
+              : matteErr
+                ? `Ember-maszk hiba — ${matteErr.slice(0, 120)}`
+                : "Nincs ember-maszk — futtasd az Előnézetet"
             : `Cutout kész${seedHit}${ovHit} · t=${frame.t_sec.toFixed(2)}s`),
       );
+      // Always surface RVM/ORT/CUDA matte failures (never silent gray slab + Cutout ✓).
+      if (empty && (matteErr || frame.meta?.source_fallback)) {
+        showToast(
+          degenerate
+            ? "Hibás maszk (egyenletes szürke lap) — RVM/ONNX újra, vagy Max mód"
+            : matteErr
+              ? `Ember-maszk sikertelen — ${matteErr.slice(0, 140)}`
+              : "Ember-maszk sikertelen — RVM/heuristic nem adott maszkot",
+        );
+      }
       // Explicit Előnézet / upload: jump to Cutout when matte ready (scrub stays put).
       if (opts?.preferCutout) {
         if (!empty) {
@@ -459,9 +482,7 @@ export default function App() {
               ? `${personLabel} — Exportálás a következő lépés`
               : "Cutout kész — Exportálás a következő lépés",
           );
-        } else if (frame.meta?.matte_error || frame.meta?.source_fallback) {
-          showToast("Ember-maszk sikertelen — RVM/heuristic nem adott maszkot");
-        } else {
+        } else if (!(matteErr || frame.meta?.source_fallback)) {
           showToast("Nincs ember-maszk — futtasd az Előnézetet újra");
         }
       }
@@ -563,7 +584,7 @@ export default function App() {
           ? "B-roll a V2 sávon"
           : useAppend
             ? "Új klip az idővonalon (V1)"
-            : "Videó betöltve — auto ember-maszk fut",
+            : "Videó betöltve — Max teljes-ember RVM (auto)",
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1110,7 +1131,7 @@ export default function App() {
 
   if (!hasMedia) {
     return (
-      <div className="app empty concat-home look-peak">
+      <div className="app empty concat-home look-peak matte-visible">
         {dragOver ? (
           <div className="drop-overlay">
             <strong>Ejtés: videó betöltése</strong>
@@ -1218,7 +1239,7 @@ export default function App() {
   }
 
   return (
-    <div className="app look-peak">
+    <div className="app look-peak matte-visible">
       {/* Compact editor chrome: topbar + workspace only (no separate 1fr intel row). look-peak visual shell. */}
 
       <header className="topbar">

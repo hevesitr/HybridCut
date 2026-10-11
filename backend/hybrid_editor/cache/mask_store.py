@@ -156,6 +156,15 @@ class MaskStore:
     def put(self, seconds: float, alpha: np.ndarray) -> None:
         if alpha is None or getattr(alpha, "size", 0) == 0:
             return
+        # Never persist degenerate full-frame slabs (solid gray Maszk / opaque Cutout).
+        # Weak face scraps are still skipped by preview get+is_matte_empty; purge wipes them.
+        try:
+            from hybrid_editor.media.video_io import is_matte_degenerate
+
+            if is_matte_degenerate(alpha):
+                return
+        except Exception:  # noqa: BLE001
+            pass
         millis = millis_for_seconds(seconds)
         self.ensure_dir()
         gray = np.clip(np.asarray(alpha, dtype=np.float32) * 255.0, 0, 255).astype(np.uint8)
@@ -211,3 +220,27 @@ class MaskStore:
         with self._lock:
             self._decoded.clear()
             self._pending.clear()
+
+    def purge(self) -> None:
+        """Wipe memory + disk PNGs for this media.
+
+        Wand / face-only eras wrote tiny part-mattes into MaskStore. Gyors
+        ``preview_frame`` reloads them and skips ORT — coverage then fails
+        ``is_matte_empty`` (EMPTY_ALPHA_COVER) so Előnézet shows source and
+        looks like “people not recognized.” Purge on Megnyitás restores a
+        fresh full-person RVM pass.
+        """
+        with self._lock:
+            self._decoded.clear()
+            self._pending.clear()
+            self._times = []
+            self._cancel = True
+        if self.dir.is_dir():
+            for entry in list(self.dir.iterdir()):
+                try:
+                    if entry.is_file():
+                        entry.unlink()
+                except OSError as exc:
+                    logger.debug("mask store purge: %s", exc)
+        with self._lock:
+            self._cancel = False

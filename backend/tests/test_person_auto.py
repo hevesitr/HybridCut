@@ -1,4 +1,4 @@
-"""Person-auto contracts superseded by ``2026-10-11-auto-person``.
+"""Person-auto contracts superseded by ``2026-10-11-matte-visible``.
 
 Full-person auto RVM only — no session face wand.
 """
@@ -20,11 +20,11 @@ MAX_Q = ROOT / "backend" / "hybrid_editor" / "engines" / "max_quality.py"
 SESSION = ROOT / "backend" / "hybrid_editor" / "session.py"
 POLISH = ROOT / "backend" / "hybrid_editor" / "engines" / "videoeditor_polish.py"
 README = ROOT / "README.md"
-RESTART = ROOT / "docs" / "auto-person-restart.md"
+RESTART = ROOT / "docs" / "matte-visible-restart.md"
 
 
 def test_sync_stamp_auto_person():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-auto-person"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-matte-visible"
 
 
 def test_default_seed_is_union_full_person():
@@ -134,9 +134,11 @@ def test_ui_auto_only_no_wand():
     assert "_purge_seed_disk" in session
     assert "reconnect_body_parts" in polish
     assert "full_person_matte" in api
-    assert "auto-person" in css
+    assert "person-restore" in css or "auto-person" in css
     assert RESTART.is_file()
-    assert "2026-10-11-auto-person" in README.read_text(encoding="utf-8")
-    assert "auto-person" in MAX_Q.read_text(encoding="utf-8") or "No-op" in MAX_Q.read_text(
-        encoding="utf-8"
+    assert "2026-10-11-matte-visible" in README.read_text(encoding="utf-8")
+    assert (
+        "person-restore" in MAX_Q.read_text(encoding="utf-8")
+        or "auto-person" in MAX_Q.read_text(encoding="utf-8")
+        or "No-op" in MAX_Q.read_text(encoding="utf-8")
     )

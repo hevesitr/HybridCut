@@ -35,7 +35,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_nobg_layer():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-auto-person"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-matte-visible"
 
 
 def test_looks_like_alpha_media():
@@ -155,14 +155,14 @@ def test_ui_pozicio_nobg_timeline():
     assert "pos_x" in api
     assert "has_alpha" in api
     css = CSS.read_text(encoding="utf-8")
-    assert "auto-person" in css or "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
+    assert "person-restore" in css or "auto-person" in css or "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
     assert ".transform-drag-layer" in css
     assert ".transform-block" in css
 
 
 def test_readme_restart_dist():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-11-auto-person" in readme or "2026-10-11-paint-face" in readme
+    assert "2026-10-11-matte-visible" in readme or "2026-10-11-paint-face" in readme
     assert RESTART.is_file()
     restart = RESTART.read_text(encoding="utf-8")
     assert "2026-10-11-paint-face" in restart or "nobg-layer" in restart or "auto-person" in restart
