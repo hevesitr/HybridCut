@@ -141,7 +141,7 @@ Write-Host ""
 Write-Host "Kovetkezo / Next:"
 Write-Host '  cd $env:USERPROFILE\Documents\Videoeditor'
 Write-Host "  Get-Content .\hybrid_cut\SYNC_VERSION.txt"
-Write-Host "  # expect: 2026-10-11-concat-flow"
+Write-Host "  # expect: 2026-10-11-timeline-bg"
 Write-Host '  $env:HYBRID_RVM_ONNX = "$PWD\models\rvm_resnet50_fp32.onnx"'
 Write-Host "  # start_hybrid_cuda: PATH inject only (no CapCut remount pip upgrade)"
 Write-Host "  .\hybrid_cut\start_hybrid_cuda.ps1"

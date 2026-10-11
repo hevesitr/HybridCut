@@ -181,6 +181,31 @@ def make_checkerboard(
     return np.stack([plane, plane, plane], axis=-1)
 
 
+def composite_overlay_layers(
+    bgr: np.ndarray,
+    alpha: np.ndarray,
+    overlays: list[tuple[np.ndarray, float]],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Porter-Duff-ish: stack V2 B-roll frames over V1 cutout RGB + raise alpha.
+
+    Concat idea: one compositor path for monitor + export — same blend math as bake.
+    Each overlay is (bgr_uint8, opacity 0..1).
+    """
+    out = bgr.astype(np.float32)
+    a = normalize_alpha(alpha).astype(np.float32)
+    h, w = out.shape[:2]
+    for obgr, opacity in overlays:
+        op = float(np.clip(opacity, 0.0, 1.0))
+        if op <= 1e-6:
+            continue
+        layer = obgr
+        if layer.shape[:2] != (h, w):
+            layer = cv2.resize(layer, (w, h), interpolation=cv2.INTER_AREA)
+        out = out * (1.0 - op) + layer.astype(np.float32) * op
+        a = np.maximum(a, op)
+    return out.astype(np.uint8), a.astype(np.float32)
+
+
 def composite_cutout_over_checker(
     bgr: np.ndarray,
     alpha: np.ndarray,

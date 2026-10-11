@@ -408,7 +408,12 @@ export default function App() {
       const personLabel = String(frame.meta?.person_matte_label_hu || "");
       const seedHit = frame.meta?.user_seed ? " · kézi finomítás ✓" : "";
       const ov = (frame.meta?.overlay_layers as unknown[] | undefined)?.length ?? 0;
-      const ovHit = ov ? ` · B-roll ×${ov}` : "";
+      const composite = Boolean(frame.meta?.timeline_composite);
+      const ovHit = ov
+        ? composite
+          ? ` · idővonal kompozit V1+V2×${ov}`
+          : ` · B-roll ×${ov}`
+        : "";
       // Apex: short human status — tech detail stays under Részletek.
       setNote(
         noteOverride ??
@@ -666,8 +671,26 @@ export default function App() {
   };
 
   const runAction = async (
-    action: "duplicate" | "remove" | "cut" | "move" | "select" | "to_broll" | "to_v1",
-    extra?: { clip_id?: string; direction?: number; t_sec?: number },
+    action:
+      | "duplicate"
+      | "remove"
+      | "cut"
+      | "move"
+      | "select"
+      | "to_broll"
+      | "to_v1"
+      | "set_track"
+      | "place"
+      | "trim_edge",
+    extra?: {
+      clip_id?: string;
+      direction?: number;
+      t_sec?: number;
+      track?: number;
+      timeline_start_sec?: number;
+      timeline_t?: number;
+      edge?: "in" | "out";
+    },
   ) => {
     setBusy(true);
     setError(null);
@@ -682,11 +705,15 @@ export default function App() {
         remove: "Klip törölve",
         cut: "Klip felvágva",
         move: "Klip áthelyezve",
-        select: "Klip kiválasztva",
-        to_broll: "Áthelyezve B-rollra",
+        select: "Klip kiválasztva — BG / Varázsceruza erre megy",
+        to_broll: "Áthelyezve V2-re",
         to_v1: "Áthelyezve V1-re",
+        set_track: "Sáv váltva (V1/V2)",
+        place: "Klip áthelyezve az idővonalon",
+        trim_edge: "Be/Ki trim frissítve",
       };
       setNote(labels[action] || `Timeline: ${action}`);
+      if (action === "select") void refreshSeed();
       if (st.timeline?.clips?.length) await runPreview(t, st);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1703,6 +1730,7 @@ export default function App() {
                 <SeedPaint
                   variant="docked"
                   autoCommitOnStrokeEnd
+                  selectedClipId={selected}
                   imageJpegB64={preview?.source_jpeg_b64 || preview?.jpeg_b64 || null}
                   initialMaskPngB64={seedPng}
                   width={preview?.width ?? 480}
@@ -1728,6 +1756,26 @@ export default function App() {
                 onSeek={schedulePreview}
                 onSelect={(id) => {
                   void runAction("select", { clip_id: id });
+                }}
+                onTrimEdge={(clipId, edge, timelineT) => {
+                  void runAction("trim_edge", {
+                    clip_id: clipId,
+                    edge,
+                    timeline_t: timelineT,
+                  });
+                }}
+                onPlace={(clipId, start) => {
+                  void runAction("place", {
+                    clip_id: clipId,
+                    timeline_start_sec: start,
+                  });
+                }}
+                onSetTrack={(clipId, track, start) => {
+                  void runAction("set_track", {
+                    clip_id: clipId,
+                    track,
+                    timeline_start_sec: start,
+                  });
                 }}
               />
             ) : null}
@@ -1778,6 +1826,7 @@ export default function App() {
           {showLargeSeed && (
             <SeedPaint
               variant="panel"
+              selectedClipId={selected}
               imageJpegB64={preview?.source_jpeg_b64 || preview?.jpeg_b64 || null}
               initialMaskPngB64={seedPng}
               width={preview?.width ?? 480}

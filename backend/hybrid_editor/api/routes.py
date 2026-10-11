@@ -60,11 +60,18 @@ class TimelineBody(BaseModel):
 class TimelineActionBody(BaseModel):
     action: str = Field(
         ...,
-        description="duplicate|remove|cut|move|select|to_broll|to_v1",
+        description=(
+            "duplicate|remove|cut|move|select|to_broll|to_v1|"
+            "set_track|place|trim_edge"
+        ),
     )
     clip_id: Optional[str] = None
     direction: Optional[int] = None
     t_sec: Optional[float] = None
+    track: Optional[int] = None
+    timeline_start_sec: Optional[float] = None
+    timeline_t: Optional[float] = None
+    edge: Optional[str] = None
 
 
 class PlanBody(BaseModel):
@@ -209,6 +216,10 @@ def timeline_action(body: TimelineActionBody) -> dict:
             clip_id=body.clip_id,
             direction=body.direction,
             t_sec=body.t_sec,
+            track=body.track,
+            timeline_start_sec=body.timeline_start_sec,
+            timeline_t=body.timeline_t,
+            edge=body.edge,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc)) from exc

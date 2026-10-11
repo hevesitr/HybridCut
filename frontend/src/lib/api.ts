@@ -140,6 +140,10 @@ export type PreviewResult = {
     user_seed?: boolean;
     sharp_edges?: boolean;
     cutout_format?: "png" | "jpeg";
+    timeline_composite?: boolean;
+    matte_clip_id?: string;
+    overlay_layers?: unknown[];
+    seed_clip_id?: string | null;
   };
   frame_plan?: EditorStatus["frame_plan"];
 };
@@ -215,10 +219,24 @@ export const api = {
     selected_clip_id?: string;
   }) => json<EditorStatus>("/api/timeline", { method: "POST", body: JSON.stringify(body) }),
   timelineAction: (body: {
-    action: "duplicate" | "remove" | "cut" | "move" | "select" | "to_broll" | "to_v1";
+    action:
+      | "duplicate"
+      | "remove"
+      | "cut"
+      | "move"
+      | "select"
+      | "to_broll"
+      | "to_v1"
+      | "set_track"
+      | "place"
+      | "trim_edge";
     clip_id?: string;
     direction?: number;
     t_sec?: number;
+    track?: number;
+    timeline_start_sec?: number;
+    timeline_t?: number;
+    edge?: "in" | "out" | "be" | "ki";
   }) =>
     json<EditorStatus>("/api/timeline/action", { method: "POST", body: JSON.stringify(body) }),
   plan: (t_sec?: number) =>

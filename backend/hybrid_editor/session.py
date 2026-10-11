@@ -62,10 +62,27 @@ class EditorSession:
         if isinstance(self.engine, MaxQualityEngine) and hasattr(self.engine, "set_sharp_edges"):
             self.engine.set_sharp_edges(self.sharp_edges)
 
+    def _seed_media_path(self) -> Optional[str]:
+        """Seed is per selected clip media (falls back to open media)."""
+        if self.timeline is not None:
+            sel = self.timeline._find()
+            if sel is not None and sel.media_path:
+                return sel.media_path
+        if self.media is not None:
+            return self.media.path
+        return None
+
     def _seed_path(self) -> Optional[Path]:
-        if self.media is None:
+        media_path = self._seed_media_path()
+        if not media_path:
             return None
-        return ROOT / "cache" / "seeds" / f"{Path(self.media.path).stem}_seed.png"
+        return ROOT / "cache" / "seeds" / f"{Path(media_path).stem}_seed.png"
+
+    def _load_seed_for_selection(self) -> None:
+        """Swap in disk seed for the currently selected clip (or clear)."""
+        sp = self._seed_path()
+        loaded = load_seed(sp) if sp is not None and sp.is_file() else None
+        self._apply_seed_to_engine(loaded)
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -374,30 +391,52 @@ class EditorSession:
                 if not cid:
                     raise RuntimeError("clip_id required")
                 self.timeline.select_clip(cid)
+                sel = self.timeline._find(cid)
+                if sel is not None:
+                    self._ensure_engine_media(sel.media_path)
+                self._load_seed_for_selection()
             elif act == "add_sample_dup":
                 self.timeline.duplicate_selected()
-            elif act in {"promote_broll", "to_broll"}:
+            elif act in {"promote_broll", "to_broll", "set_track"}:
                 cid = kwargs.get("clip_id") or self.timeline.selected_clip_id
-                clip = self.timeline._find(cid)
-                if clip is None:
-                    raise RuntimeError("No clip to move to B-roll")
-                if int(clip.track) >= 1:
-                    return self.status()
-                # Keep at least one V1
-                if len(self.timeline.clips_on(0)) <= 1:
-                    raise RuntimeError("Need another V1 clip before promoting to B-roll")
-                clip.track = 1
-                clip.timeline_start_sec = float(self.timeline.playhead_sec)
-                clip.opacity = 0.85
-                self.timeline.relayout_sequential()
+                if act == "set_track":
+                    track = int(kwargs.get("track", 1))
+                    start = kwargs.get("timeline_start_sec")
+                    if not cid or not self.timeline.set_track(
+                        cid,
+                        track,
+                        timeline_start_sec=None if start is None else float(start),
+                    ):
+                        raise RuntimeError("Cannot move clip to that track")
+                else:
+                    clip = self.timeline._find(cid)
+                    if clip is None:
+                        raise RuntimeError("No clip to move to B-roll")
+                    if int(clip.track) >= 1:
+                        return self.status()
+                    if not self.timeline.set_track(
+                        cid, 1, timeline_start_sec=float(self.timeline.playhead_sec)
+                    ):
+                        raise RuntimeError("Need another V1 clip before promoting to B-roll")
             elif act in {"to_v1", "demote_broll"}:
                 cid = kwargs.get("clip_id") or self.timeline.selected_clip_id
-                clip = self.timeline._find(cid)
-                if clip is None:
+                if not cid or not self.timeline.set_track(cid, 0):
                     raise RuntimeError("No clip")
-                clip.track = 0
-                clip.opacity = 1.0
-                self.timeline.relayout_sequential()
+            elif act in {"place", "set_start"}:
+                cid = kwargs.get("clip_id") or self.timeline.selected_clip_id
+                start = kwargs.get("timeline_start_sec")
+                if cid is None or start is None:
+                    raise RuntimeError("clip_id and timeline_start_sec required")
+                if not self.timeline.set_timeline_start(cid, float(start)):
+                    raise RuntimeError("Cannot place clip")
+            elif act in {"trim_edge", "trim"}:
+                cid = kwargs.get("clip_id") or self.timeline.selected_clip_id
+                edge = str(kwargs.get("edge") or "out")
+                t = kwargs.get("timeline_t")
+                if cid is None or t is None:
+                    raise RuntimeError("clip_id and timeline_t required")
+                if not self.timeline.trim_edge(cid, edge=edge, timeline_t=float(t)):
+                    raise RuntimeError("Trim failed")
             else:
                 raise ValueError(f"Unknown timeline action: {action}")
             return self.status()
@@ -418,21 +457,39 @@ class EditorSession:
         if isinstance(self.engine, MaxQualityEngine) and self._seed_alpha is not None:
             self.engine.set_user_seed(self._seed_alpha)
 
+    def _matte_bgr(self, bgr: "np.ndarray", *, warmup: bool = False) -> "np.ndarray":
+        """Alpha for one BGR frame — selected-clip seed applies when engine has it."""
+        if self.mode is EngineMode.MAX and isinstance(self.engine, MaxQualityEngine):
+            return self.engine._polish(bgr, warmup=warmup).astype(np.float32)
+        return np.asarray(self.engine._matte(bgr), dtype=np.float32)  # type: ignore[attr-defined]
+
     def preview(self, t_sec: float = 0.0) -> PreviewFrame:
+        """Timeline composition at playhead: V1 cutout + V2 overlays (Concat plan→compose)."""
         with self._lock:
             if self.media is None and (self.timeline is None or not self.timeline.clips):
                 raise RuntimeError("Open a video first")
             source_t = float(t_sec)
             overlay_meta: dict[str, Any] = {}
+            matte_layer = None
+            overlays: list = []
             if self.timeline is not None:
                 self.timeline.set_playhead(t_sec)
                 plan = plan_frame(self.timeline, self.timeline.playhead_sec)
                 if plan.layers:
-                    # Prefer V1 for matting engine; note overlays for UI
-                    v1 = next((L for L in plan.layers if int(L.track) == 0), plan.layers[0])
-                    source_t = v1.source_t_sec
-                    self._ensure_engine_media(v1.media_path)
+                    v1_layers = [L for L in plan.layers if int(L.track) == 0]
                     overlays = [L for L in plan.layers if int(L.track) >= 1]
+                    # BG remove: selected V1 under playhead, else any V1, else bottom layer
+                    sel_id = self.timeline.selected_clip_id
+                    matte_layer = next(
+                        (L for L in v1_layers if L.clip_id == sel_id),
+                        v1_layers[0] if v1_layers else plan.layers[0],
+                    )
+                    source_t = matte_layer.source_t_sec
+                    self._ensure_engine_media(matte_layer.media_path)
+                    # Keep seed bound to selected clip media
+                    if self._seed_media_path() == matte_layer.media_path:
+                        if isinstance(self.engine, MaxQualityEngine) and self._seed_alpha is not None:
+                            self.engine.set_user_seed(self._seed_alpha)
                     if overlays:
                         overlay_meta = {
                             "overlay_layers": [
@@ -444,40 +501,111 @@ class EditorSession:
                                     "track": L.track,
                                 }
                                 for L in overlays
-                            ]
+                            ],
+                            "timeline_composite": True,
+                            "matte_clip_id": matte_layer.clip_id,
                         }
-            try:
-                frame = self.engine.preview_frame(source_t)
-            except Exception as exc:  # noqa: BLE001
-                # Soft-fail at session boundary: still return source RGB so UI is never blank checker.
+
+            # Multi-layer: decode + matte + composite (same math as bake)
+            if matte_layer is not None and overlays:
                 from hybrid_editor.media.video_io import (
+                    composite_overlay_layers,
+                    downscale_long_side,
+                    encode_preview_pair,
                     encode_source_only_preview,
                     read_frame_at,
                 )
 
-                if self.media is None:
-                    raise
-                bgr, t = read_frame_at(Path(self.media.path), source_t)
-                jpg, png, w, h, src, _empty = encode_source_only_preview(bgr)
-                frame = PreviewFrame(
-                    t_sec=t,
-                    width=w,
-                    height=h,
-                    jpeg_b64=jpg,
-                    alpha_png_b64=png,
-                    engine=getattr(self.engine, "__class__", type(self.engine)).__name__,
-                    backend=str(getattr(self.engine, "_backend", "unknown")),
-                    meta={
-                        "matte_empty": True,
-                        "source_fallback": True,
-                        "matte_error": str(exc)[:240],
-                    },
-                    source_jpeg_b64=src,
-                )
-            if overlay_meta:
-                frame.meta = {**(frame.meta or {}), **overlay_meta}
+                try:
+                    bgr, t = read_frame_at(Path(matte_layer.media_path), source_t)
+                    bgr = downscale_long_side(bgr, 960)
+                    alpha = self._matte_bgr(bgr, warmup=True)
+                    ov_frames: list[tuple[Any, float]] = []
+                    for ov in overlays:
+                        try:
+                            obgr, _ = read_frame_at(Path(ov.media_path), ov.source_t_sec)
+                            obgr = downscale_long_side(obgr, 960)
+                            ov_frames.append((obgr, float(ov.opacity)))
+                        except Exception:  # noqa: BLE001
+                            continue
+                    if ov_frames:
+                        bgr, alpha = composite_overlay_layers(bgr, alpha, ov_frames)
+                    sharp = bool(getattr(self, "sharp_edges", True))
+                    jpg, png, w, h, src, empty = encode_preview_pair(
+                        bgr, alpha, sharp_cutout=sharp and self.mode is EngineMode.MAX
+                    )
+                    frame = PreviewFrame(
+                        t_sec=t,
+                        width=w,
+                        height=h,
+                        jpeg_b64=jpg,
+                        alpha_png_b64=png,
+                        engine=self.engine.capabilities().name,
+                        backend=self.engine.capabilities().backend,
+                        meta={
+                            "matte_empty": empty,
+                            **overlay_meta,
+                        },
+                        source_jpeg_b64=src,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    if self.media is None:
+                        raise
+                    bgr, t = read_frame_at(Path(self.media.path), source_t)
+                    jpg, png, w, h, src, _empty = encode_source_only_preview(bgr)
+                    frame = PreviewFrame(
+                        t_sec=t,
+                        width=w,
+                        height=h,
+                        jpeg_b64=jpg,
+                        alpha_png_b64=png,
+                        engine=getattr(self.engine, "__class__", type(self.engine)).__name__,
+                        backend=str(getattr(self.engine, "_backend", "unknown")),
+                        meta={
+                            "matte_empty": True,
+                            "source_fallback": True,
+                            "matte_error": str(exc)[:240],
+                            **overlay_meta,
+                        },
+                        source_jpeg_b64=src,
+                    )
+            else:
+                try:
+                    frame = self.engine.preview_frame(source_t)
+                except Exception as exc:  # noqa: BLE001
+                    from hybrid_editor.media.video_io import (
+                        encode_source_only_preview,
+                        read_frame_at,
+                    )
+
+                    if self.media is None:
+                        raise
+                    bgr, t = read_frame_at(Path(self.media.path), source_t)
+                    jpg, png, w, h, src, _empty = encode_source_only_preview(bgr)
+                    frame = PreviewFrame(
+                        t_sec=t,
+                        width=w,
+                        height=h,
+                        jpeg_b64=jpg,
+                        alpha_png_b64=png,
+                        engine=getattr(self.engine, "__class__", type(self.engine)).__name__,
+                        backend=str(getattr(self.engine, "_backend", "unknown")),
+                        meta={
+                            "matte_empty": True,
+                            "source_fallback": True,
+                            "matte_error": str(exc)[:240],
+                        },
+                        source_jpeg_b64=src,
+                    )
+                if overlay_meta:
+                    frame.meta = {**(frame.meta or {}), **overlay_meta}
             if self._seed_alpha is not None:
-                frame.meta = {**(frame.meta or {}), "user_seed": True, "seed_bound": True}
+                frame.meta = {
+                    **(frame.meta or {}),
+                    "user_seed": True,
+                    "seed_bound": True,
+                    "seed_clip_id": self.timeline.selected_clip_id if self.timeline else None,
+                }
             return frame
 
     def start_analyse(
@@ -623,21 +751,19 @@ class EditorSession:
             else:
                 alpha = self.engine._matte(bgr)  # type: ignore[attr-defined]
             alpha = alpha.astype(np.float32)
-            # Composite V2 B-roll over cutout (opaque overlay at clip opacity)
+            # Composite V2 B-roll over cutout (same helper as monitor preview)
+            from hybrid_editor.media.video_io import composite_overlay_layers
+
+            ov_frames = []
             for ov in overlays:
                 try:
                     obgr, _ = read_frame_at(Path(ov.media_path), ov.source_t_sec)
                     obgr = downscale_long_side(obgr, 720)
-                    if obgr.shape[:2] != bgr.shape[:2]:
-                        obgr = cv2.resize(obgr, (bgr.shape[1], bgr.shape[0]), interpolation=cv2.INTER_AREA)
-                    op = float(ov.opacity)
-                    bgr = (
-                        bgr.astype(np.float32) * (1.0 - op) + obgr.astype(np.float32) * op
-                    ).astype(np.uint8)
-                    # Where overlay sits, force alpha full so B-roll shows on checker
-                    alpha = np.maximum(alpha, op)
+                    ov_frames.append((obgr, float(ov.opacity)))
                 except Exception:  # noqa: BLE001
-                    pass
+                    continue
+            if ov_frames:
+                bgr, alpha = composite_overlay_layers(bgr, alpha, ov_frames)
             a8 = (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
             if alpha_dir is not None:
                 cv2.imwrite(str(alpha_dir / f"{written:06d}.png"), a8)

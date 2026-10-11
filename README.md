@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-11-concat-flow` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-11-timeline-bg` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-11-concat-flow
+# expect: 2026-10-11-timeline-bg
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA PATH (no remount pip): .\hybrid_cut\start_hybrid_cuda.ps1
@@ -72,7 +72,15 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 ---
 
-## Stamp — concat-flow (`2026-10-11-concat-flow`)
+## Stamp — timeline-bg (`2026-10-11-timeline-bg`)
+
+On top of `2026-10-11-concat-flow`. **Multi-track timeline + BG remove only:** V1/V2 clip blocks with click-select, drag reorder / vertical track stack, Be/Ki trim handles; preview composites both tracks at playhead; bake uses the same plan; Varázsceruza scanline flood-fill + per-selected-clip seed. Lime/orange look2 retained. Hungarian labels.
+
+Restart: [`docs/timeline-bg-restart.md`](docs/timeline-bg-restart.md) · store [`../hybrid-timeline-bg-restart.md`](../hybrid-timeline-bg-restart.md)
+
+---
+
+## Prior — concat-flow (`2026-10-11-concat-flow`)
 
 On top of `2026-10-10-look2`. **Concat-like project flow:** **Új projekt** clears timeline/media/seed/bake (confirm if dirty) back to full-bleed empty drop; **+ V1 klip** / drop append stacks clips on V1 after existing; B-roll on V2. **Preview fill:** Forrás / Cutout / Maszk use `width/height: 100%` + `object-fit: contain` so proxy frames fill the stage (wipe/Összehasonlítás stays split). Lime/orange look2 shell retained.
 

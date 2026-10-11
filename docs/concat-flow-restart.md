@@ -2,6 +2,8 @@
 
 Feature stamp: **`2026-10-11-concat-flow`**.
 
+GitHub `main`: `7d1d9fc` · compare https://github.com/hevesitr/HybridCut/compare/97a606b...7d1d9fc
+
 Includes prior: `2026-10-10-look2` · look · layout-fix · start-fix · eta-ui · apex · peak · continue · ui-nobg.
 
 ## Pull + start (GitHub)

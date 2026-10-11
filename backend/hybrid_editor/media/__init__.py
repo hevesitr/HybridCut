@@ -1,5 +1,6 @@
 from hybrid_editor.media.video_io import (
     composite_cutout_over_checker,
+    composite_overlay_layers,
     encode_preview_pair,
     encode_source_only_preview,
     is_matte_empty,
@@ -12,6 +13,7 @@ from hybrid_editor.media.video_io import (
 
 __all__ = [
     "composite_cutout_over_checker",
+    "composite_overlay_layers",
     "encode_preview_pair",
     "encode_source_only_preview",
     "is_matte_empty",

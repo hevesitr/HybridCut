@@ -180,21 +180,104 @@ class TimelineDoc:
             self.relayout_sequential()
 
     def set_playhead(self, t_sec: float) -> None:
+        """Scrub playhead only — do not steal clip selection (Concat-like)."""
         dur = self.duration_sec()
         self.playhead_sec = min(max(0.0, float(t_sec)), dur if dur > 0 else max(0.0, float(t_sec)))
-        # Prefer V1 under playhead, else any overlay
-        hit_v1 = None
-        hit_any = None
-        for c in self.clips:
-            if c.timeline_start_sec <= self.playhead_sec < c.timeline_end() - 1e-9:
-                hit_any = c
-                if int(c.track) == 0:
-                    hit_v1 = c
-                    break
-        if hit_v1 is not None:
-            self.selected_clip_id = hit_v1.clip_id
-        elif hit_any is not None:
-            self.selected_clip_id = hit_any.clip_id
+
+    def set_track(
+        self,
+        clip_id: str,
+        track: int,
+        *,
+        timeline_start_sec: Optional[float] = None,
+    ) -> bool:
+        """Move clip to V1 (0) or V2 (1); optional free start on V2."""
+        clip = self._find(clip_id)
+        if clip is None:
+            return False
+        new_track = 0 if int(track) <= 0 else 1
+        old_track = int(clip.track)
+        if new_track == 0 and old_track >= 1:
+            # Demoting last? always ok. Promoting away last V1 blocked elsewhere.
+            pass
+        if new_track >= 1 and old_track == 0 and len(self.clips_on(0)) <= 1:
+            return False
+        clip.track = new_track
+        if new_track >= 1:
+            start = (
+                float(timeline_start_sec)
+                if timeline_start_sec is not None
+                else float(self.playhead_sec)
+            )
+            clip.timeline_start_sec = max(0.0, start)
+            if clip.opacity >= 0.999:
+                clip.opacity = 0.85
+        else:
+            clip.opacity = 1.0
+            self.relayout_sequential()
+        self.selected_clip_id = clip_id
+        return True
+
+    def set_timeline_start(self, clip_id: str, timeline_start_sec: float) -> bool:
+        """Place V2 overlay in time; for V1, reorder by nearest sequential slot."""
+        clip = self._find(clip_id)
+        if clip is None:
+            return False
+        t = max(0.0, float(timeline_start_sec))
+        if int(clip.track) >= 1:
+            clip.timeline_start_sec = t
+            self.selected_clip_id = clip_id
+            return True
+        # V1: find insert index by target start among other V1 clips
+        others = [c for c in self.clips_on(0) if c.clip_id != clip_id]
+        others_sorted = sorted(others, key=lambda c: float(c.timeline_start_sec))
+        insert_at = 0
+        for i, o in enumerate(others_sorted):
+            mid = float(o.timeline_start_sec) + 0.5 * o.source_duration()
+            if t >= mid:
+                insert_at = i + 1
+        # Rebuild V1 order in self.clips
+        v2 = [c for c in self.clips if int(c.track) >= 1]
+        new_v1 = others_sorted[:insert_at] + [clip] + others_sorted[insert_at:]
+        self.clips = new_v1 + v2
+        self.selected_clip_id = clip_id
+        self.relayout_sequential()
+        return True
+
+    def trim_edge(
+        self,
+        clip_id: str,
+        *,
+        edge: str,
+        timeline_t: float,
+    ) -> bool:
+        """Drag trim handle: edge in|out at absolute timeline time → source in/out."""
+        clip = self._find(clip_id)
+        if clip is None:
+            return False
+        t = float(timeline_t)
+        local = t - float(clip.timeline_start_sec)
+        if edge in {"in", "left", "be"}:
+            # New in: keep out fixed in source; shift timeline start for overlays
+            new_in = float(clip.in_sec) + local
+            new_in = max(0.0, min(new_in, clip.effective_out() - 0.05))
+            delta = new_in - float(clip.in_sec)
+            clip.in_sec = new_in
+            if int(clip.track) >= 1:
+                clip.timeline_start_sec = float(clip.timeline_start_sec) + delta
+            elif int(clip.track) == 0:
+                self.relayout_sequential()
+        elif edge in {"out", "right", "ki"}:
+            new_out = float(clip.in_sec) + local
+            hi = clip.media_duration_sec if clip.media_duration_sec > 0 else new_out
+            new_out = max(float(clip.in_sec) + 0.05, min(new_out, hi if hi > 0 else new_out))
+            clip.out_sec = new_out
+            if int(clip.track) == 0:
+                self.relayout_sequential()
+        else:
+            return False
+        self.selected_clip_id = clip_id
+        return True
 
     def add_clip(
         self,

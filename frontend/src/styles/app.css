@@ -1,5 +1,5 @@
 :root {
-  /* HybridCut concat-flow — full-bleed workspace, lime / orange on deep olive ink (stamp 2026-10-11-concat-flow) */
+  /* HybridCut timeline-bg — V1/V2 timeline + BG remove, lime / orange look2 (stamp 2026-10-11-timeline-bg) */
   --ink: #070a05;
   --fog: #f0f5e4;
   --mist: #8fa078;
@@ -1313,34 +1313,96 @@ body:has(.app.empty) {
 
 .tl-clip {
   position: absolute;
-  top: 7px;
-  bottom: 7px;
+  top: 5px;
+  bottom: 5px;
   border: 1px solid;
   border-radius: 7px;
-  padding: 0 0.4rem;
+  padding: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 0.68rem;
   color: var(--fog);
-  cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  cursor: grab;
+  display: flex;
+  align-items: stretch;
+  transition: box-shadow 0.15s ease;
+  z-index: 1;
+  user-select: none;
+  touch-action: none;
 }
 
-.tl-clip span {
-  display: block;
+.tl-clip-label {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-top: 0.35rem;
+  padding: 0.35rem 0.35rem 0;
+  pointer-events: none;
 }
 
 .tl-clip:hover {
-  transform: translateY(-1px);
+  filter: brightness(1.06);
 }
 
 .tl-clip.selected {
-  box-shadow: 0 0 0 1px rgba(230, 240, 234, 0.35), 0 6px 18px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 0 0 1px rgba(184, 240, 0, 0.55), 0 6px 18px rgba(0, 0, 0, 0.35);
   z-index: 2;
+}
+
+.tl-clip.dragging {
+  opacity: 0.35;
+}
+
+.tl-clip.tl-ghost {
+  pointer-events: none;
+  border-style: dashed;
+  border-color: var(--accent-2);
+  background: rgba(184, 240, 0, 0.12);
+  z-index: 4;
+}
+
+.tl-handle {
+  flex: 0 0 8px;
+  width: 8px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: rgba(230, 240, 234, 0.22);
+  cursor: ew-resize;
+  z-index: 2;
+}
+
+.tl-handle:hover,
+.tl-clip.selected .tl-handle {
+  background: var(--accent);
+}
+
+.tl-handle-in {
+  border-radius: 6px 0 0 6px;
+}
+
+.tl-handle-out {
+  border-radius: 0 6px 6px 0;
+}
+
+.tl-shell.tl-dragging {
+  cursor: grabbing;
+}
+
+.tl-hint {
+  margin: 0.25rem 0 0;
+  font-size: 0.68rem;
+  color: var(--mute);
+  letter-spacing: 0.01em;
+}
+
+.wand-msg {
+  font-size: 0.68rem;
+  color: var(--accent-2);
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tl-playhead {

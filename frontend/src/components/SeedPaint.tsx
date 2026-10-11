@@ -18,6 +18,8 @@ type Props = {
   frame?: ReactNode;
   /** Commit seed after each stroke (live cutout refresh). Debounced by parent. */
   autoCommitOnStrokeEnd?: boolean;
+  /** Selected timeline clip — wand/seed apply to this clip's mask. */
+  selectedClipId?: string | null;
   onCommit: (pngB64: string) => void;
   onClear: () => void;
 };
@@ -66,14 +68,30 @@ function drawMaskFromPng(
   });
 }
 
-function colorDist(r0: number, g0: number, b0: number, r1: number, g1: number, b1: number) {
-  const dr = r0 - r1;
-  const dg = g0 - g1;
-  const db = b0 - b1;
-  return Math.sqrt(dr * dr + dg * dg + db * db);
+/** Chebyshev + light luminance — matches slider "tűrés" better than Euclidean RGB. */
+function colorClose(
+  r0: number,
+  g0: number,
+  b0: number,
+  r1: number,
+  g1: number,
+  b1: number,
+  tolerance: number,
+) {
+  const dr = Math.abs(r0 - r1);
+  const dg = Math.abs(g0 - g1);
+  const db = Math.abs(b0 - b1);
+  if (Math.max(dr, dg, db) > tolerance) return false;
+  // Soft luminance gate so JPEG chroma noise doesn't leak across edges.
+  const y0 = 0.299 * r0 + 0.587 * g0 + 0.114 * b0;
+  const y1 = 0.299 * r1 + 0.587 * g1 + 0.114 * b1;
+  return Math.abs(y0 - y1) <= tolerance * 1.15;
 }
 
-/** Flood-fill connected region on mask from reference RGB (Varázsceruza). */
+/**
+ * Scanline flood-fill on mask from reference RGB (Varázsceruza).
+ * Applies to the selected clip's seed canvas — contiguous similar colour.
+ */
 function floodFillMask(
   maskCtx: CanvasRenderingContext2D,
   ref: ImageData,
@@ -84,6 +102,9 @@ function floodFillMask(
 ) {
   const w = ref.width;
   const h = ref.height;
+  if (maskCtx.canvas.width !== w || maskCtx.canvas.height !== h) {
+    // Keep fill in mask pixel space even if CSS box differs.
+  }
   const x0 = Math.max(0, Math.min(w - 1, Math.round(sx)));
   const y0 = Math.max(0, Math.min(h - 1, Math.round(sy)));
   const mask = maskCtx.getImageData(0, 0, w, h);
@@ -93,20 +114,17 @@ function floodFillMask(
   const tr = rd[i0];
   const tg = rd[i0 + 1];
   const tb = rd[i0 + 2];
+  const match = (x: number, y: number) => {
+    const pi = (y * w + x) * 4;
+    return colorClose(rd[pi], rd[pi + 1], rd[pi + 2], tr, tg, tb, tolerance);
+  };
   const visited = new Uint8Array(w * h);
   const stack: number[] = [x0, y0];
   let painted = 0;
-  const maxPaint = Math.floor(w * h * 0.45); // never flood >45% of frame (face-blob guard)
+  // Guard against whole-frame flood; allow large BG / subject regions.
+  const maxPaint = Math.floor(w * h * 0.82);
 
-  while (stack.length) {
-    const y = stack.pop()!;
-    const x = stack.pop()!;
-    if (x < 0 || y < 0 || x >= w || y >= h) continue;
-    const idx = y * w + x;
-    if (visited[idx]) continue;
-    visited[idx] = 1;
-    const pi = idx * 4;
-    if (colorDist(rd[pi], rd[pi + 1], rd[pi + 2], tr, tg, tb) > tolerance) continue;
+  const paintPx = (pi: number) => {
     if (erase) {
       md[pi] = 0;
       md[pi + 1] = 0;
@@ -118,9 +136,43 @@ function floodFillMask(
       md[pi + 2] = 76;
       md[pi + 3] = 200;
     }
-    painted += 1;
-    if (painted > maxPaint) break;
-    stack.push(x + 1, y, x - 1, y, x, y + 1, x, y - 1);
+  };
+
+  while (stack.length && painted < maxPaint) {
+    const y = stack.pop()!;
+    let x = stack.pop()!;
+    if (y < 0 || y >= h) continue;
+    // Move left to span start
+    while (x >= 0 && !visited[y * w + x] && match(x, y)) x -= 1;
+    x += 1;
+    let spanUp = false;
+    let spanDown = false;
+    while (x < w && !visited[y * w + x] && match(x, y)) {
+      const idx = y * w + x;
+      visited[idx] = 1;
+      paintPx(idx * 4);
+      painted += 1;
+      if (painted >= maxPaint) break;
+      if (y > 0) {
+        const up = (y - 1) * w + x;
+        if (!visited[up] && match(x, y - 1)) {
+          if (!spanUp) {
+            stack.push(x, y - 1);
+            spanUp = true;
+          }
+        } else spanUp = false;
+      }
+      if (y + 1 < h) {
+        const dn = (y + 1) * w + x;
+        if (!visited[dn] && match(x, y + 1)) {
+          if (!spanDown) {
+            stack.push(x, y + 1);
+            spanDown = true;
+          }
+        } else spanDown = false;
+      }
+      x += 1;
+    }
   }
   maskCtx.putImageData(mask, 0, 0);
   return painted;
@@ -135,6 +187,7 @@ export function SeedPaint({
   variant = "panel",
   frame,
   autoCommitOnStrokeEnd = false,
+  selectedClipId = null,
   onCommit,
   onClear,
 }: Props) {
@@ -145,7 +198,8 @@ export function SeedPaint({
   const refRgb = useRef<ImageData | null>(null);
   const [tool, setTool] = useState<Tool>("brush");
   const [brush, setBrush] = useState(28);
-  const [wandTol, setWandTol] = useState(28);
+  const [wandTol, setWandTol] = useState(40);
+  const [wandMsg, setWandMsg] = useState<string | null>(null);
   const drawing = useRef(false);
   const dirty = useRef(false);
   const lasso = useRef<{ x: number; y: number }[]>([]);
@@ -272,14 +326,14 @@ export function SeedPaint({
     img.src = `data:image/jpeg;base64,${imageJpegB64}`;
   }, [imageJpegB64, w, h, docked]);
 
-  // Bind server seed once per mask payload (survives scrub / panel reopen)
+  // Bind server seed once per mask payload / selected clip (survives scrub)
   useEffect(() => {
     const mask = maskRef.current;
     if (!mask) return;
     const ctx = mask.getContext("2d");
     if (!ctx) return;
-    const key = initialMaskPngB64 || "";
-    if (!key) {
+    const key = `${selectedClipId || ""}::${initialMaskPngB64 || ""}`;
+    if (!initialMaskPngB64) {
       if (lastMaskKey.current) {
         ctx.clearRect(0, 0, mask.width, mask.height);
         lastMaskKey.current = null;
@@ -288,8 +342,14 @@ export function SeedPaint({
     }
     if (lastMaskKey.current === key) return;
     lastMaskKey.current = key;
-    void drawMaskFromPng(ctx, key, mask.width || w, mask.height || h);
-  }, [initialMaskPngB64, w, h]);
+    void drawMaskFromPng(ctx, initialMaskPngB64, mask.width || w, mask.height || h);
+  }, [initialMaskPngB64, selectedClipId, w, h]);
+
+  // Clear local mask when switching active clip so wand does not bleed across clips
+  useEffect(() => {
+    lastMaskKey.current = null;
+    setWandMsg(null);
+  }, [selectedClipId]);
 
   const pos = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = maskRef.current!;
@@ -376,11 +436,22 @@ export function SeedPaint({
       const ref = refRgb.current;
       const ctx = maskRef.current?.getContext("2d");
       if (ref && ctx) {
-        floodFillMask(ctx, ref, x, y, wandTol, false);
-        dirty.current = true;
+        // Alt / right-button = erase similar region from seed
+        const erase = e.altKey || e.button === 2;
+        const n = floodFillMask(ctx, ref, x, y, wandTol, erase);
+        dirty.current = n > 0;
         drawing.current = false;
         releasePointer(e.currentTarget);
-        if (autoCommitOnStrokeEnd) commit();
+        setWandMsg(
+          n > 0
+            ? `Varázsceruza: ${n.toLocaleString("hu-HU")} px${erase ? " törölve" : ""}${
+                selectedClipId ? " · kijelölt klip" : ""
+              }`
+            : "Varázsceruza: nincs találat — növeld a tűrést",
+        );
+        if (n > 0 && autoCommitOnStrokeEnd) commit();
+      } else {
+        setWandMsg("Varázsceruza: várj a képkockára…");
       }
       return;
     }
@@ -496,7 +567,7 @@ export function SeedPaint({
         type="button"
         className={`btn ${tool === "wand" ? "primary" : ""}`}
         disabled={disabled}
-        title="Varázsceruza: kattints a hasonló színű terület kijelöléséhez (flood-fill)."
+        title="Varázsceruza: kattints a hasonló színű területre (flood-fill a kijelölt klip seedjére). Alt+katt = törlés."
         onClick={() => setTool("wand")}
       >
         Varázsceruza
@@ -513,17 +584,23 @@ export function SeedPaint({
         />
       </label>
       {tool === "wand" ? (
-        <label className="brush-size" title="Varázsceruza tűrése (színkülönbség).">
+        <label className="brush-size" title="Varázsceruza tűrése (max RGB csatorna + világosság).">
           Tűrés
           <input
             type="range"
-            min={8}
-            max={64}
+            min={6}
+            max={96}
             value={wandTol}
             disabled={disabled}
             onChange={(e) => setWandTol(Number(e.target.value))}
           />
+          <span>{wandTol}</span>
         </label>
+      ) : null}
+      {wandMsg ? (
+        <span className="wand-msg" title={wandMsg}>
+          {wandMsg}
+        </span>
       ) : null}
     </div>
   );
