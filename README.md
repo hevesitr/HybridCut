@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-11-look-peak` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-11-auto-person` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-11-look-peak
+# expect: 2026-10-11-auto-person
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA PATH (no remount pip): .\hybrid_cut\start_hybrid_cuda.ps1
@@ -72,9 +72,17 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 ---
 
-## Stamp — look-peak (`2026-10-11-look-peak`)
+## Stamp — auto-person (`2026-10-11-auto-person`)
 
-On top of `2026-10-11-ai-tracks` + `2026-10-11-person-fix2`. **Visual shell peak only** (CapCut desktop feel): deeper charcoal, lime Export, preview focus, dark timeline + playhead glow, Syne/Figtree, atmospheric grain — **no** cutout/person/RVM/paint/timeline logic changes. **AI sáv + Polírozás retained** from ai-tracks.
+On top of look-peak / ai-tracks / person-fix2. **Delete/Backspace** removes any selected V1 / AI sáv clip (trash UI kept). **Varázsceruza + Ecset/Radír/Lasszó permanently removed** — auto full-person RVM is the only selection path (Megnyitás / drop / Polírozás). Sticky seed / face_pick dead paths purged. Nobg layer move + AI sáv Polírozás kept.
+
+Restart: [`docs/auto-person-restart.md`](docs/auto-person-restart.md) · store [`../hybrid-auto-person-restart.md`](../hybrid-auto-person-restart.md)
+
+---
+
+## Prior — look-peak (`2026-10-11-look-peak`)
+
+On top of `2026-10-11-ai-tracks` + `2026-10-11-person-fix2`. **Visual shell peak only** (CapCut desktop feel): deeper charcoal, lime Export, preview focus, dark timeline + playhead glow, Syne/Figtree, atmospheric grain. **AI sáv + Polírozás retained** from ai-tracks.
 
 Restart: [`docs/look-peak-restart.md`](docs/look-peak-restart.md) · store [`../hybrid-look-peak-restart.md`](../hybrid-look-peak-restart.md)
 
@@ -104,11 +112,11 @@ Restart (historical): [`docs/person-auto-restart.md`](docs/person-auto-restart.m
 
 ---
 
-## Prior — paint-face (`2026-10-11-paint-face`)
+## Prior — paint-face (`2026-10-11-paint-face`) — removed in auto-person
 
-On top of `2026-10-11-nobg-layer` (overlay **Mozgatás** / Pozíció kept). **Radír / paint hit-testing:** brush tools only paint on the preview mask surface; pointer capture + timeline `z-index` / paint-lock so strokes never hit V1/V2 tracks. **Varázsceruza:** click a face → part-pick (Haar/skin) → **replace** seed → preview + `*_full_nobg.mov` alpha is **face-only** (not whole person). Superseded tip: **person-fix2** full-person default. HU labels: Ecset, Radír, Lasszó, Varázsceruza, Arc, Teljes ember.
+Historical: Radír / Ecset / Lasszó / Varázsceruza face-only replace. **Removed in `2026-10-11-auto-person`** — auto full-person RVM only. Nobg **Mozgatás** / Pozíció kept.
 
-Restart: [`docs/paint-face-restart.md`](docs/paint-face-restart.md) · store [`../hybrid-paint-face-restart.md`](../hybrid-paint-face-restart.md)
+Restart (historical): [`docs/paint-face-restart.md`](docs/paint-face-restart.md)
 
 ---
 
@@ -279,14 +287,9 @@ Supersedes / includes `2026-10-05-bgcut-mov` · `2026-10-05-rvm-state` · prior 
 - Status / Explorer select the `.mov` (not the alpha folder)
 - RVM recurrent `r1..r4` reset on H/W or downsample change (`Expand_134` fix)
 
-### Paint UX (from paint-fix)
+### Paint UX — removed (`2026-10-11-auto-person`)
 
-Supersedes stuck overlay / freeze from `2026-10-05-hybrid-polish` simple-preview paint-on-canvas.
-
-### Toolbar chrome (not in the picture)
-
-- **Ecset / Radír / Lasszó / Varázsceruza / Méret** live in a bar **above** the preview frame (chrome), not floating over video pixels.
-- Painting still happens on the image; mask canvas is letterbox-aligned to the displayed `<img>`.
+Ecset / Radír / Lasszó / Varázsceruza and seed paint chrome are **gone**. Auto full-person RVM only.
 
 ### Drop hint
 
@@ -294,14 +297,7 @@ Supersedes stuck overlay / freeze from `2026-10-05-hybrid-polish` simple-preview
 
 ### Freeze / ORT
 
-- Seed stroke commits are **debounced**; quiet path does not set global `busy` / block React on sync ORT.
-- Pointer capture released on up/cancel (no stuck page).
 - **RVM recurrent reset** when `H×W` or downsample ratio changes (`Expand_*` 26×45 vs 51×90). Full-res `src` + `downsample_ratio` (RVM-native).
-
-### Varázsceruza
-
-- Flood-fill smart select on click (tolerance slider); capped so it cannot paint the whole face as one blob.
-- Lasso closes path and fills the region.
 
 ## Hybrid polish (prior stamp) — merges three fixes
 
@@ -323,16 +319,15 @@ Supersedes `full-bake-bgcut` · `max-accuracy` · `simple-preview`.
 
 ### Simple preview UX
 
-- **Kézi finomítás on Előnézet**: Ecset / Radír / Lasszó / Varázsceruza (+ Méret) in chrome **above** Cutout / Maszk / Forrás — paint on the image; stroke auto-commits seed + live cutout.
-- **Nagy seed panel** optional (collapsed by default) — no duplicate paint stage required.
-- **Összehasonlítás**: drag the vertical wipe line on the image; separate wipe slider chrome removed.
+- **Összehasonlítás**: drag the vertical wipe line on the image.
+- Auto person cutout on Előnézet — no manual seed tools.
 
 ## Person matte (this stamp)
 
 - **Max without MatAnyone2 weights** → RVM quality pipeline person alpha (never empty fake MatAnyone2)
 - Status: **„MatAnyone2 nincs — RVM ember-maszk”** vs **„MatAnyone2 aktív”**
-- **Előnézet** / upload: auto RVM → switch to **Cutout** when matte ready (toast)
-- Manual lasso = **optional refinement** (union with auto) — not required for person removal
+- **Előnézet** / upload / AI Polírozás: auto RVM → **Cutout** when matte ready (toast)
+- Manual paint/wand **removed** — auto full-person only
 - Empty **Maszk** view: overlay + „Előnézet futtatása”
 - Optional local `.pth`: [`docs/matanyone2-weights.md`](docs/matanyone2-weights.md) (`HYBRID_MATANYONE2_WEIGHTS`)
 

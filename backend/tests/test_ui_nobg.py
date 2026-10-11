@@ -13,7 +13,7 @@ HTML = ROOT / "frontend" / "index.html"
 
 
 def test_sync_stamp_concat_flow():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-look-peak"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-auto-person"
 
 
 def test_app_result_card_and_explorer():
@@ -96,7 +96,7 @@ def test_css_result_and_checker_motion():
     assert ".empty-workspace" in css
     assert ".empty-drop" in css
     assert "min(720px" not in css
-    assert "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
+    assert "auto-person" in css or "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
     assert "@keyframes playhead-glow" in css
     assert "@keyframes stage-focus" in css
     assert "--ink-tl" in css
@@ -113,7 +113,7 @@ def test_fonts_loaded():
 
 def test_readme_mentions_concat_flow_stamp():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-11-paint-face" in readme
+    assert "2026-10-11-auto-person" in readme or "2026-10-11-paint-face" in readme
     assert "2026-10-11-concat-look" in readme  # prior retained
     assert "2026-10-10-look2" in readme  # prior retained in history
     assert "2026-10-10-layout-fix" in readme

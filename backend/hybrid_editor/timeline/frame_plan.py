@@ -493,17 +493,19 @@ class TimelineDoc:
         cid = clip_id or self.selected_clip_id
         if not cid:
             return False
-        # Keep at least one V1 clip if any exist; allow removing last overlay
+        # Any selected clip (V1 / AI sáv) may be deleted — including the last V1.
         target = next((c for c in self.clips if c.clip_id == cid), None)
         if target is None:
-            return False
-        v1 = self.clips_on(0)
-        if int(target.track) == 0 and len(v1) <= 1:
             return False
         self.clips = [c for c in self.clips if c.clip_id != cid]
         if self.selected_clip_id == cid:
             self.selected_clip_id = self.clips[0].clip_id if self.clips else None
-        self.relayout_sequential()
+        if self.clips:
+            self.relayout_sequential()
+        else:
+            self.playhead_sec = 0.0
+            self.in_sec = 0.0
+            self.out_sec = 0.0
         return True
 
     def move_clip(self, clip_id: str, *, direction: int) -> bool:

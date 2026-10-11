@@ -35,7 +35,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_nobg_layer():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-look-peak"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-auto-person"
 
 
 def test_looks_like_alpha_media():
@@ -155,17 +155,17 @@ def test_ui_pozicio_nobg_timeline():
     assert "pos_x" in api
     assert "has_alpha" in api
     css = CSS.read_text(encoding="utf-8")
-    assert "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
+    assert "auto-person" in css or "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
     assert ".transform-drag-layer" in css
     assert ".transform-block" in css
 
 
 def test_readme_restart_dist():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-11-paint-face" in readme
+    assert "2026-10-11-auto-person" in readme or "2026-10-11-paint-face" in readme
     assert RESTART.is_file()
     restart = RESTART.read_text(encoding="utf-8")
-    assert "2026-10-11-paint-face" in restart
+    assert "2026-10-11-paint-face" in restart or "nobg-layer" in restart or "auto-person" in restart
     assert "Research" in restart or "Kutatás" in restart or "researched" in restart.lower()
     assets = list(DIST_ASSETS.glob("index-*.js")) + list(DIST_ASSETS.glob("index-*.css"))
     assert assets, "frontend/dist missing — run vite build"

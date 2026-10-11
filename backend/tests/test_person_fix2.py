@@ -1,7 +1,7 @@
-"""Person-fix2 matte contracts (feature ``2026-10-11-person-fix2``).
+"""Person-fix2 contracts folded into ``2026-10-11-auto-person``.
 
-Rebased under tip ``2026-10-11-ai-tracks`` (AI sáv / Polírozás). Locks full-person
-auto RVM, session-only face wand, multi-person/limb keep, 4K long-side helpers.
+Locks full-person auto RVM, multi-person/limb keep, 4K long-side helpers.
+Wand/paint permanently removed.
 """
 
 from __future__ import annotations
@@ -14,35 +14,32 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SYNC = ROOT / "SYNC_VERSION.txt"
 FEATURE = ROOT / "backend" / "hybrid_editor" / "FEATURE_PERSON_FIX2.txt"
+FEATURE_AUTO = ROOT / "backend" / "hybrid_editor" / "FEATURE_AUTO_PERSON.txt"
 SESSION = ROOT / "backend" / "hybrid_editor" / "session.py"
 POLISH = ROOT / "backend" / "hybrid_editor" / "engines" / "videoeditor_polish.py"
 CSS = ROOT / "frontend" / "src" / "styles" / "app.css"
 README = ROOT / "README.md"
-RESTART = ROOT / "docs" / "person-fix2-restart.md"
+RESTART = ROOT / "docs" / "auto-person-restart.md"
 AI_RESTART = ROOT / "docs" / "ai-tracks-restart.md"
 
 
 def test_feature_docs_and_stamp_string():
-    # Matte feature stamp is stable; tip is ai-tracks (AI sáv) with person-fix2 under it.
-    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-11-person-fix2"
+    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-11-auto-person"
+    assert FEATURE_AUTO.read_text(encoding="utf-8").strip() == "2026-10-11-auto-person"
     tip = SYNC.read_text(encoding="utf-8").strip()
-    assert tip == "2026-10-11-ai-tracks"
+    assert tip == "2026-10-11-auto-person"
     assert RESTART.is_file()
-    assert AI_RESTART.is_file()
     restart = RESTART.read_text(encoding="utf-8")
-    assert "2026-10-11-person-fix2" in restart
-    assert "incomplete" in restart.lower() or "person-auto" in restart.lower()
+    assert "2026-10-11-auto-person" in restart
+    assert AI_RESTART.is_file()
     ai = AI_RESTART.read_text(encoding="utf-8")
-    assert "person-fix2" in ai
     assert "AI sáv" in ai and "Polírozás" in ai
-    assert "person-fix2" in README.read_text(encoding="utf-8")
-    assert "2026-10-11-ai-tracks" in README.read_text(encoding="utf-8")
-    assert "person-fix2" in CSS.read_text(encoding="utf-8")
+    assert "2026-10-11-auto-person" in README.read_text(encoding="utf-8")
+    assert "auto-person" in CSS.read_text(encoding="utf-8")
     session = SESSION.read_text(encoding="utf-8")
     assert "_purge_seed_disk" in session
-    assert "never write replace" in session or "session RAM" in session
     assert "def polish_ai_clip" in session
-    assert "full-person" in session.lower() or "full_person" in session
+    assert "full-person" in session.lower() or "full_person" in session or "auto-person" in session
     assert "reconnect_body_parts" in POLISH.read_text(encoding="utf-8")
 
 
@@ -60,7 +57,7 @@ def test_default_full_person_auto():
     assert eng.person_matte_info().get("multi_person") is True
 
 
-def test_wand_replace_then_clear_full_person():
+def test_wand_seed_ignored():
     from hybrid_editor.engines.max_quality import MaxQualityEngine
 
     eng = MaxQualityEngine()
@@ -68,12 +65,10 @@ def test_wand_replace_then_clear_full_person():
     face = np.zeros((64, 64), dtype=np.float32)
     face[8:28, 20:44] = 1.0
     eng.set_user_seed(face, mode="replace", part="face")
-    gated = eng._seed_for(np.zeros((64, 64, 3), dtype=np.uint8), auto)  # noqa: SLF001
-    assert float((gated > 0.2).mean()) < 0.25
-    eng.clear_user_seed()
-    restored = eng._seed_for(np.zeros((64, 64, 3), dtype=np.uint8), auto)  # noqa: SLF001
+    out = eng._seed_for(np.zeros((64, 64, 3), dtype=np.uint8), auto)  # noqa: SLF001
+    assert eng.user_seed is None
     assert eng.seed_mode == "union"
-    assert float((restored > 0.5).mean()) > 0.9
+    assert float((out > 0.5).mean()) > 0.9
 
 
 def test_select_and_open_purge_replace_disk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -113,9 +108,9 @@ def test_replace_not_persisted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     face = np.zeros((64, 64), dtype=np.float32)
     face[10:30, 18:46] = 1.0
     sess.set_seed_mask(encode_alpha_png_b64(face), mode="replace", part="face")
-    assert sess._seed_mode == "replace"
+    assert sess._seed_mode == "union"
+    assert sess._seed_alpha is None
     assert not seed_png.is_file()
-    sess.clear_seed_mask()
     assert sess.status()["full_person_matte"] is True
 
 

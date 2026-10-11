@@ -8,7 +8,6 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { ModeSwitcher } from "./components/ModeSwitcher";
-import { SeedPaint } from "./components/SeedPaint";
 import { formatTimecode, TimelineTrack } from "./components/TimelineTrack";
 import { api, type AssistStatus, type EditorStatus, type PreviewResult } from "./lib/api";
 import {
@@ -27,13 +26,21 @@ type ClipRow = {
   track?: number;
 };
 
-/** Match TimelineDoc.remove_clip: last V1 stays; V2 / extra V1 can go. */
+/** Any selected timeline clip (V1 / AI sáv) can be deleted — including last V1. */
 function canRemoveClip(clips: ClipRow[], clipId: string | null | undefined): boolean {
   if (!clipId) return false;
-  const target = clips.find((c) => c.clip_id === clipId);
-  if (!target) return false;
-  if ((target.track ?? 0) >= 1) return true;
-  return clips.filter((c) => (c.track ?? 0) === 0).length > 1;
+  return clips.some((c) => c.clip_id === clipId);
+}
+
+/** Ignore Delete/Backspace only while typing in real text fields (not range/scrub). */
+function isTypingTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  if (el.isContentEditable) return true;
+  const tag = el.tagName.toLowerCase();
+  if (tag === "textarea") return true;
+  if (tag !== "input") return false;
+  const type = ((el as HTMLInputElement).type || "text").toLowerCase();
+  return !["button", "checkbox", "radio", "range", "file", "submit", "reset", "color", "image"].includes(type);
 }
 
 function rvmChip(status: EditorStatus | null) {
@@ -231,11 +238,6 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState("Nyiss meg egy videót, vagy tölts be mintát.");
-  /** Optional large duplicate seed panel below — default paint is on Előnézet. */
-  const [showLargeSeed, setShowLargeSeed] = useState(false);
-  const [seedPng, setSeedPng] = useState<string | null>(null);
-  /** True while Ecset/Radír/… pointer is captured on the mask (timeline must ignore). */
-  const [paintGesture, setPaintGesture] = useState(false);
   /** Alapnézet: teljes forrás RGB — Előnézet után Cutout, ha van ember-maszk. */
   const [viewMode, setViewMode] = useState<ViewMode>("source");
   const [wipe, setWipe] = useState(50);
@@ -255,8 +257,6 @@ export default function App() {
   statusRef.current = status;
   const scrubTimer = useRef<number | null>(null);
   const toastTimer = useRef<number | null>(null);
-  const seedCommitTimer = useRef<number | null>(null);
-  const seedCommitGen = useRef(0);
   const wipeStageRef = useRef<HTMLDivElement>(null);
   const wipeDragging = useRef(false);
   const previewDragRef = useRef<HTMLDivElement>(null);
@@ -321,20 +321,11 @@ export default function App() {
     }
   };
 
-  const refreshSeed = async () => {
-    try {
-      const s = await api.getSeed();
-      setSeedPng(s.seed_mask_png_b64);
-    } catch {
-      /* ignore */
-    }
-  };
 
   const refresh = async () => {
     const st = await api.status();
     setStatus(st);
     syncTrimFromStatus(st);
-    if (st.seed_mask) void refreshSeed();
     return st;
   };
 
@@ -517,7 +508,6 @@ export default function App() {
           );
           if (mode === "max") {
             // Seed panel available but not required — auto person first.
-            await refreshSeed();
           }
           const hasMedia = !!(st.media || (st.timeline?.clips?.length ?? 0) > 0);
           if (hasMedia) {
@@ -540,7 +530,6 @@ export default function App() {
       setTSec(0);
       setViewMode("source");
       syncTrimFromStatus(st);
-      await refreshSeed();
       await runPreview(0, st, undefined, { preferCutout: true });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -576,7 +565,6 @@ export default function App() {
             ? "Új klip az idővonalon (V1)"
             : "Videó betöltve — auto ember-maszk fut",
       );
-      if (!useAppend && !asBroll) await refreshSeed();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -609,7 +597,6 @@ export default function App() {
       setTSec(0);
       setInSec(0);
       setOutSec(0);
-      setSeedPng(null);
       setShowLargeSeed(false);
       setViewMode("source");
       setWipe(50);
@@ -775,7 +762,7 @@ export default function App() {
         remove: "Klip törölve",
         cut: "Klip felvágva",
         move: "Klip áthelyezve",
-        select: "Klip kiválasztva — BG / Varázsceruza erre megy",
+        select: "Klip kiválasztva — Delete / Backspace = törlés",
         to_broll: "Áthelyezve AI sávra",
         to_v1: "Áthelyezve V1-re",
         set_track: "Sáv váltva (V1 / AI sáv)",
@@ -786,7 +773,6 @@ export default function App() {
         reset_transform: "Pozíció visszaállítva (közép · 100%)",
       };
       if (!opts?.quiet) setNote(labels[action] || `Timeline: ${action}`);
-      if (action === "select") void refreshSeed();
       // Stack onto AI sáv → auto-run person cutout / edge polish (existing RVM/APEX)
       const polishId =
         action !== "ai_polish" && typeof st.ai_polish_recommended === "string"
@@ -840,7 +826,7 @@ export default function App() {
     if (!sel || viewMode === "compare") return;
     // Seed paint owns the pointer when Max paint tools are on the preview.
     if (mode === "max" && viewMode !== "mask" && viewMode !== "source") {
-      /* allow drag when not painting — paintOnPreview checked at call site */
+      /* preview transform drag */
     }
     e.preventDefault();
     transformDragging.current = true;
@@ -912,7 +898,7 @@ export default function App() {
     }
   };
 
-  /** Delete / Backspace — remove selected clip (apex/concat clip tools). */
+  /** Delete / Backspace — remove selected clip (V1 / AI sáv). */
   const deleteSelectedClip = useEffectEvent(() => {
     const st = statusRef.current;
     if (busy || st?.bake_running || st?.analyse_running) return;
@@ -925,9 +911,7 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Delete" && e.key !== "Backspace") return;
-      const el = e.target as HTMLElement | null;
-      const tag = (el?.tagName || "").toLowerCase();
-      if (tag === "input" || tag === "textarea" || el?.isContentEditable) return;
+      if (isTypingTarget(e.target)) return;
       e.preventDefault();
       deleteSelectedClip();
     };
@@ -1079,119 +1063,6 @@ export default function App() {
   const afterMime = matteEmpty ? "image/jpeg" : cutoutMime;
   const sharpEdges = status?.sharp_edges !== false;
   const statusText = smartStatusLine(status, note, busy, error, matteEmpty, preview);
-  /** Paint tools live on main Előnézet for Cutout / Maszk / Forrás (not Összehasonlítás). */
-  const paintOnPreview =
-    !!preview && (viewMode === "cutout" || viewMode === "mask" || viewMode === "source");
-
-  const commitSeed = async (png: string, opts?: { quiet?: boolean }) => {
-    const quiet = !!opts?.quiet;
-    const mode = statusRef.current?.seed_mode;
-    const part = statusRef.current?.seed_part;
-    const replace = mode === "replace";
-    // Quiet path (stroke auto-commit): debounce + never block React on sync ORT.
-    if (quiet) {
-      setSeedPng(png);
-      if (seedCommitTimer.current) window.clearTimeout(seedCommitTimer.current);
-      const gen = ++seedCommitGen.current;
-      seedCommitTimer.current = window.setTimeout(() => {
-        void (async () => {
-          try {
-            const st = await api.setSeed(png, mode, part);
-            if (gen !== seedCommitGen.current) return;
-            setStatus(st);
-            setSeedPng(st.seed_mask_png_b64 ?? png);
-            setNote(
-              replace
-                ? "Rész-maszk finomítva — export csak a kijelölt részt (pl. arc) viszi"
-                : "Kézi finomítás mentve — auto ember-maszk + festés unió",
-            );
-            const frame = await api.preview(tSec);
-            if (gen !== seedCommitGen.current) return;
-            setPreview(frame);
-          } catch (e) {
-            if (gen !== seedCommitGen.current) return;
-            setError(e instanceof Error ? e.message : String(e));
-          }
-        })();
-      }, 280);
-      return;
-    }
-    setBusy(true);
-    try {
-      const st = await api.setSeed(png, mode, part);
-      setStatus(st);
-      setSeedPng(st.seed_mask_png_b64 ?? png);
-      setNote(
-        replace
-          ? "Rész-maszk mentve — *_full_nobg csak a kijelölt részt tartalmazza"
-          : "Kézi finomítás mentve — auto ember-maszk + festés unió",
-      );
-      await runPreview(tSec, st, undefined, { preferCutout: true });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const onWandPick = async (args: {
-    xNorm: number;
-    yNorm: number;
-    erase: boolean;
-  }) => {
-    try {
-      const st = await api.seedPick({
-        x: args.xNorm,
-        y: args.yNorm,
-        t_sec: tSec,
-        erase: args.erase,
-      });
-      setStatus(st);
-      const png = st.seed_mask_png_b64 ?? null;
-      if (png) setSeedPng(png);
-      const pick = st.pick;
-      const label = pick?.label_hu || st.seed_part_label_hu || "Rész";
-      const fullPerson = Boolean(pick?.full_person);
-      const msg = args.erase
-        ? fullPerson
-          ? "Varázsceruza: rész törölve — teljes ember auto maszk"
-          : `Varázsceruza: ${label} törölve`
-        : `Varázsceruza: ${label} kijelölve — export = csak ez a rész (Teljes ember = vissza)`;
-      setNote(msg);
-      showToast(msg);
-      setViewMode("cutout");
-      await runPreview(tSec, st, undefined, { preferCutout: true });
-      return {
-        ok: true,
-        pngB64: png,
-        message: msg,
-        part: pick?.part ?? st.seed_part,
-        labelHu: label,
-      };
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setError(message);
-      return { ok: false, message, pngB64: null };
-    }
-  };
-
-  const clearSeedMask = async () => {
-    const wasFace = statusRef.current?.seed_mode === "replace";
-    try {
-      const st = await api.clearSeed();
-      setStatus(st);
-      setSeedPng(null);
-      const msg = wasFace
-        ? "Teljes ember visszaállítva — auto RVM maszk (nem kell Varázsceruza)"
-        : "Kézi finomítás törölve — auto RVM marad";
-      setNote(msg);
-      showToast(msg);
-      await runPreview(tSec, st, undefined, { preferCutout: true });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
   const onSharpEdges = (enabled: boolean) => {
     startTransition(() => {
       setBusy(true);
@@ -1399,22 +1270,14 @@ export default function App() {
       </header>
 
       <main className="workspace concat-workspace">
-        <section
-          className={`stage${paintOnPreview ? " paint-tools-on" : ""}${
-            paintGesture ? " paint-gesture" : ""
-          }`}
-        >
+        <section className="stage">
           <div className="stage-head">
             <div>
               <h2>Előnézet</h2>
               <p className="lead">
                 {viewMode === "compare"
                   ? "Húzd a vonalat a képen — maszk balra, cutout jobbra"
-                  : paintOnPreview
-                    ? status?.seed_mode === "replace"
-                      ? "Arc mód aktív — Teljes ember gombbal vissza a teljes személyhez"
-                      : "Alap: teljes ember auto · Ecset finomít · Varázsceruza = opcionális arc"
-                    : "Forrás betöltéskor · Előnézet → Cutout (teljes ember auto maszk)"}
+                  : "Forrás betöltéskor · Előnézet → Cutout (teljes ember auto RVM maszk)"}
               </p>
             </div>
             <div className="preview-tools" role="radiogroup" aria-label="Előnézet nézet">
@@ -1523,18 +1386,6 @@ export default function App() {
                         }
                       />
                     ) : null}
-                    {!paintOnPreview && seedPng && mode === "max" && viewMode !== "mask" ? (
-                      <img
-                        className="seed-overlay-preview"
-                        src={
-                          seedPng.startsWith("data:")
-                            ? seedPng
-                            : `data:image/png;base64,${seedPng}`
-                        }
-                        alt=""
-                        aria-hidden
-                      />
-                    ) : null}
                     {moveMode && selected && viewMode !== "compare" ? (
                       <div
                         ref={previewDragRef}
@@ -1562,47 +1413,17 @@ export default function App() {
               </div>
             );
 
-            if (paintOnPreview) {
-              return (
-                <SeedPaint
-                  variant="docked"
-                  autoCommitOnStrokeEnd
-                  selectedClipId={selected}
-                  imageJpegB64={preview?.source_jpeg_b64 || preview?.jpeg_b64 || null}
-                  initialMaskPngB64={seedPng}
-                  width={preview?.width ?? 480}
-                  height={preview?.height ?? 360}
-                  seedMode={status?.seed_mode}
-                  seedPartLabelHu={status?.seed_part_label_hu}
-                  disabled={
-                    !!status?.bake_running ||
-                    !!status?.analyse_running ||
-                    !preview ||
-                    moveMode
-                  }
-                  onWandPick={onWandPick}
-                  onRestoreFullPerson={() => void clearSeedMask()}
-                  onPaintGesture={setPaintGesture}
-                  onCommit={(png) => void commitSeed(png, { quiet: true })}
-                  onClear={() => void clearSeedMask()}
-                  frame={stageInner}
-                />
-              );
-            }
             return stageInner;
           })()}
 
-          <div
-            className={`timeline-dock${paintGesture ? " timeline-dock--paint-locked" : ""}`}
-            data-paint-locked={paintGesture ? "1" : "0"}
-          >
+          <div className="timeline-dock" data-paint-locked="0">
             <TimelineTrack
               clips={clips}
               duration={duration}
               playhead={tSec}
               selectedId={selected}
               fps={mediaFps}
-              disabled={locked || paintGesture}
+              disabled={locked}
               onSeek={schedulePreview}
               onSelect={(id) => {
                 void runAction("select", { clip_id: id });
@@ -1653,50 +1474,6 @@ export default function App() {
             <div className={`status-line ${error ? "error" : ""}`}>{statusText}</div>
           </div>
 
-          <div className="seed-toggle">
-            <button
-              type="button"
-              className={`btn ${showLargeSeed ? "accent" : ""}`}
-              disabled={!preview}
-              title="Nagy seed panel — csak ha a külön forrás+maszk nézet kell (alapból az Előnézeten fests)."
-              onClick={() => {
-                setShowLargeSeed((v) => {
-                  const next = !v;
-                  if (next) void refreshSeed();
-                  return next;
-                });
-              }}
-            >
-              {showLargeSeed ? "Nagy seed panel elrejtése" : "Nagy seed panel"}
-            </button>
-            {paintOnPreview ? (
-              <span
-                className="seed-toggle-hint"
-                title="Ecset / Radír / Lasszó / Varázsceruza a képkocka feletti sávon — nem a videó pixelein."
-              >
-                Kézi finomítás: eszközsáv a képkocka felett
-              </span>
-            ) : null}
-          </div>
-
-          {showLargeSeed && (
-            <SeedPaint
-              variant="panel"
-              selectedClipId={selected}
-              imageJpegB64={preview?.source_jpeg_b64 || preview?.jpeg_b64 || null}
-              initialMaskPngB64={seedPng}
-              width={preview?.width ?? 480}
-              height={preview?.height ?? 360}
-              seedMode={status?.seed_mode}
-              seedPartLabelHu={status?.seed_part_label_hu}
-              disabled={locked || !preview}
-              onWandPick={onWandPick}
-              onRestoreFullPerson={() => void clearSeedMask()}
-              onPaintGesture={setPaintGesture}
-              onCommit={(png) => void commitSeed(png)}
-              onClear={() => void clearSeedMask()}
-            />
-          )}
         </section>
 
         <aside className="rail details-pane">
@@ -1881,11 +1658,7 @@ export default function App() {
                       className="clip-bin-del"
                       disabled={locked || !removable}
                       onClick={() => void runAction("remove", { clip_id: c.clip_id })}
-                      title={
-                        removable
-                          ? "Klip törlése (Delete)"
-                          : "Az utolsó V1 klip nem törölhető"
-                      }
+                      title="Klip törlése (Delete / Backspace)"
                     >
                       Töröl
                     </button>

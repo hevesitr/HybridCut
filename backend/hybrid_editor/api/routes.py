@@ -287,13 +287,15 @@ def set_seed(body: SeedBody) -> dict:
 
 @router.post("/seed/pick")
 def pick_seed(body: SeedPickBody) -> dict:
-    """Varázsceruza — face/region part pick → replace-mode seed (face-only nobg)."""
-    try:
-        return SESSION.pick_seed_part(
-            x=body.x, y=body.y, t_sec=body.t_sec, erase=body.erase
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    """Removed — Varázsceruza / face_pick deleted; auto full-person RVM only."""
+    del body
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Varázsceruza eltávolítva — auto teljes ember (RVM). "
+            "Használd az Előnézet / Polírozás útvonalat."
+        ),
+    )
 
 
 @router.get("/seed")

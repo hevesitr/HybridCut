@@ -106,8 +106,8 @@ export type EditorStatus = {
   bake_queue_len?: number;
   bake_queue?: Array<{ out_dir: string; max_frames?: number | null; label?: string }>;
   seed_mask?: boolean;
-  /** union = brush refine; replace = Varázsceruza face/part-only nobg */
-  seed_mode?: "union" | "replace" | string;
+  /** Always union — paint/wand removed; auto full-person RVM only. */
+  seed_mode?: "union" | string;
   seed_part?: string | null;
   seed_part_label_hu?: string | null;
   /** False only while optional face/part replace is active this session. */
@@ -299,24 +299,9 @@ export const api = {
         ...(part ? { part } : {}),
       }),
     }),
-  seedPick: (body: { x: number; y: number; t_sec?: number; erase?: boolean }) =>
-    json<
-      EditorStatus & {
-        seed_mask_png_b64?: string;
-        pick?: {
-          part?: string;
-          label_hu?: string;
-          pixels?: number;
-          method?: string;
-          erase?: boolean;
-          faces_found?: number;
-          full_person?: boolean;
-        };
-      }
-    >("/api/seed/pick", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+  /** Removed — Varázsceruza / face_pick (API 410). */
+  seedPick: (_body: { x: number; y: number; t_sec?: number; erase?: boolean }) =>
+    Promise.reject(new Error("Varázsceruza eltávolítva — auto teljes ember (RVM)")),
   getSeed: () =>
     json<{
       seed_mask: boolean;

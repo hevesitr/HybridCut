@@ -29,7 +29,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_timeline_bg():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-look-peak"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-auto-person"
 
 
 def test_remove_extra_v1_and_v2():
@@ -63,7 +63,9 @@ def test_remove_extra_v1_and_v2():
     assert all(int(c.track) == 0 for c in doc.clips)
     assert doc.remove_clip(v1b.clip_id)
     assert len(doc.clips) == 1
-    assert not doc.remove_clip(doc.clips[0].clip_id)
+    # auto-person: last V1 may also be deleted (empty timeline)
+    assert doc.remove_clip(doc.clips[0].clip_id)
+    assert doc.clips == []
 
 
 def test_playhead_preserves_selection():
@@ -194,7 +196,8 @@ def test_ui_timeline_drag_trim_wand():
     assert "trim_edge" in app
     assert "set_track" in app
     assert "ai_polish" in app or "runAiPolish" in app
-    assert "selectedClipId={selected}" in app
+    assert "selectedId={selected}" in app
+    assert "isTypingTarget" in app
     assert "clip-bin-del" in app
     assert "canRemoveClip" in app
     assert 'runAction("remove"' in app or "runAction(\"remove\"" in app
@@ -207,18 +210,15 @@ def test_ui_timeline_drag_trim_wand():
     assert "formatTimecode" in tl
     assert "tl-chrome-bar" in tl
     assert "tl-lane-toggles" in tl
-    seed = SEED.read_text(encoding="utf-8")
-    assert "floodFillMask" in seed
-    assert "colorClose" in seed
-    assert "scanline" in seed.lower() or "spanUp" in seed
-    assert "selectedClipId" in seed
-    assert "onWandPick" in seed or "wandTol" in seed
-    assert "floodFillMask" in seed  # legacy / offline fallback kept
+    assert not SEED.is_file(), "SeedPaint removed in auto-person"
+    app2 = APP.read_text(encoding="utf-8")
+    assert "SeedPaint" not in app2
+    assert "Varázsceruza" not in app2
     api = API_TS.read_text(encoding="utf-8")
     assert "trim_edge" in api
     assert "set_track" in api
     css = CSS.read_text(encoding="utf-8")
-    assert "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
+    assert "auto-person" in css or "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
     assert ".clip-bin-del" in css
     assert ".tl-handle" in css
     assert ".tl-chrome-bar" in css
@@ -229,7 +229,7 @@ def test_ui_timeline_drag_trim_wand():
 
 def test_readme_and_dist():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-11-paint-face" in readme
+    assert "2026-10-11-auto-person" in readme or "2026-10-11-paint-face" in readme
     assert "2026-10-11-concat-look" in readme
     assert "concat-look" in readme
     assets = list(DIST_ASSETS.glob("index-*.js")) + list(DIST_ASSETS.glob("index-*.css"))

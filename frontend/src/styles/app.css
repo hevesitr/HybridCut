@@ -1,5 +1,5 @@
 :root {
-  /* HybridCut look-peak — CapCut desktop polish (stamp 2026-10-11-look-peak) · prior 2026-10-11-ai-tracks · person-fix2 */
+  /* HybridCut auto-person — stamp 2026-10-11-auto-person · prior look-peak · ai-tracks · person-fix2 */
   --ink: #0e0e0e;
   --ink-2: #161616;
   --ink-3: #1e1e1e;
@@ -17,7 +17,7 @@
   --max: #ff7a1a;
   --font-display: "Syne", sans-serif;
   --font-body: "Figtree", sans-serif;
-  --hc-stamp: "2026-10-11-look-peak";
+  --hc-stamp: "2026-10-11-auto-person";
   color: var(--fog);
   background: var(--ink);
   font-family: var(--font-body);

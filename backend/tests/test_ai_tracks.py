@@ -1,4 +1,4 @@
-"""AI sáv + Polírozás on stack — stamp ``2026-10-11-look-peak`` (AI sáv kept)."""
+"""AI sáv + Polírozás on stack — stamp ``2026-10-11-auto-person`` (AI sáv kept)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_ai_tracks():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-look-peak"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-auto-person"
 
 
 def test_stack_marks_ai_lane_pending():
@@ -85,10 +85,10 @@ def test_session_ai_polish_action_wired():
     assert "ai_polish" in src
     assert "_status_with_ai_polish" in src
     assert "Polírozás" in src
-    # person-fix2 rebase: AI Polírozás must not inherit face-only replace
-    assert "full-person" in src.lower() or "full_person" in src
+    # auto-person: AI Polírozás always full-person RVM (no paint/wand seed)
+    assert "full-person" in src.lower() or "full_person" in src or "auto-person" in src
     assert "_preview_matte_long" in src
-    assert 'seed_mode == "replace"' in src or "seed_mode == 'replace'" in src
+    assert "_apply_seed_to_engine(None)" in src or "clear_user_seed" in src
 
 
 def test_ui_ai_sav_labels_and_auto_polish():
@@ -103,18 +103,18 @@ def test_ui_ai_sav_labels_and_auto_polish():
     assert "ai_polish_recommended" in app or "ai_polish" in app
     assert "Polírozás" in app
     assert '"ai_polish"' in api or "ai_polish" in api
-    assert "2026-10-11-look-peak" in css
-    assert "2026-10-11-ai-tracks" in css  # prior retained in tip comment
+    assert "2026-10-11-auto-person" in css
+    assert "2026-10-11-ai-tracks" in css or "look-peak" in css  # prior retained
     assert ".tl-polish-btn" in css
     assert ".tl-lane.ai" in css or "tl-lane.ai" in css
 
 
 def test_readme_restart_dist():
     readme = README.read_text(encoding="utf-8")
+    assert "2026-10-11-auto-person" in readme
     assert "2026-10-11-ai-tracks" in readme
     assert RESTART.is_file()
     restart = RESTART.read_text(encoding="utf-8")
-    assert "2026-10-11-ai-tracks" in restart
     assert "AI sáv" in restart
     assert "Polírozás" in restart
     assets = list(DIST_ASSETS.glob("index-*.js")) + list(DIST_ASSETS.glob("index-*.css"))

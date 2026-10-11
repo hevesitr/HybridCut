@@ -123,6 +123,13 @@ export function TimelineTrack({
     e.preventDefault();
     e.stopPropagation();
     onSelect(clip.clip_id);
+    // Keep keyboard focus on the timeline so Delete/Backspace removes the clip
+    // (range scrub / number inputs must not swallow keys after click-select).
+    try {
+      shellRef.current?.focus({ preventScroll: true });
+    } catch {
+      shellRef.current?.focus();
+    }
     const start = clip.timeline_start_sec;
     const end = clip.timeline_end_sec ?? start + (clip.out_sec - clip.in_sec);
     const v1r = v1TrackRef.current?.getBoundingClientRect();
@@ -385,9 +392,19 @@ export function TimelineTrack({
     <div
       className={`tl-shell ${drag ? "tl-dragging" : ""}`}
       ref={shellRef}
+      tabIndex={0}
+      role="application"
+      aria-label="Idővonal — kijelölt klip: Delete vagy Backspace töröl"
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
+      onKeyDown={(e) => {
+        if (e.key !== "Delete" && e.key !== "Backspace") return;
+        if (disabled || !canDelete || !onDelete) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onDelete();
+      }}
     >
       <div className="tl-chrome-bar">
         <div className="tl-tabs" role="tablist" aria-label="Idővonal">

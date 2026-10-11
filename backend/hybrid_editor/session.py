@@ -15,13 +15,7 @@ import numpy as np
 from hybrid_editor import ROOT, SYNC_VERSION
 from hybrid_editor.cache import MASK_RATE
 from hybrid_editor.cache.analyse import SparseAnalyser
-from hybrid_editor.cache.seed_mask import (
-    decode_alpha_png_b64,
-    encode_alpha_png_b64,
-    load_seed,
-    load_seed_meta,
-    save_seed,
-)
+from hybrid_editor.cache.seed_mask import encode_alpha_png_b64
 from hybrid_editor.engines import EngineMode, MattingEngine, create_engine, resolve_mode
 from hybrid_editor.engines.base import BakeResult, MediaInfo, PreviewFrame
 from hybrid_editor.engines.fast_rvm import probe_ort_runtime
@@ -54,7 +48,7 @@ class EditorSession:
         self._bake_queue: list[BakeQueueItem] = []
         self.analyser = SparseAnalyser()
         self._seed_alpha: Optional[np.ndarray] = None
-        self._seed_mode: str = "union"  # union | replace (Varázsceruza part-pick)
+        self._seed_mode: str = "union"  # auto-person only (paint/wand removed)
         self._seed_part: Optional[str] = None
         self._open_path: Optional[str] = None
         # Default ON for Max/export — CapCut-like needle-sharp person edges.
@@ -101,27 +95,16 @@ class EditorSession:
                 pass
 
     def _load_seed_for_selection(self) -> None:
-        """Swap in disk seed for the currently selected clip (or clear).
+        """Auto-person only: purge any leftover seed PNG and never re-arm paint/wand.
 
-        Face-only (``replace``) is session-scoped and never restored from disk —
-        that was the person-auto hole: clip select re-armed sticky face gate.
+        Pre-wand / apex default — full RVM person matte with no sticky seed gate.
         """
         sp = self._seed_path()
         if sp is not None and sp.is_file():
-            loaded = load_seed(sp)
-            meta = load_seed_meta(sp)
-            mode = str(meta.get("mode") or "union").lower()
-            if mode == "replace":
-                self._purge_seed_disk(sp)
-                self._apply_seed_to_engine(None)
-            elif loaded is not None:
-                self._apply_seed_to_engine(
-                    loaded, mode="union", part=meta.get("part")
-                )
-            else:
-                self._apply_seed_to_engine(None)
-        else:
-            self._apply_seed_to_engine(None)
+            self._purge_seed_disk(sp)
+        self._apply_seed_to_engine(None)
+        if isinstance(self.engine, MaxQualityEngine):
+            self.engine._seed = None  # noqa: SLF001
 
     def _preview_matte_long(self) -> int:
         """Long-side for timeline composite matte decode — Max keeps near-4K detail."""
@@ -453,23 +436,10 @@ class EditorSession:
                 if isinstance(self.engine, MaxQualityEngine):
                     self.engine.clear_user_seed()
                 self._ensure_timeline(reset=True, has_alpha=is_nobg)
-                # Restore brush/lasso (union) seed from disk — skip for alpha masters.
-                # Face-only (replace) is session-scoped only — never reload from disk.
+                # Auto-person only: purge leftover paint/wand seed PNGs — never reload.
                 if not is_nobg:
-                    sp = self._seed_path()
-                    if sp is not None:
-                        loaded = load_seed(sp)
-                        if loaded is not None:
-                            meta = load_seed_meta(sp)
-                            mode = str(meta.get("mode") or "union").lower()
-                            if mode == "replace":
-                                self._purge_seed_disk(sp)
-                            else:
-                                self._apply_seed_to_engine(
-                                    loaded,
-                                    mode="union",
-                                    part=meta.get("part"),
-                                )
+                    self._purge_seed_disk()
+                self._apply_seed_to_engine(None)
             return self.status()
 
     def update_timeline(
@@ -501,7 +471,23 @@ class EditorSession:
                 self.timeline.duplicate_selected()
             elif act == "remove":
                 if not self.timeline.remove_clip(kwargs.get("clip_id")):
-                    raise RuntimeError("Az utolsó V1 klip nem törölhető")
+                    raise RuntimeError("Nincs törölhető klip")
+                if not self.timeline.clips:
+                    # Empty timeline after last clip delete — clear engine media.
+                    self.media = None
+                    self._open_path = None
+                    self._seed_alpha = None
+                    self._seed_mode = "union"
+                    self._seed_part = None
+                    if isinstance(self.engine, MaxQualityEngine):
+                        self.engine.clear_user_seed()
+                        self.engine._seed = None  # noqa: SLF001
+                    self.last_bake = None
+                else:
+                    sel = self.timeline._find(self.timeline.selected_clip_id)
+                    if sel is not None:
+                        self._ensure_engine_media(sel.media_path)
+                    self._load_seed_for_selection()
             elif act == "cut":
                 t = kwargs.get("t_sec")
                 if not self.timeline.cut_at_playhead(None if t is None else float(t)):
@@ -639,30 +625,11 @@ class EditorSession:
             mid_tl = float(clip.timeline_start_sec) + 0.5 * clip.source_duration()
             self.timeline.set_playhead(mid_tl)
 
-            # Ensure Max + Éles szélek (existing apex polish path).
-            # AI Polírozás always uses full-person auto matte (person-fix2) —
-            # never inherit session face-only / replace from Varázsceruza.
-            if self._seed_mode == "replace" or (
-                self._seed_alpha is not None and self._seed_mode == "replace"
-            ):
-                self._apply_seed_to_engine(None)
+            # Ensure Max + Éles szélek — auto full-person RVM only (no paint/wand seed).
+            self._apply_seed_to_engine(None)
+            self._purge_seed_disk()
             if self.mode is not EngineMode.MAX:
                 media_path = clip.media_path
-                seed = self._seed_alpha
-                seed_mode = self._seed_mode
-                # Near-empty / face-only must not shadow auto full-person polish
-                if seed is not None:
-                    s = np.asarray(seed, dtype=np.float32)
-                    if s.ndim == 3:
-                        s = s[..., 0]
-                    if (
-                        float(s.max()) < 0.05
-                        or float((s > 0.15).mean()) < 0.002
-                        or str(seed_mode).lower() == "replace"
-                    ):
-                        seed = None
-                        self._seed_alpha = None
-                        seed_mode = "union"
                 old = self.engine
                 old.close()
                 self.mode = EngineMode.MAX
@@ -671,17 +638,12 @@ class EditorSession:
                 self._sync_sharp_to_engine()
                 self.media = self.engine.open_media(Path(media_path))
                 self._open_path = media_path
-                self._apply_seed_to_engine(
-                    seed, mode="union", part=None if seed is None else self._seed_part
-                )
+                self._apply_seed_to_engine(None)
             else:
                 self.sharp_edges = True
                 self._sync_sharp_to_engine()
                 self._ensure_engine_media(clip.media_path)
-                # Reload union brush seed only — skip replace (person-fix2)
                 self._load_seed_for_selection()
-                if self._seed_mode == "replace":
-                    self._apply_seed_to_engine(None)
 
             try:
                 from hybrid_editor.media.video_io import downscale_long_side, is_matte_empty, read_frame_at
@@ -712,12 +674,13 @@ class EditorSession:
             return
         self.media = self.engine.open_media(Path(media_path))
         self._open_path = media_path
-        # Re-apply seed for Max when switching media (preserve union/replace mode).
-        if isinstance(self.engine, MaxQualityEngine) and self._seed_alpha is not None:
-            self.engine.set_user_seed(
-                self._seed_alpha, mode=self._seed_mode, part=self._seed_part
-            )
+        # Auto-person only — never re-arm paint/wand seed when switching media.
+        if isinstance(self.engine, MaxQualityEngine):
+            self.engine.clear_user_seed()
             self.engine._seed = None  # noqa: SLF001
+        self._seed_alpha = None
+        self._seed_mode = "union"
+        self._seed_part = None
 
     def _matte_bgr(self, bgr: "np.ndarray", *, warmup: bool = False) -> "np.ndarray":
         """Alpha for one BGR frame — selected-clip seed applies when engine has it."""
@@ -788,14 +751,9 @@ class EditorSession:
                     )
                     source_t = matte_layer.source_t_sec
                     self._ensure_engine_media(matte_layer.media_path)
-                    # Keep seed bound to selected clip media (mode-aware).
-                    if self._seed_media_path() == matte_layer.media_path:
-                        if isinstance(self.engine, MaxQualityEngine) and self._seed_alpha is not None:
-                            self.engine.set_user_seed(
-                                self._seed_alpha,
-                                mode=self._seed_mode,
-                                part=self._seed_part,
-                            )
+                    # Auto-person only — no paint/wand seed on preview matte.
+                    if isinstance(self.engine, MaxQualityEngine):
+                        self.engine.clear_user_seed()
                     if overlays or getattr(matte_layer, "has_alpha", False):
                         overlay_meta = {
                             "overlay_layers": [
@@ -1018,29 +976,9 @@ class EditorSession:
         mode: Optional[str] = None,
         part: Optional[str] = None,
     ) -> dict[str, Any]:
-        with self._lock:
-            if self.media is None:
-                raise RuntimeError("Open a video first")
-            alpha = decode_alpha_png_b64(png_b64)
-            # Preserve replace/part across brush refine commits unless caller overrides.
-            apply_mode = mode if mode is not None else self._seed_mode
-            apply_part = part if part is not None else self._seed_part
-            self._apply_seed_to_engine(alpha, mode=apply_mode, part=apply_part)
-            # Persist union brush refine only — face-only (replace) stays session RAM.
-            if self._seed_mode == "replace":
-                self._purge_seed_disk()
-            else:
-                sp = self._seed_path()
-                if sp is not None:
-                    save_seed(
-                        sp,
-                        alpha,
-                        mode="union",
-                        part=self._seed_part,
-                    )
-            st = self.status()
-            st["seed_mask_png_b64"] = encode_alpha_png_b64(alpha)
-            return st
+        """Removed: paint/wand seeds no longer apply. Clears any leftover mask."""
+        del png_b64, mode, part
+        return self.clear_seed_mask()
 
     def pick_seed_part(
         self,
@@ -1050,78 +988,11 @@ class EditorSession:
         t_sec: Optional[float] = None,
         erase: bool = False,
     ) -> dict[str, Any]:
-        """Varázsceruza: face/region pick → replace-mode seed (face-only nobg)."""
-        from hybrid_editor.cache.face_pick import pick_part_matte
-        from hybrid_editor.media.video_io import read_frame_at
-
-        with self._lock:
-            media_path = self._seed_media_path()
-            if not media_path:
-                raise RuntimeError("Open a video first")
-            t = float(t_sec) if t_sec is not None else (
-                float(self.timeline.playhead_sec) if self.timeline else 0.0
-            )
-            bgr, _ = read_frame_at(Path(media_path), t)
-            result = pick_part_matte(
-                bgr,
-                float(x),
-                float(y),
-                erase=bool(erase),
-                existing=self._seed_alpha,
-            )
-            alpha = result["alpha"]
-            pixels = int(result.get("pixels") or 0)
-            if pixels < 8 and not erase:
-                raise RuntimeError(
-                    "Varázsceruza: nincs találat az arcon — kattints az arcra"
-                )
-            # Erase that empties the part seed → back to full-person auto matte.
-            if erase and pixels < 8:
-                self._apply_seed_to_engine(None)
-                if isinstance(self.engine, MaxQualityEngine):
-                    self.engine._seed = None  # noqa: SLF001
-                    if hasattr(self.engine, "_stabilizer"):
-                        try:
-                            self.engine._stabilizer.reset()
-                        except Exception:
-                            pass
-                self._purge_seed_disk()
-                st = self.status()
-                st["seed_mask_png_b64"] = None
-                st["pick"] = {
-                    "part": None,
-                    "label_hu": "Teljes ember",
-                    "pixels": 0,
-                    "method": "clear-full-person",
-                    "erase": True,
-                    "faces_found": int(result.get("faces_found") or 0),
-                    "full_person": True,
-                }
-                return st
-            part = str(result.get("part") or "region")
-            self._apply_seed_to_engine(alpha, mode="replace", part=part)
-            # Reset Max stabilizer/seed cache so next preview uses replace gate
-            if isinstance(self.engine, MaxQualityEngine):
-                self.engine._seed = None  # noqa: SLF001 — intentional live refresh
-                if hasattr(self.engine, "_stabilizer"):
-                    try:
-                        self.engine._stabilizer.reset()
-                    except Exception:
-                        pass
-            # Face-only is session RAM only — never write replace to disk.
-            self._purge_seed_disk()
-            st = self.status()
-            st["seed_mask_png_b64"] = encode_alpha_png_b64(alpha)
-            st["pick"] = {
-                "part": part,
-                "label_hu": result.get("label_hu"),
-                "pixels": pixels,
-                "method": result.get("method"),
-                "erase": bool(erase),
-                "faces_found": int(result.get("faces_found") or 0),
-                "full_person": False,
-            }
-            return st
+        """Removed: Varázsceruza / face_pick — auto full-person RVM only."""
+        del x, y, t_sec, erase
+        raise RuntimeError(
+            "Varázsceruza eltávolítva — auto teljes ember (RVM). Használd az Előnézet / Polírozás útvonalat."
+        )
 
     def get_seed_mask(self) -> dict[str, Any]:
         with self._lock:

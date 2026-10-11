@@ -92,7 +92,6 @@ class MaxQualityEngine(MattingEngine):
 
     def person_matte_info(self) -> dict:
         active = bool(self._adapter.available)
-        face_only = self._user_seed is not None and self._seed_mode == "replace"
         return {
             "matanyone2_active": active,
             "matanyone2_available": active,
@@ -100,9 +99,9 @@ class MaxQualityEngine(MattingEngine):
             "person_matte_backend": "matanyone2" if active else "rvm-quality-pipeline",
             "person_matte_label_hu": self.person_matte_label(),
             "auto_person_matte": True,
-            "full_person_default": not face_only,
+            "full_person_default": True,
             "multi_person": True,
-            "manual_seed_refinement_only": not face_only,
+            "manual_seed_refinement_only": False,
         }
 
     def set_user_seed(
@@ -112,35 +111,21 @@ class MaxQualityEngine(MattingEngine):
         mode: Optional[str] = None,
         part: Optional[str] = None,
     ) -> None:
-        """Optional paint/lasso / part-pick seed — never required for auto person matte."""
-        if mode is not None:
-            m = str(mode).strip().lower()
-            self._seed_mode = "replace" if m == "replace" else "union"
-        if part is not None:
-            self._seed_part = str(part).strip() or None
-        if alpha is None:
-            self._user_seed = None
-            if mode is None:
-                self._seed_mode = "union"
-                self._seed_part = None
-            return
-        a = np.asarray(alpha, dtype=np.float32)
-        if a.ndim == 3:
-            a = a[..., 0]
-        a = np.clip(a, 0.0, 1.0)
-        # Near-empty paint must not arm a "seed present" path that BG-clamps the frame.
-        if float(a.max()) < 0.05 or float((a > 0.15).mean()) < 0.002:
-            self._user_seed = None
-            # Drop sticky face-only (replace) when seed vanishes — full person returns.
-            self._seed_mode = "union"
-            self._seed_part = None
-            return
-        self._user_seed = a
+        """No-op for paint/wand — auto full-person RVM is the only selection path.
+
+        Passing ``alpha=None`` (or any value) clears leftover sticky seed state.
+        """
+        del alpha, mode, part
+        self._user_seed = None
+        self._seed_mode = "union"
+        self._seed_part = None
+        self._seed = None
 
     def clear_user_seed(self) -> None:
         self._user_seed = None
         self._seed_mode = "union"
         self._seed_part = None
+        self._seed = None
 
     @property
     def user_seed(self) -> Optional[np.ndarray]:
@@ -238,35 +223,9 @@ class MaxQualityEngine(MattingEngine):
         return heuristic_person_alpha(bgr)
 
     def _seed_for(self, bgr: np.ndarray, auto: np.ndarray) -> np.ndarray:
-        """Guidance seed for quality trimap / live alpha.
-
-        - ``union`` (brush/lasso refine): maximum(auto, seed) so tiny paint
-          cannot wipe the whole person matte.
-        - ``replace`` (Varázsceruza part-pick): seed gates the alpha — face-only
-          nobg when seed is an arc matte (intersect auto for cleaner edges).
-        """
-        auto_a = np.clip(np.asarray(auto, dtype=np.float32), 0.0, 1.0)
-        if self._user_seed is None:
-            return auto_a
-        h, w = bgr.shape[:2]
-        seed = self._user_seed
-        if seed.shape[:2] != (h, w):
-            seed = cv2.resize(seed, (w, h), interpolation=cv2.INTER_LINEAR)
-        seed = np.clip(seed.astype(np.float32), 0.0, 1.0)
-        if float(seed.max()) < 0.05:
-            return auto_a
-        if self._seed_mode == "replace":
-            # Face/part only: keep seed shape; borrow auto edges inside the part.
-            if float((auto_a > 0.15).mean()) >= 0.002:
-                # Dilate seed slightly so hairline at face edge is not clipped hard
-                k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-                gate = cv2.dilate((seed > 0.12).astype(np.uint8), k, iterations=1)
-                gate_f = cv2.GaussianBlur(gate.astype(np.float32), (0, 0), sigmaX=1.2)
-                gated = np.minimum(auto_a, np.clip(gate_f, 0.0, 1.0))
-                # Prefer painted seed coverage so hollow auto holes inside face fill
-                return np.clip(np.maximum(gated, seed * 0.92), 0.0, 1.0)
-            return seed
-        return np.maximum(auto_a, seed)
+        """Auto-person guidance only — paint/wand seeds are ignored (apex default)."""
+        del bgr
+        return np.clip(np.asarray(auto, dtype=np.float32), 0.0, 1.0)
 
     def _polish(self, bgr: np.ndarray, *, warmup: bool = False) -> np.ndarray:
         if warmup:
@@ -392,7 +351,7 @@ class MaxQualityEngine(MattingEngine):
             "user_seed": self._user_seed is not None,
             "seed_mode": self.seed_mode,
             "seed_part": self.seed_part,
-            "manual_seed_refinement_only": self._seed_mode != "replace",
+            "manual_seed_refinement_only": False,
             "fast_meta": frame.meta,
             "matte_empty": empty,
             "matte_recovered": recovered,
@@ -405,7 +364,7 @@ class MaxQualityEngine(MattingEngine):
             "rvm_full_res": bool(getattr(self._fast, "_full_res_matte", False)),
             "rvm_weights": Path(weights).name if weights else None,
             "preview_long_side": preview_long,
-            "stamp": "2026-10-10-apex",
+            "stamp": "2026-10-11-auto-person",
         }
         if matte_error and empty:
             meta["matte_error"] = matte_error
