@@ -299,7 +299,10 @@ export default function App() {
           void runPreview(t, st);
         }
       })
-      .catch((e: Error) => setError(e.message));
+      .catch(() => {
+        // Empty landing: status probe may 500 before FastAPI is up — never paint
+        // a red "Internal Server Error" across the full-bleed shell.
+      });
     api.assistStatus().then(setAssist).catch(() => setAssist(null));
   }, []);
 
@@ -707,8 +710,22 @@ export default function App() {
   const mediaH = status?.media?.height ?? 1080;
   const mediaFps = status?.timeline?.fps || status?.media?.fps || 25;
   const bakeSpanSec = clipDurationSec(inSec, outSec, duration);
+  const fullClipSec = Math.max(
+    0,
+    Number(status?.media?.duration_sec) || Number(duration) || 0,
+  );
   const etas = bothModeEtas(bakeSpanSec, mediaFps, mediaW, mediaH);
+  const fullEtas = bothModeEtas(fullClipSec, mediaFps, mediaW, mediaH);
   const selectedEta = etas[mode]?.labelHu ?? "Kb. —";
+  const rangeLabel = `${Math.max(0, inSec).toFixed(1)}–${Math.max(inSec, outSec).toFixed(1)}s`;
+  const rangeIsPartial =
+    fullClipSec > 1e-3 &&
+    bakeSpanSec > 1e-3 &&
+    bakeSpanSec < fullClipSec - 0.25;
+  const maxFullHours = (fullEtas.max?.seconds ?? 0) / 3600;
+  const maxRangeHours = (etas.max?.seconds ?? 0) / 3600;
+  const longMaxWarn =
+    maxFullHours >= 2 || (mode === "max" && maxRangeHours >= 2);
   const remainSec = status?.bake_running
     ? remainingBakeSec({
         durationSec: bakeSpanSec,
@@ -861,46 +878,71 @@ export default function App() {
             <strong>Ejtés: videó betöltése</strong>
           </div>
         ) : null}
-        <section className="hero">
-          <div className="hero-inner">
-            <div className="brand-mark">HybridCut</div>
-            <p className="hero-tag">Egy kattintás a helyi cutoutra.</p>
-            <p className="hero-sub">
-              Megnyitás → auto Cutout → Exportálás. Lime · orange · RTX 3060 · csak helyi.
-            </p>
-            <div className="hero-cta">
-              <button
-                type="button"
-                className="btn accent hero-cta-primary"
-                disabled={locked}
-                onClick={() => fileRef.current?.click()}
-                title="Videó megnyitása — automatikus Cutout előnézet."
-              >
-                Megnyitás
-              </button>
-              <button
-                type="button"
-                className="btn primary"
-                disabled={locked}
-                onClick={onSample}
-                title="Beépített minta videó betöltése a kipróbáláshoz."
-              >
-                Minta
-              </button>
+        <header className="topbar">
+          <div className="topbar-left">
+            <div className="brand">
+              <div className="brand-mark">HybridCut</div>
             </div>
-            <ModeSwitcher
-              mode={mode}
-              disabled={locked || pending}
-              onChange={onMode}
-              etaGyors={etas.gyors.labelHu}
-              etaMax={etas.max.labelHu}
-            />
+            <span className="gpu-chip" title="Cél GPU — helyi, ingyenes">
+              RTX 3060
+            </span>
+            <p className="empty-tagline">Egy kattintás a helyi cutoutra.</p>
+          </div>
+          <div className="sync">
+            <div className="sync-stamp">{status?.sync_version ?? "…"}</div>
+          </div>
+        </header>
+        <div className="empty-cta-row">
+          <button
+            type="button"
+            className="btn accent hero-cta-primary"
+            disabled={locked}
+            onClick={() => fileRef.current?.click()}
+            title="Videó megnyitása — automatikus Cutout előnézet."
+          >
+            Megnyitás
+          </button>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={locked}
+            onClick={onSample}
+            title="Beépített minta videó betöltése a kipróbáláshoz."
+          >
+            Minta
+          </button>
+          <span className="empty-cta-hint">
+            Megnyitás → auto Cutout → Exportálás · lime · orange · csak helyi
+          </span>
+        </div>
+        <main className="workspace empty-workspace">
+          <aside className="rail empty-rail">
+            <div className="rail-block">
+              <h2>Mód</h2>
+              <p className="lead">Gyors scrub vagy Max export — ETA a chipen.</p>
+              <ModeSwitcher
+                mode={mode}
+                disabled={locked || pending}
+                onChange={onMode}
+                etaGyors={etas.gyors.labelHu}
+                etaMax={etas.max.labelHu}
+              />
+            </div>
             <div className="hero-meta">
-              {status?.sync_version ?? "…"} · Videoeditor · Róbert Hevesi-Tóth
+              Videoeditor · Róbert Hevesi-Tóth
             </div>
             {error ? <div className="status-line error">{error}</div> : null}
-          </div>
-        </section>
+          </aside>
+          <section className="stage empty-stage">
+            <div className="empty-drop" role="region" aria-label="Videó betöltése">
+              <div className="empty-drop-brand brand-mark">HybridCut</div>
+              <p className="empty-drop-title">Húzd ide a videót, vagy nyisd meg fent.</p>
+              <p className="empty-drop-sub">
+                Teljes munkaterület · RTX 3060 · Ollama csak helyi (llama3).
+              </p>
+            </div>
+          </section>
+        </main>
         <input
           ref={fileRef}
           type="file"
@@ -914,49 +956,52 @@ export default function App() {
 
   return (
     <div className="app">
-      {/* Drop overlay only on empty hero — never when timeline has media. */}
+      {/* Compact editor chrome: topbar + workspace only (no separate 1fr intel row). */}
 
       <header className="topbar">
-        <div className="brand">
-          <div className="brand-mark">HybridCut</div>
-          <div className="brand-sub">lime · orange · helyi cutout</div>
+        <div className="topbar-left">
+          <div className="brand">
+            <div className="brand-mark">HybridCut</div>
+          </div>
+          <span className="gpu-chip" title="Cél GPU — helyi, ingyenes">
+            RTX 3060
+          </span>
+          <div className="intel-strip" aria-label="Állapotjelzők">
+            {chips.map((c) => (
+              <span
+                key={c.key}
+                className={`intel-chip ${c.on ? "on" : ""} ${c.warn ? "warn" : ""}`}
+                title={c.title}
+              >
+                {c.label}
+              </span>
+            ))}
+          </div>
         </div>
         <div className="sync">
           <div className="sync-stamp">{status?.sync_version ?? "…"}</div>
-          <div>RTX 3060 · helyi</div>
         </div>
       </header>
-
-      <div className="intel-strip" aria-label="Állapotjelzők">
-        {chips.map((c) => (
-          <span
-            key={c.key}
-            className={`intel-chip ${c.on ? "on" : ""} ${c.warn ? "warn" : ""}`}
-            title={c.title}
-          >
-            {c.label}
-          </span>
-        ))}
-      </div>
 
       <main className="workspace">
         <aside className="rail">
           <div className="rail-block">
             <ol className="flow-steps" aria-label="Egy kattintásos folyamat">
               <li className={flowStep >= 1 ? "done" : ""} data-step="1">
+                <span className="flow-num">1</span>
                 Megnyitás
               </li>
               <li className={flowStep >= 2 ? "done" : flowStep === 1 ? "next" : ""} data-step="2">
+                <span className="flow-num">2</span>
                 Cutout
               </li>
               <li className={flowStep >= 3 ? "done" : flowStep === 2 ? "next" : ""} data-step="3">
+                <span className="flow-num">3</span>
                 Exportálás
               </li>
             </ol>
             <h2>Cutout</h2>
-            <p className="lead">
-              1 Megnyitás → 2 Előnézet/Cutout → 3 Export. Válaszd a módot — az ETA élőben frissül.
-            </p>
+            <p className="lead">Gyors / Max · ETA a gombokon · Be/Ki tartomány.</p>
             <ModeSwitcher
               mode={mode}
               disabled={locked || pending}
@@ -964,29 +1009,35 @@ export default function App() {
               etaGyors={etas.gyors.labelHu}
               etaMax={etas.max.labelHu}
             />
-            <div className="eta-pair" aria-live="polite">
-              <div className={`eta-card ${mode === "gyors" ? "active" : ""}`}>
-                <span className="eta-card-mode">Gyors háttéreltávolítás</span>
-                <strong>{etas.gyors.labelHu}</strong>
-              </div>
-              <div className={`eta-card ${mode === "max" ? "active" : ""}`}>
-                <span className="eta-card-mode">Max háttéreltávolítás</span>
-                <strong>{etas.max.labelHu}</strong>
-              </div>
-            </div>
-            <p className="export-eta" title="Becsült bake idő a jelenlegi Be/Ki és felbontás alapján (RTX 3060).">
-              Export előtt · {mode === "max" ? "Max" : "Gyors"}: <strong>{selectedEta}</strong>
+            <p
+              className="export-eta"
+              aria-live="polite"
+              title="Becsült bake idő a kiválasztott Be/Ki tartományra (RTX 3060)."
+            >
+              Be/Ki ({rangeLabel}):{" "}
+              <strong>
+                {mode === "max" ? "Max" : "Gyors"} {selectedEta}
+              </strong>
               {bakeSpanSec > 0 ? (
-                <span>
-                  {" "}
-                  · {bakeSpanSec.toFixed(1)}s klip · {mediaW}×{mediaH} · {mediaFps.toFixed(0)} fps
+                <span className="eta-range">
+                  {bakeSpanSec.toFixed(1)}s · {mediaW}×{mediaH} · {mediaFps.toFixed(0)} fps
+                  {rangeIsPartial && fullClipSec > 0
+                    ? ` · teljes klip Max ${fullEtas.max.labelHu}`
+                    : ""}
                 </span>
               ) : null}
             </p>
+            {longMaxWarn ? (
+              <p className="eta-long-warn" role="status">
+                Teljes klip Max bake <strong>{fullEtas.max.labelHu}</strong>
+                {fullClipSec >= 60 ? ` (~${(fullClipSec / 60).toFixed(0)} perc)` : ""} — rövidítsd
+                a Be/Ki-t, vagy válassz Gyorsot.
+              </p>
+            ) : null}
             <div className="actions export-actions primary-flow">
               <button
                 type="button"
-                className="btn accent"
+                className="btn primary"
                 disabled={locked}
                 onClick={() => fileRef.current?.click()}
                 title="Videó betöltése — automatikus Cutout előnézet."
@@ -995,7 +1046,7 @@ export default function App() {
               </button>
               <button
                 type="button"
-                className={`btn ${flowStep === 1 ? "accent pulse-cta" : ""}`}
+                className={`btn ${flowStep === 1 ? "accent pulse-cta" : "ghost"}`}
                 disabled={locked || !status?.media}
                 onClick={() => void runPreview(tSec, undefined, undefined, { preferCutout: true })}
                 title="Auto ember-maszk futtatása (RVM) — Cutout nézetre vált, ha kész."
@@ -1034,8 +1085,8 @@ export default function App() {
               />
             </div>
             <p className="action-help">
-              Megnyitás → auto Cutout → Exportálás · master:{" "}
-              <code>{"C:\\bgcut\\{stem}_full_nobg.mov"}</code>
+              Megnyitás → auto Cutout → Exportálás ·{" "}
+              <code>{"C:\\bgcut\\*_full_nobg.mov"}</code>
             </p>
           </div>
 
@@ -1430,7 +1481,7 @@ export default function App() {
           {(() => {
             const stageInner = (
               <div
-                className={`preview-stage ${viewMode === "source" || matteEmpty ? "source-solid" : "checker-subtle"}`}
+                className={`preview-stage ${viewMode === "source" || matteEmpty ? "source-solid" : "checker-subtle"}${preview ? " preview-ready" : ""}`}
               >
                 {toast ? (
                   <div className="preview-toast" role="status">
@@ -1555,21 +1606,20 @@ export default function App() {
             return stageInner;
           })()}
 
-          {clips.length > 0 && (
-            <TimelineTrack
-              clips={clips}
-              duration={duration}
-              playhead={tSec}
-              selectedId={selected}
-              disabled={locked}
-              onSeek={schedulePreview}
-              onSelect={(id) => {
-                void runAction("select", { clip_id: id });
-              }}
-            />
-          )}
-
-          <div>
+          <div className="timeline-dock">
+            {clips.length > 0 ? (
+              <TimelineTrack
+                clips={clips}
+                duration={duration}
+                playhead={tSec}
+                selectedId={selected}
+                disabled={locked}
+                onSeek={schedulePreview}
+                onSelect={(id) => {
+                  void runAction("select", { clip_id: id });
+                }}
+              />
+            ) : null}
             <div className="scrub">
               <span>0s</span>
               <input

@@ -25,8 +25,8 @@ APP = ROOT / "frontend" / "src" / "App.tsx"
 SYNC = ROOT / "SYNC_VERSION.txt"
 
 
-def test_sync_stamp_eta_ui():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-10-eta-ui"
+def test_sync_stamp_look2():
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-10-look2"
 
 
 def test_gyors_faster_than_max_same_clip():
@@ -121,3 +121,7 @@ def test_frontend_eta_mirror_and_ui_hooks():
     assert "bothModeEtas" in app or "estimateBakeSec" in app
     assert "Hátravan" in app or "hátravan" in app or "marad" in app
     assert "export-eta" in app
+    assert "Be/Ki" in app
+    assert "fullEtas" in app
+    assert "eta-long-warn" in app
+    assert "mode-eta" in mode or "etaGyors" in mode

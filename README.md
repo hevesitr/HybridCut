@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-10-eta-ui` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-10-look2` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,10 +44,10 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-10-eta-ui
+# expect: 2026-10-10-look2
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
-# CUDA+cuDNN: .\hybrid_cut\start_hybrid_cuda.ps1
+# CUDA PATH (no remount pip): .\hybrid_cut\start_hybrid_cuda.ps1
 # Compare edges with original Videoeditor: .\run_gpu.ps1 (Tk cutout)
 ```
 
@@ -72,7 +72,31 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 ---
 
-## Stamp — eta-ui (`2026-10-10-eta-ui`)
+## Stamp — look2 (`2026-10-10-look2`)
+
+On top of `2026-10-10-look`. **Full-bleed workspace:** empty state and editor use the same viewport-width shell — compact topbar, full-width Megnyitás/Minta CTA row, Gyors/Max as slim horizontal chips in the left rail, drop stage fills remaining width/height. No skinny centered marketing column (`min(720px)` removed). Syne + Figtree, lime `#b8f000` / orange `#ff7a1a` retained.
+
+Restart: [`docs/look2-restart.md`](docs/look2-restart.md) · store [`../hybrid-look2-restart.md`](../hybrid-look2-restart.md)
+
+## Prior — look (`2026-10-10-look`)
+
+On top of `2026-10-10-layout-fix` (+ `start-fix` · `eta-ui`). **Visual direction:** Syne + Figtree, deep olive ink with lime/orange atmosphere, hero-level HybridCut in compact topbar, slim rail (~250–280px), preview-dominant stage, secondary timeline. Gyors/Max keep ETA on the mode cards; duplicate ETA cards removed; 1→2→3 flow refined (underline steps, brand CTAs). Motions: mode-pick, preview-load, export result-in. Dense motor/VRAM logs stay under Részletek.
+
+Restart: [`docs/look-restart.md`](docs/look-restart.md) · store [`../hybrid-look-restart.md`](../hybrid-look-restart.md)
+
+## Prior — layout-fix (`2026-10-10-layout-fix`)
+
+On top of `2026-10-10-start-fix` (+ `eta-ui`). **Critical UX:** editor is one composition — compact topbar (HybridCut + RTX 3060), left slim rail, **preview fills remaining height**, timeline strip secondary. Root cause of the empty dark void: `.app` had `grid-template-rows: auto 1fr` while the DOM had three children (`topbar`, `intel-strip`, `workspace`), so `intel-strip` ate the `1fr` row.
+
+Also: Be/Ki range ETA labeled clearly; multi-hour Max warn for long clips; start-fix launcher retained (no CapCut remount pip).
+
+Restart: [`docs/layout-fix-restart.md`](docs/layout-fix-restart.md) · store [`../hybrid-layout-fix-restart.md`](../hybrid-layout-fix-restart.md)
+
+## Prior — start-fix (`2026-10-10-start-fix`)
+
+On top of `2026-10-10-eta-ui`. `start_hybrid_cuda.ps1` **does not** call CapCut `remount_ort_gpu.ps1` pip upgrade (Windows AV). PATH-injects nvidia cudnn from hybrid/parent site-packages; opt-in `$env:HYBRID_CALL_REMOUNT='1'` is path-only / skip-pip.
+
+## Prior — eta-ui (`2026-10-10-eta-ui`)
 
 On top of `2026-10-10-apex`. CapCut-clean helper UI + **upfront Gyors / Max háttéreltávolítás ETA**.
 
@@ -248,7 +272,7 @@ Supersedes `full-bake-bgcut` · `max-accuracy` · `simple-preview`.
 - `hybrid_editor.cuda_path`: PATH + `os.add_dll_directory` for pip `nvidia-cudnn-cu12` **before** ORT session
 - Soft fallback: CUDA/cuDNN `LoadLibrary` failure → **CPU EP** with clear status (no raw ORT crash in UI)
 - `run_hybrid.ps1`: auto-install `nvidia-cudnn-cu12` when `cudnn64_*.dll` missing; PATH prepend hybrid+parent
-- `start_hybrid_cuda.ps1`: CapCut `remount_ort_gpu.ps1` if sibling; pip cudnn/ort-gpu; then launch
+- `start_hybrid_cuda.ps1`: PATH-inject nvidia cudnn from hybrid/parent; **no** CapCut remount pip by default; opt-in `HYBRID_CALL_REMOUNT=1` (path-only)
 - Workaround B: `$env:HYBRID_REUSE_PARENT_VENV='1'` (CapCut `.venv` that already works)
 
 ---
@@ -256,16 +280,18 @@ Supersedes `full-bake-bgcut` · `max-accuracy` · `simple-preview`.
 ## Pip / venv notes (Windows)
 
 - `run_hybrid.ps1` does **not** run `pip install --upgrade pip` by default. Opt-in: `$env:HYBRID_UPGRADE_PIP = "1"`.
+- `start_hybrid_cuda.ps1` does **not** call CapCut remount pip upgrade (AV on some Windows). PATH inject only.
 - Deps install with `--trusted-host pypi.org --trusted-host files.pythonhosted.org` and `--no-cache-dir`.
 - Force parent venv (Workaround B): `$env:HYBRID_REUSE_PARENT_VENV = "1"`.
 - GPU ORT / cuDNN:
 
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
-$env:HYBRID_RVM_ONNX = "$PWD\models\rvm_mobilenetv3_fp32.onnx"
+$env:HYBRID_RVM_ONNX = "$PWD\models\rvm_resnet50_fp32.onnx"
 .\hybrid_cut\start_hybrid_cuda.ps1
-# auto: remount if sibling + nvidia-cudnn-cu12 + PATH
-# or: .\run_hybrid.ps1  (also auto-installs cudnn when DLL missing)
+# PATH inject only; no remount pip upgrade
+# immediate bypass: .\run_hybrid.ps1
+# opt-in path-only remount: $env:HYBRID_CALL_REMOUNT='1'; .\hybrid_cut\start_hybrid_cuda.ps1
 ```
 
 Restart cheat-sheet: [`../hybrid-cudnn-restart.md`](../hybrid-cudnn-restart.md). Hotfix paste: `PASTE_FIX_RUN_HYBRID.ps1`.

@@ -1,13 +1,17 @@
 # start_hybrid_cuda.ps1 - HybridCut CUDA prep + launch (ASCII-only)
-# Pattern: call CapCut remount_ort_gpu.ps1 if sibling Videoeditor has it;
-# auto-install nvidia-cudnn-cu12 into hybrid (or parent) venv; PATH inject;
-# prefer parent Videoeditor .venv optionally; then run_hybrid.ps1.
+# Default: do NOT call CapCut remount_ort_gpu.ps1 (its pip upgrade can hit Windows
+# OSError access violation). Inject nvidia cudnn/cublas PATH from hybrid + parent
+# site-packages, then launch run_hybrid.ps1 without blocking on remount.
+#
+# Opt-in CapCut remount (path-only / skip pip upgrade):
+#   $env:HYBRID_CALL_REMOUNT = "1"
+# Legacy: -SkipRemount is default behavior (kept for callers).
 #
 # Usage (from hybrid_cut or Documents\Videoeditor):
 #   .\start_hybrid_cuda.ps1
 #   .\start_hybrid_cuda.ps1 -ReuseParentVenv
-#   .\start_hybrid_cuda.ps1 -SkipRemount
 #   .\start_hybrid_cuda.ps1 -InstallOnly
+#   $env:HYBRID_CALL_REMOUNT = "1"; .\start_hybrid_cuda.ps1
 
 param(
     [switch]$ReuseParentVenv,
@@ -42,9 +46,7 @@ if (-not ($parentRoot -and (Test-Path -LiteralPath (Join-Path $parentRoot "run_g
 Write-Host "=== HybridCut CUDA start ==="
 Write-Host ("Root: " + $Root)
 Write-Host ("Parent: " + $parentRoot)
-
-$pipTrusted = @("--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org")
-$pipNoCache = @("--no-cache-dir")
+Write-Host "Stamp: 2026-10-10-look2 (no remount pip upgrade by default)"
 
 # Resolve python: hybrid .venv or parent CapCut .venv
 $hybridPy = Join-Path $Root ".venv\Scripts\python.exe"
@@ -62,53 +64,130 @@ if ($ReuseParentVenv -or $env:HYBRID_REUSE_PARENT_VENV -eq "1") {
         if (Test-Path -LiteralPath $cand) { $venvPy = $cand; break }
     }
 }
-if (-not $venvPy) {
+if ($venvPy) {
+    Write-Host ("Python: " + $venvPy)
+} else {
     Write-Host "WARN: no .venv python yet - run_hybrid.ps1 will create hybrid .venv."
 }
 
-# 1) CapCut remount when available (installs ort-gpu + cudnn into parent .venv)
-$remount = Join-Path $parentRoot "remount_ort_gpu.ps1"
-if (-not $SkipRemount) {
-    if (Test-Path -LiteralPath $remount) {
-        Write-Host "Calling sibling CapCut remount_ort_gpu.ps1 ..."
-        & $remount
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "WARN: remount_ort_gpu.ps1 failed - will try pip into active venv."
+$siteHybrid = Join-Path $Root ".venv\Lib\site-packages"
+$parentSite = Join-Path $parentRoot ".venv\Lib\site-packages"
+$docsVeSite = Join-Path $docsVe ".venv\Lib\site-packages"
+
+# PATH-only remount: prepend pip nvidia cudnn/cublas bins (no pip upgrade).
+function Add-NvidiaPipBinsToPath {
+    param([string[]]$SiteRoots)
+    $added = 0
+    foreach ($site in $SiteRoots) {
+        if (-not $site -or -not (Test-Path -LiteralPath $site)) { continue }
+        $nv = Join-Path $site "nvidia"
+        if (-not (Test-Path -LiteralPath $nv)) { continue }
+        Get-ChildItem -LiteralPath $nv -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            foreach ($sub in @("bin", "lib")) {
+                $d = Join-Path $_.FullName $sub
+                if (Test-Path -LiteralPath $d) {
+                    $env:PATH = $d + [IO.Path]::PathSeparator + $env:PATH
+                    Write-Host ("PATH += " + $d)
+                    $added++
+                }
+            }
         }
-    } else {
-        Write-Host ("No remount_ort_gpu.ps1 at " + $remount + " - skip remount.")
+        $dlls = Get-ChildItem -LiteralPath $nv -Filter "cudnn64_*.dll" -Recurse -ErrorAction SilentlyContinue
+        foreach ($dll in $dlls) {
+            $env:PATH = $dll.DirectoryName + [IO.Path]::PathSeparator + $env:PATH
+            Write-Host ("cudnn DLL: " + $dll.FullName)
+            $added++
+        }
     }
-} else {
-    Write-Host "SkipRemount=1"
+    return $added
 }
 
-# 2) Ensure cudnn + ort-gpu in active venv when python exists
-if ($venvPy) {
-    Write-Host ("Python: " + $venvPy)
-    $ortOk = & $venvPy -c "import importlib.util; print('1' if importlib.util.find_spec('onnxruntime') else '0')" 2>$null
-    if ($ortOk -ne "1") {
-        Write-Host "Installing onnxruntime-gpu ..."
-        & $venvPy -m pip install "onnxruntime-gpu>=1.16.0,<2" @pipTrusted @pipNoCache
+function Invoke-PathOnlyRemount {
+    param(
+        [string]$ParentRoot,
+        [string[]]$SiteRoots
+    )
+    Write-Host "Path-only remount (skip pip upgrade) ..."
+    $n = Add-NvidiaPipBinsToPath -SiteRoots $SiteRoots
+    if ($n -le 0) {
+        Write-Host "WARN: no nvidia cudnn bins under hybrid/parent site-packages yet."
+        Write-Host "  run_hybrid.ps1 may auto-install nvidia-cudnn-cu12 (no pip upgrade)."
+        Write-Host "  Workaround B: `$env:HYBRID_REUSE_PARENT_VENV='1'; .\run_hybrid.ps1"
+    } else {
+        Write-Host ("PATH inject done (" + $n + " entries).")
     }
-    $site = Join-Path (Split-Path -Parent (Split-Path -Parent $venvPy)) "Lib\site-packages"
-    $hasDll = $false
-    if (Test-Path -LiteralPath $site) {
-        $hit = Get-ChildItem -LiteralPath $site -Filter "cudnn64_*.dll" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($hit) { $hasDll = $true }
+    if (-not $env:VIDEOEDITOR_ORT_PROVIDER) {
+        $env:VIDEOEDITOR_ORT_PROVIDER = "cuda"
     }
-    if (-not $hasDll) {
-        Write-Host "Installing nvidia-cudnn-cu12 (+ cublas/cudart/nvrtc) ..."
-        & $venvPy -m pip install `
-            "nvidia-cudnn-cu12>=9.0.0" `
-            "nvidia-cublas-cu12>=12.0.0" `
-            "nvidia-cuda-runtime-cu12>=12.0.0" `
-            "nvidia-cuda-nvrtc-cu12>=12.0.0" `
-            @pipTrusted @pipNoCache
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "WARN: nvidia pip wheels failed. CapCut remount or Workaround B (parent venv)."
+    Write-Host "VIDEOEDITOR_ORT_PROVIDER=cuda (path-only; no CapCut pip remount)"
+}
+
+# 1) Default: path-only. Never block on CapCut remount pip upgrade.
+#    Opt-in CapCut remount only when HYBRID_CALL_REMOUNT=1; still skip pip upgrade
+#    (path-only local remount, or CapCut remount -PathOnly / -SkipPipUpgrade if present).
+$callRemount = ($env:HYBRID_CALL_REMOUNT -eq "1") -and (-not $SkipRemount)
+$remount = Join-Path $parentRoot "remount_ort_gpu.ps1"
+
+if ($callRemount) {
+    Write-Host "HYBRID_CALL_REMOUNT=1 - safe remount (skip pip upgrade) ..."
+    $usedCapCutSafe = $false
+    if (Test-Path -LiteralPath $remount) {
+        # Prefer CapCut remount path-only switches when available (ASCII param names).
+        $remountText = Get-Content -LiteralPath $remount -Raw -ErrorAction SilentlyContinue
+        if ($remountText -match "PathOnly|SkipPipUpgrade") {
+            Write-Host ("Calling CapCut remount with skip-pip: " + $remount)
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                if ($remountText -match "PathOnly") {
+                    & $remount -PathOnly
+                } else {
+                    & $remount -SkipPipUpgrade
+                }
+                if ($LASTEXITCODE -eq 0) { $usedCapCutSafe = $true }
+                else {
+                    Write-Host ("WARN: CapCut remount exit=" + $LASTEXITCODE + " - continuing with path-only.")
+                }
+            } catch {
+                Write-Host ("WARN: CapCut remount failed - continuing with path-only. " + $_.Exception.Message)
+            } finally {
+                $ErrorActionPreference = $prevEap
+            }
+        } else {
+            Write-Host "CapCut remount_ort_gpu.ps1 has no PathOnly/SkipPipUpgrade - skip calling it (avoids pip AV)."
         }
     } else {
-        Write-Host ("cuDNN DLL present under " + $site)
+        Write-Host ("No remount_ort_gpu.ps1 at " + $remount)
+    }
+    if (-not $usedCapCutSafe) {
+        Invoke-PathOnlyRemount -ParentRoot $parentRoot -SiteRoots @($siteHybrid, $parentSite, $docsVeSite)
+    } else {
+        # Still ensure hybrid+parent bins are on PATH for this process.
+        [void](Add-NvidiaPipBinsToPath -SiteRoots @($siteHybrid, $parentSite, $docsVeSite))
+    }
+} else {
+    Write-Host "Skip CapCut remount (default). Set HYBRID_CALL_REMOUNT=1 for opt-in path-only remount."
+    if ($SkipRemount) { Write-Host "SkipRemount=1 (legacy; already default)" }
+    Invoke-PathOnlyRemount -ParentRoot $parentRoot -SiteRoots @($siteHybrid, $parentSite, $docsVeSite)
+}
+
+# 2) Soft presence check only - do NOT pip upgrade / force-reinstall here.
+#    run_hybrid.ps1 installs deps without upgrading pip.
+if ($venvPy) {
+    $ortOk = & $venvPy -c "import importlib.util; print('1' if importlib.util.find_spec('onnxruntime') else '0')" 2>$null
+    if ($ortOk -ne "1") {
+        Write-Host "NOTE: onnxruntime missing in active venv - run_hybrid.ps1 will install requirements."
+    }
+    $hasDll = $false
+    foreach ($site in @($siteHybrid, $parentSite, $docsVeSite)) {
+        if (-not (Test-Path -LiteralPath $site)) { continue }
+        $hit = Get-ChildItem -LiteralPath $site -Filter "cudnn64_*.dll" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($hit) { $hasDll = $true; break }
+    }
+    if ($hasDll) {
+        Write-Host "cuDNN DLL present under hybrid/parent site-packages"
+    } else {
+        Write-Host "WARN: cudnn64_*.dll not found yet - run_hybrid.ps1 may auto-install nvidia-cudnn-cu12."
     }
 }
 
@@ -134,11 +213,11 @@ if (-not $env:HYBRID_ORT_PROVIDER) {
 }
 
 if ($InstallOnly) {
-    Write-Host "InstallOnly: CUDA/cuDNN prep done. Run .\run_hybrid.ps1 next."
+    Write-Host "InstallOnly: PATH inject done (no remount pip). Run .\run_hybrid.ps1 next."
     exit 0
 }
 
-# 4) Launch (run_hybrid.ps1 PATH-injects nvidia bins again + soft CPU fallback in Python)
+# 4) Launch without waiting on CapCut remount
 $launcher = Join-Path $Root "run_hybrid.ps1"
 if (-not (Test-Path -LiteralPath $launcher)) {
     $launcher = Join-Path $parentRoot "run_hybrid.ps1"
@@ -147,5 +226,5 @@ if (-not (Test-Path -LiteralPath $launcher)) {
     Write-Host "ERROR: run_hybrid.ps1 not found"
     exit 1
 }
-Write-Host ("Launching: " + $launcher)
+Write-Host ("Launching (no remount pip): " + $launcher)
 & $launcher

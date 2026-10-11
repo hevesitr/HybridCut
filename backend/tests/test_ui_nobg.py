@@ -1,4 +1,4 @@
-"""UI contracts for nobg result card + stamp ``2026-10-10-eta-ui``."""
+"""UI contracts for nobg result card + stamp ``2026-10-10-look2``."""
 
 from __future__ import annotations
 
@@ -9,10 +9,11 @@ APP = ROOT / "frontend" / "src" / "App.tsx"
 CSS = ROOT / "frontend" / "src" / "styles" / "app.css"
 SYNC = ROOT / "SYNC_VERSION.txt"
 README = ROOT / "README.md"
+HTML = ROOT / "frontend" / "index.html"
 
 
-def test_sync_stamp_eta_ui():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-10-eta-ui"
+def test_sync_stamp_look2():
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-10-look2"
 
 
 def test_app_result_card_and_explorer():
@@ -40,11 +41,23 @@ def test_app_result_card_and_explorer():
     # CapCut-simple one-click flow
     assert "Megnyitás → auto Cutout → Exportálás" in text
     assert "flow-steps" in text
-    # Upfront Gyors + Max ETA
+    assert "flow-num" in text
+    # ETA on Gyors/Max mode cards + slim Be/Ki strip (no duplicate eta-pair cards in rail)
     assert "export-eta" in text
-    assert "eta-pair" in text
+    assert "eta-pair" not in text  # decluttered — ETA lives on ModeSwitcher
     assert "Hátravan" in text
     assert "bothModeEtas" in text
+    assert "Be/Ki" in text
+    assert "eta-long-warn" in text
+    assert "timeline-dock" in text
+    assert "gpu-chip" in text
+    assert "preview-ready" in text
+    # Full-bleed empty shell (no skinny centered marketing column)
+    assert 'className="app empty"' in text
+    assert "empty-cta-row" in text
+    assert "empty-workspace" in text
+    assert "empty-drop" in text
+    assert "hero-inner" not in text
     # Tech chips folded under Részletek (RVM not in intel strip)
     assert "intelFromPreview" in text
     assert "rvmChip(status)" not in text.split("function intelFromPreview")[1].split("function smartStatusLine")[0]
@@ -56,19 +69,43 @@ def test_css_result_and_checker_motion():
     assert ".nobg-player" in css
     assert "@keyframes result-in" in css
     assert "@keyframes bake-shimmer" in css
+    assert "@keyframes mode-pick" in css
+    assert "@keyframes preview-load" in css
     assert ".meta-fold" in css
     assert "--checker-a: #1a2420" in css
     assert ".flow-steps" in css
     assert "@keyframes cta-glow" in css
     assert "--accent: #ff7a1a" in css
     assert "--accent-2: #b8f000" in css
-    assert "Sora" in css
-    assert "Manrope" in css
-    assert ".eta-pair" in css
+    assert "Syne" in css
+    assert "Figtree" in css
+    assert ".eta-pair" in css  # retained (hidden) for contract / reuse
     assert ".export-eta" in css
     assert ".mode-eta" in css
+    # layout-fix retained: no 1fr intel void; preview fills; timeline dock
+    assert "intel-strip" in css
+    assert "timeline-dock" in css
+    assert "gpu-chip" in css
+    assert "THREE children" in css or "intel-strip" in css
+    assert "grid-template-rows: auto 1fr" in css
+    assert "height: 100vh" in css
+    assert "minmax(250px, 280px)" in css or "250px" in css
+    # look2: full-bleed empty — no min(720px) marketing column
+    assert ".empty-cta-row" in css
+    assert ".empty-workspace" in css
+    assert ".empty-drop" in css
+    assert "min(720px" not in css
+    assert "2026-10-10-look2" in css
 
 
-def test_readme_mentions_eta_ui_stamp():
+def test_fonts_loaded():
+    html = HTML.read_text(encoding="utf-8")
+    assert "Syne" in html
+    assert "Figtree" in html
+
+
+def test_readme_mentions_look2_stamp():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-10-eta-ui" in readme
+    assert "2026-10-10-look2" in readme
+    assert "2026-10-10-look" in readme  # prior retained in history
+    assert "2026-10-10-layout-fix" in readme

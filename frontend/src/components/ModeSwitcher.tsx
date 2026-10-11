@@ -11,7 +11,12 @@ export function ModeSwitcher({ mode, disabled, onChange, etaGyors, etaMax }: Pro
   const gEta = etaGyors && etaGyors !== "Kb. —" ? etaGyors : "Kb. —";
   const mEta = etaMax && etaMax !== "Kb. —" ? etaMax : "Kb. —";
   return (
-    <div className="mode-switch" role="radiogroup" aria-label="Háttéreltávolítás mód">
+    <div
+      className="mode-switch"
+      data-mode={mode}
+      role="radiogroup"
+      aria-label="Háttéreltávolítás mód"
+    >
       <button
         type="button"
         className={`mode-btn gyors ${mode === "gyors" ? "active" : ""}`}

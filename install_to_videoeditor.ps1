@@ -141,10 +141,12 @@ Write-Host ""
 Write-Host "Kovetkezo / Next:"
 Write-Host '  cd $env:USERPROFILE\Documents\Videoeditor'
 Write-Host "  Get-Content .\hybrid_cut\SYNC_VERSION.txt"
-Write-Host "  # expect: 2026-10-04-hybrid-cudnn-path"
-Write-Host '  $env:HYBRID_RVM_ONNX = "$PWD\models\rvm_mobilenetv3_fp32.onnx"'
+Write-Host "  # expect: 2026-10-10-look2"
+Write-Host '  $env:HYBRID_RVM_ONNX = "$PWD\models\rvm_resnet50_fp32.onnx"'
+Write-Host "  # start_hybrid_cuda: PATH inject only (no CapCut remount pip upgrade)"
 Write-Host "  .\hybrid_cut\start_hybrid_cuda.ps1"
-Write-Host "  # or: .\run_hybrid.ps1"
+Write-Host "  # immediate bypass if remount pip AV: .\run_hybrid.ps1"
+Write-Host "  # opt-in path-only remount: `$env:HYBRID_CALL_REMOUNT='1'; .\hybrid_cut\start_hybrid_cuda.ps1"
 Write-Host "  # Workaround B: `$env:HYBRID_REUSE_PARENT_VENV='1'; .\run_hybrid.ps1"
 Write-Host "Open: http://127.0.0.1:3847"
 Write-Host ""
