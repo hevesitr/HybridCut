@@ -376,7 +376,7 @@ class EditorSession:
                 self.timeline.duplicate_selected()
             elif act == "remove":
                 if not self.timeline.remove_clip(kwargs.get("clip_id")):
-                    raise RuntimeError("Cannot remove last V1 clip")
+                    raise RuntimeError("Az utolsó V1 klip nem törölhető")
             elif act == "cut":
                 t = kwargs.get("t_sec")
                 if not self.timeline.cut_at_playhead(None if t is None else float(t)):

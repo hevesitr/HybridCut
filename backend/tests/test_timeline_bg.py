@@ -1,4 +1,4 @@
-"""Timeline + BG remove contracts — stamp ``2026-10-11-timeline-bg``.
+"""Timeline + BG remove + clip-delete contracts — stamp ``2026-10-11-clip-delete``.
 
 Source-contract + TimelineDoc drag/trim/track + composite helper (no ORT).
 """
@@ -29,7 +29,41 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_timeline_bg():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-timeline-bg"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-clip-delete"
+
+
+def test_remove_extra_v1_and_v2():
+    doc = TimelineDoc.from_media(
+        path="/a.mp4",
+        duration_sec=4.0,
+        fps=25.0,
+        width=100,
+        height=100,
+        out_sec=4.0,
+    )
+    v1b = doc.add_clip(
+        media_path="/b.mp4",
+        duration_sec=3.0,
+        fps=25.0,
+        width=100,
+        height=100,
+        out_sec=3.0,
+    )
+    v2 = doc.add_clip(
+        media_path="/c.mp4",
+        duration_sec=2.0,
+        fps=25.0,
+        width=100,
+        height=100,
+        out_sec=2.0,
+        track=1,
+        timeline_start_sec=0.5,
+    )
+    assert doc.remove_clip(v2.clip_id)
+    assert all(int(c.track) == 0 for c in doc.clips)
+    assert doc.remove_clip(v1b.clip_id)
+    assert len(doc.clips) == 1
+    assert not doc.remove_clip(doc.clips[0].clip_id)
 
 
 def test_playhead_preserves_selection():
@@ -159,6 +193,11 @@ def test_ui_timeline_drag_trim_wand():
     assert "trim_edge" in app
     assert "set_track" in app
     assert "selectedClipId={selected}" in app
+    assert "clip-bin-del" in app
+    assert "canRemoveClip" in app
+    assert 'runAction("remove"' in app or "runAction(\"remove\"" in app
+    assert "clip-tools" in app
+    assert "deleteSelectedClip" in app
     seed = SEED.read_text(encoding="utf-8")
     assert "floodFillMask" in seed
     assert "colorClose" in seed
@@ -169,7 +208,8 @@ def test_ui_timeline_drag_trim_wand():
     assert "trim_edge" in api
     assert "set_track" in api
     css = CSS.read_text(encoding="utf-8")
-    assert "2026-10-11-timeline-bg" in css
+    assert "2026-10-11-clip-delete" in css
+    assert ".clip-bin-del" in css
     assert ".tl-handle" in css
     assert "--accent: #ff7a1a" in css
     assert "--accent-2: #b8f000" in css
@@ -177,7 +217,7 @@ def test_ui_timeline_drag_trim_wand():
 
 def test_readme_and_dist():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-11-timeline-bg" in readme
-    assert "timeline-bg" in readme
+    assert "2026-10-11-clip-delete" in readme
+    assert "clip-delete" in readme
     assets = list(DIST_ASSETS.glob("index-*.js")) + list(DIST_ASSETS.glob("index-*.css"))
     assert assets, "frontend/dist missing — run vite build"

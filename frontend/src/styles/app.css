@@ -1,5 +1,5 @@
 :root {
-  /* HybridCut timeline-bg — V1/V2 timeline + BG remove, lime / orange look2 (stamp 2026-10-11-timeline-bg) */
+  /* HybridCut clip-delete — visible clip tools + per-row Töröl (stamp 2026-10-11-clip-delete) */
   --ink: #070a05;
   --fog: #f0f5e4;
   --mist: #8fa078;
@@ -1668,23 +1668,63 @@ body:has(.app.empty) {
 
 .clip-bin-item {
   display: flex;
-  justify-content: space-between;
-  gap: 0.5rem;
-  align-items: center;
-  padding: 0.38rem 0.5rem;
+  gap: 0.35rem;
+  align-items: stretch;
   border-radius: 8px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.025);
-  font-size: 0.72rem;
-  color: var(--mist);
-  cursor: pointer;
-  text-align: left;
-  width: 100%;
+  overflow: hidden;
 }
 
 .clip-bin-item.active {
   border-color: rgba(184, 240, 0, 0.55);
+}
+
+.clip-bin-select {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.38rem 0.5rem;
+  border: 0;
+  background: transparent;
+  font-size: 0.72rem;
+  color: var(--mist);
+  cursor: pointer;
+  text-align: left;
+}
+
+.clip-bin-item.active .clip-bin-select {
   color: var(--fog);
+}
+
+.clip-bin-del {
+  flex: 0 0 auto;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: rgba(227, 107, 91, 0.12);
+  color: #f0b4aa;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.38rem 0.55rem;
+  cursor: pointer;
+}
+
+.clip-bin-del:hover:not(:disabled) {
+  background: rgba(227, 107, 91, 0.28);
+  color: var(--fog);
+}
+
+.clip-bin-del:disabled,
+.clip-bin-select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.clip-tools {
+  margin-bottom: 0.45rem;
 }
 
 .wipe-wrap {

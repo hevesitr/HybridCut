@@ -22,6 +22,20 @@ import {
 /** Előnézet nézet: alapból Forrás (teljes RGB), nem wipe / nem csak alpha. */
 type ViewMode = "source" | "mask" | "cutout" | "compare";
 
+type ClipRow = {
+  clip_id: string;
+  track?: number;
+};
+
+/** Match TimelineDoc.remove_clip: last V1 stays; V2 / extra V1 can go. */
+function canRemoveClip(clips: ClipRow[], clipId: string | null | undefined): boolean {
+  if (!clipId) return false;
+  const target = clips.find((c) => c.clip_id === clipId);
+  if (!target) return false;
+  if ((target.track ?? 0) >= 1) return true;
+  return clips.filter((c) => (c.track ?? 0) === 0).length > 1;
+}
+
 function rvmChip(status: EditorStatus | null) {
   const rvm = status?.rvm;
   const backend = (status?.backend || rvm?.engine_backend || "").toLowerCase();
@@ -722,6 +736,29 @@ export default function App() {
     }
   };
 
+  /** Delete / Backspace — remove selected clip (apex/concat clip tools). */
+  const deleteSelectedClip = useEffectEvent(() => {
+    const st = statusRef.current;
+    if (busy || st?.bake_running || st?.analyse_running) return;
+    const list = st?.timeline?.clips ?? [];
+    const cid = st?.timeline?.selected_clip_id;
+    if (!cid || !canRemoveClip(list, cid)) return;
+    void runAction("remove", { clip_id: cid });
+  });
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      const el = e.target as HTMLElement | null;
+      const tag = (el?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || el?.isContentEditable) return;
+      e.preventDefault();
+      deleteSelectedClip();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const onAnalyse = async () => {
     setBusy(true);
     setError(null);
@@ -1222,26 +1259,114 @@ export default function App() {
           {clips.length > 0 && (
             <div className="clip-bin">
               <h3>Klip lista ({clips.length})</h3>
-              {clips.map((c, i) => (
-                <button
-                  key={c.clip_id}
-                  type="button"
-                  className={`clip-bin-item ${c.clip_id === selected ? "active" : ""}`}
-                  disabled={locked}
-                  onClick={() => void runAction("select", { clip_id: c.clip_id })}
-                  title="Klip kiválasztása az idővonalon."
-                >
-                  <span>
-                    {(c.track ?? 0) >= 1 ? "V2" : "V1"} #{i + 1} {c.display_label || c.clip_id}
-                  </span>
-                  <span>{(c.source_duration_sec ?? c.out_sec - c.in_sec).toFixed(1)}s</span>
-                </button>
-              ))}
+              {clips.map((c, i) => {
+                const removable = canRemoveClip(clips, c.clip_id);
+                return (
+                  <div
+                    key={c.clip_id}
+                    className={`clip-bin-item ${c.clip_id === selected ? "active" : ""}`}
+                  >
+                    <button
+                      type="button"
+                      className="clip-bin-select"
+                      disabled={locked}
+                      onClick={() => void runAction("select", { clip_id: c.clip_id })}
+                      title="Klip kiválasztása az idővonalon."
+                    >
+                      <span>
+                        {(c.track ?? 0) >= 1 ? "V2" : "V1"} #{i + 1}{" "}
+                        {c.display_label || c.clip_id}
+                      </span>
+                      <span>
+                        {(c.source_duration_sec ?? c.out_sec - c.in_sec).toFixed(1)}s
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="clip-bin-del"
+                      disabled={locked || !removable}
+                      onClick={() => void runAction("remove", { clip_id: c.clip_id })}
+                      title={
+                        removable
+                          ? "Klip törlése (Delete)"
+                          : "Az utolsó V1 klip nem törölhető"
+                      }
+                    >
+                      Töröl
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
 
           <div className="trim-block">
             <h3>Be / Ki · ETA frissül</h3>
+            <div className="actions tight clip-tools">
+              <button
+                type="button"
+                className="btn"
+                disabled={locked || !clips.length}
+                onClick={() => runAction("duplicate")}
+                title="Kijelölt klip másolása."
+              >
+                Duplikál
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={locked || !canRemoveClip(clips, selected)}
+                onClick={() => runAction("remove", { clip_id: selected ?? undefined })}
+                title="Kijelölt klip törlése (Delete / Backspace)."
+              >
+                Töröl
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={locked || !clips.length}
+                onClick={() => runAction("cut", { t_sec: tSec })}
+                title="Klip felvágása a lejátszási fejnél."
+              >
+                Vágás
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={locked || !selected}
+                onClick={() => runAction("move", { clip_id: selected ?? undefined, direction: -1 })}
+                title="Klip léptetése balra."
+              >
+                ←
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={locked || !selected}
+                onClick={() => runAction("move", { clip_id: selected ?? undefined, direction: 1 })}
+                title="Klip léptetése jobbra."
+              >
+                →
+              </button>
+              <button
+                type="button"
+                className="btn accent"
+                disabled={locked || !selected}
+                onClick={() => runAction("to_broll", { clip_id: selected ?? undefined })}
+                title="Kijelölt klip áthelyezése a V2 B-roll sávra."
+              >
+                → B-roll
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={locked || !selected}
+                onClick={() => runAction("to_v1", { clip_id: selected ?? undefined })}
+                title="Kijelölt klip visszarakása az V1 sávra."
+              >
+                → V1
+              </button>
+            </div>
             <div className="trim-row">
               <label title="Klip kezdőpontja másodpercben.">
                 Be
@@ -1425,69 +1550,6 @@ export default function App() {
                 title="Explorer: kijelöli a *_full_nobg.mov fájlt."
               >
                 Explorer
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || !clips.length}
-                onClick={() => runAction("duplicate")}
-                title="Kijelölt klip másolása."
-              >
-                Duplikál
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || clips.length < 2}
-                onClick={() => runAction("remove")}
-                title="Kijelölt klip törlése."
-              >
-                Töröl
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || !clips.length}
-                onClick={() => runAction("cut", { t_sec: tSec })}
-                title="Klip felvágása a lejátszási fejnél."
-              >
-                Vágás
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || !selected}
-                onClick={() => runAction("move", { clip_id: selected ?? undefined, direction: -1 })}
-                title="Klip léptetése balra."
-              >
-                ←
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || !selected}
-                onClick={() => runAction("move", { clip_id: selected ?? undefined, direction: 1 })}
-                title="Klip léptetése jobbra."
-              >
-                →
-              </button>
-              <button
-                type="button"
-                className="btn accent"
-                disabled={locked || !selected}
-                onClick={() => runAction("to_broll", { clip_id: selected ?? undefined })}
-                title="Kijelölt klip áthelyezése a V2 B-roll sávra."
-              >
-                → B-roll
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || !selected}
-                onClick={() => runAction("to_v1", { clip_id: selected ?? undefined })}
-                title="Kijelölt klip visszarakása az V1 sávra."
-              >
-                → V1
               </button>
             </div>
             <label

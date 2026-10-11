@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-11-timeline-bg` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-11-clip-delete` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-11-timeline-bg
+# expect: 2026-10-11-clip-delete
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA PATH (no remount pip): .\hybrid_cut\start_hybrid_cuda.ps1
@@ -72,7 +72,15 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 ---
 
-## Stamp — timeline-bg (`2026-10-11-timeline-bg`)
+## Stamp — clip-delete (`2026-10-11-clip-delete`)
+
+On top of `2026-10-11-timeline-bg`. **Clip tools back in the rail (apex/concat):** per-row **Töröl** on Klip lista; **Duplikál / Töröl / Vágás / ← → / → B-roll / → V1** next to Be/Ki (not buried under Részletek); Delete/Backspace removes the selected clip; last V1 stays protected. Lime/orange look2 retained.
+
+Restart: [`docs/clip-delete-restart.md`](docs/clip-delete-restart.md) · store [`../hybrid-clip-delete-restart.md`](../hybrid-clip-delete-restart.md)
+
+---
+
+## Prior — timeline-bg (`2026-10-11-timeline-bg`)
 
 On top of `2026-10-11-concat-flow`. **Multi-track timeline + BG remove only:** V1/V2 clip blocks with click-select, drag reorder / vertical track stack, Be/Ki trim handles; preview composites both tracks at playhead; bake uses the same plan; Varázsceruza scanline flood-fill + per-selected-clip seed. Lime/orange look2 retained. Hungarian labels.
 
