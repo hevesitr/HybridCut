@@ -708,6 +708,30 @@ export default function App() {
     }
   };
 
+  const runAiPolish = async (clipId: string) => {
+    setBusy(true);
+    setError(null);
+    setNote("Polírozás… (AI sáv · apex él)");
+    try {
+      const st = await api.timelineAction({ action: "ai_polish", clip_id: clipId });
+      setStatus(st);
+      syncTrimFromStatus(st);
+      const t = st.timeline?.playhead_sec ?? tSec;
+      setTSec(t);
+      const polishHu = st.ai_polish?.label_hu || "Polírozás kész";
+      setNote(polishHu);
+      setViewMode("cutout");
+      if (st.timeline?.clips?.length) {
+        await runPreview(t, st, undefined, { preferCutout: true });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setNote("Polírozás hiba");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const runAction = async (
     action:
       | "duplicate"
@@ -718,6 +742,7 @@ export default function App() {
       | "to_broll"
       | "to_v1"
       | "set_track"
+      | "ai_polish"
       | "place"
       | "trim_edge"
       | "set_transform"
@@ -751,9 +776,10 @@ export default function App() {
         cut: "Klip felvágva",
         move: "Klip áthelyezve",
         select: "Klip kiválasztva — BG / Varázsceruza erre megy",
-        to_broll: "Áthelyezve V2-re",
+        to_broll: "Áthelyezve AI sávra",
         to_v1: "Áthelyezve V1-re",
-        set_track: "Sáv váltva (V1/V2)",
+        set_track: "Sáv váltva (V1 / AI sáv)",
+        ai_polish: "Polírozás kész",
         place: "Klip áthelyezve az idővonalon",
         trim_edge: "Be/Ki trim frissítve",
         set_transform: "Pozíció / méret frissítve",
@@ -761,6 +787,16 @@ export default function App() {
       };
       if (!opts?.quiet) setNote(labels[action] || `Timeline: ${action}`);
       if (action === "select") void refreshSeed();
+      // Stack onto AI sáv → auto-run person cutout / edge polish (existing RVM/APEX)
+      const polishId =
+        action !== "ai_polish" && typeof st.ai_polish_recommended === "string"
+          ? st.ai_polish_recommended
+          : null;
+      if (polishId) {
+        if (!opts?.quiet) setBusy(false);
+        await runAiPolish(polishId);
+        return;
+      }
       if (st.timeline?.clips?.length) await runPreview(t, st);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1115,9 +1151,12 @@ export default function App() {
       if (png) setSeedPng(png);
       const pick = st.pick;
       const label = pick?.label_hu || st.seed_part_label_hu || "Rész";
+      const fullPerson = Boolean(pick?.full_person);
       const msg = args.erase
-        ? `Varázsceruza: ${label} törölve`
-        : `Varázsceruza: ${label} kijelölve — export = csak ez a rész`;
+        ? fullPerson
+          ? "Varázsceruza: rész törölve — teljes ember auto maszk"
+          : `Varázsceruza: ${label} törölve`
+        : `Varázsceruza: ${label} kijelölve — export = csak ez a rész (Teljes ember = vissza)`;
       setNote(msg);
       showToast(msg);
       setViewMode("cutout");
@@ -1137,11 +1176,16 @@ export default function App() {
   };
 
   const clearSeedMask = async () => {
+    const wasFace = statusRef.current?.seed_mode === "replace";
     try {
       const st = await api.clearSeed();
       setStatus(st);
       setSeedPng(null);
-      setNote("Kézi finomítás törölve — auto RVM marad");
+      const msg = wasFace
+        ? "Teljes ember visszaállítva — auto RVM maszk (nem kell Varázsceruza)"
+        : "Kézi finomítás törölve — auto RVM marad";
+      setNote(msg);
+      showToast(msg);
       await runPreview(tSec, st, undefined, { preferCutout: true });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1195,7 +1239,7 @@ export default function App() {
 
   if (!hasMedia) {
     return (
-      <div className="app empty concat-home">
+      <div className="app empty concat-home look-peak">
         {dragOver ? (
           <div className="drop-overlay">
             <strong>Ejtés: videó betöltése</strong>
@@ -1209,7 +1253,7 @@ export default function App() {
             <span className="gpu-chip" title="Cél GPU — helyi, ingyenes">
               RTX 3060
             </span>
-            <p className="empty-tagline">Helyi cutout · Concat-szerű szerkesztő</p>
+            <p className="empty-tagline">Helyi cutout · CapCut-szintű szerkesztő</p>
           </div>
           <div className="sync">
             <div className="sync-stamp">{status?.sync_version ?? "…"}</div>
@@ -1266,7 +1310,7 @@ export default function App() {
               <div className="empty-drop-brand brand-mark">HybridCut</div>
               <p className="empty-drop-title">Projektek</p>
               <p className="empty-drop-sub">
-                Húzd ide a videót, vagy indíts új projektet. Háttéreltávolítás → C:\bgcut
+                Húzd ide a videót, vagy indíts új projektet. Megnyitás → Cutout → Export · C:\bgcut
               </p>
               <div className="home-project-actions">
                 <button
@@ -1303,8 +1347,8 @@ export default function App() {
   }
 
   return (
-    <div className="app">
-      {/* Compact editor chrome: topbar + workspace only (no separate 1fr intel row). */}
+    <div className="app look-peak">
+      {/* Compact editor chrome: topbar + workspace only (no separate 1fr intel row). look-peak visual shell. */}
 
       <header className="topbar">
         <div className="topbar-left">
@@ -1367,8 +1411,10 @@ export default function App() {
                 {viewMode === "compare"
                   ? "Húzd a vonalat a képen — maszk balra, cutout jobbra"
                   : paintOnPreview
-                    ? "Ecset / Radír a képen · Varázsceruza = arc / rész → nobg"
-                    : "Forrás betöltéskor · Előnézet után Cutout, ha van ember-maszk"}
+                    ? status?.seed_mode === "replace"
+                      ? "Arc mód aktív — Teljes ember gombbal vissza a teljes személyhez"
+                      : "Alap: teljes ember auto · Ecset finomít · Varázsceruza = opcionális arc"
+                    : "Forrás betöltéskor · Előnézet → Cutout (teljes ember auto maszk)"}
               </p>
             </div>
             <div className="preview-tools" role="radiogroup" aria-label="Előnézet nézet">
@@ -1526,6 +1572,8 @@ export default function App() {
                   initialMaskPngB64={seedPng}
                   width={preview?.width ?? 480}
                   height={preview?.height ?? 360}
+                  seedMode={status?.seed_mode}
+                  seedPartLabelHu={status?.seed_part_label_hu}
                   disabled={
                     !!status?.bake_running ||
                     !!status?.analyse_running ||
@@ -1533,6 +1581,7 @@ export default function App() {
                     moveMode
                   }
                   onWandPick={onWandPick}
+                  onRestoreFullPerson={() => void clearSeedMask()}
                   onPaintGesture={setPaintGesture}
                   onCommit={(png) => void commitSeed(png, { quiet: true })}
                   onClear={() => void clearSeedMask()}
@@ -1577,6 +1626,9 @@ export default function App() {
                   track,
                   timeline_start_sec: start,
                 });
+              }}
+              onPolish={(clipId) => {
+                void runAiPolish(clipId);
               }}
               onAddClip={() => appendRef.current?.click()}
               onDelete={() => void runAction("remove", { clip_id: selected ?? undefined })}
@@ -1635,8 +1687,11 @@ export default function App() {
               initialMaskPngB64={seedPng}
               width={preview?.width ?? 480}
               height={preview?.height ?? 360}
+              seedMode={status?.seed_mode}
+              seedPartLabelHu={status?.seed_part_label_hu}
               disabled={locked || !preview}
               onWandPick={onWandPick}
+              onRestoreFullPerson={() => void clearSeedMask()}
               onPaintGesture={setPaintGesture}
               onCommit={(png) => void commitSeed(png)}
               onClear={() => void clearSeedMask()}

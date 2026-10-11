@@ -1,6 +1,7 @@
-"""Paint-face contracts — stamp ``2026-10-11-paint-face``.
+"""Paint-face contracts (kept under person-auto stamp).
 
 Radír timeline isolation + Varázsceruza face-only nobg (replace seed mode).
+Full-person default restored in ``2026-10-11-ai-tracks``.
 """
 
 from __future__ import annotations
@@ -22,11 +23,13 @@ FACE = ROOT / "backend" / "hybrid_editor" / "cache" / "face_pick.py"
 ROUTES = ROOT / "backend" / "hybrid_editor" / "api" / "routes.py"
 SESSION = ROOT / "backend" / "hybrid_editor" / "session.py"
 README = ROOT / "README.md"
-RESTART = ROOT / "docs" / "paint-face-restart.md"
+RESTART = ROOT / "docs" / "look-peak-restart.md"
+PAINT_RESTART = ROOT / "docs" / "paint-face-restart.md"
 
 
 def test_sync_stamp_paint_face():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-paint-face"
+    # Superseded tip stamp; paint-face contracts still required.
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-look-peak"
 
 
 def test_face_pick_ellipse_on_synthetic_portrait():
@@ -121,14 +124,16 @@ def test_ui_varazsceruza_face_pick_wire():
 
 def test_readme_restart_stamp():
     readme = README.read_text(encoding="utf-8")
+    assert "2026-10-11-ai-tracks" in readme
     assert "2026-10-11-paint-face" in readme
     assert RESTART.is_file()
     restart = RESTART.read_text(encoding="utf-8")
-    assert "2026-10-11-paint-face" in restart
+    assert "2026-10-11-ai-tracks" in restart
     assert "Varázsceruza" in restart
-    assert "Radír" in restart
+    assert "Teljes ember" in restart
+    assert PAINT_RESTART.is_file()
     css = CSS.read_text(encoding="utf-8")
-    assert "2026-10-11-paint-face" in css
+    assert "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
 
 
 def test_nobg_layer_transform_still_present():

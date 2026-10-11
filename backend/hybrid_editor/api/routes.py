@@ -63,7 +63,7 @@ class TimelineActionBody(BaseModel):
         ...,
         description=(
             "duplicate|remove|cut|move|select|to_broll|to_v1|"
-            "set_track|place|trim_edge|set_transform|reset_transform"
+            "set_track|ai_polish|place|trim_edge|set_transform|reset_transform"
         ),
     )
     clip_id: Optional[str] = None

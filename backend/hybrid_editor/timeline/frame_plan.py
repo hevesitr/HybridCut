@@ -18,7 +18,7 @@ def _clip_id() -> str:
 
 @dataclass
 class ClipRange:
-    """One media clip on a timeline track (0=V1 main, 1=V2 overlay/B-roll)."""
+    """One media clip on a timeline track (0=V1 main, 1=AI sáv / V2 overlay)."""
 
     media_path: str
     clip_id: str = field(default_factory=_clip_id)
@@ -33,7 +33,7 @@ class ClipRange:
     height: int = 0
     media_duration_sec: float = 0.0
     label: str = ""
-    # 0 = V1 main (sequential pack), 1 = V2 overlay / B-roll
+    # 0 = V1 main (sequential pack), 1 = AI sáv (V2 overlay / polish lane)
     track: int = 0
     # CapCut-like transform — center offset as fraction of canvas (−1…1), scale 1=100%
     pos_x: float = 0.0
@@ -41,6 +41,10 @@ class ClipRange:
     scale: float = 1.0
     # True for *_full_nobg.mov / alpha WebM — decode+composite preserve alpha (no re-matte)
     has_alpha: bool = False
+    # AI sáv: clip stacked for person cutout / edge polish orchestration
+    ai_lane: bool = False
+    # idle | pending | running | done | error
+    ai_polish: str = "idle"
 
     def effective_out(self) -> float:
         end = self.out_sec if self.out_sec > 0 else self.media_duration_sec
@@ -61,11 +65,22 @@ class ClipRange:
         return name or self.clip_id
 
     def track_label(self) -> str:
-        if self.has_alpha and int(self.track) >= 1:
-            return "V2 nobg"
+        if int(self.track) >= 1:
+            if self.has_alpha:
+                return "AI sáv · nobg"
+            status = (self.ai_polish or "idle").strip().lower()
+            if status == "running":
+                return "AI sáv · Polírozás…"
+            if status == "done":
+                return "AI sáv · kész"
+            if status == "pending":
+                return "AI sáv · vár"
+            if status == "error":
+                return "AI sáv · hiba"
+            return "AI sáv"
         if self.has_alpha:
             return "V1 nobg"
-        return "V2 B-roll" if int(self.track) >= 1 else "V1"
+        return "V1"
 
 
 @dataclass(frozen=True)
@@ -215,7 +230,7 @@ class TimelineDoc:
         *,
         timeline_start_sec: Optional[float] = None,
     ) -> bool:
-        """Move clip to V1 (0) or V2 (1); optional free start on V2."""
+        """Move clip to V1 (0) or AI sáv / V2 (1); optional free start on AI lane."""
         clip = self._find(clip_id)
         if clip is None:
             return False
@@ -237,7 +252,14 @@ class TimelineDoc:
             # Alpha nobg overlays stay fully opaque; plain B-roll softens slightly
             if clip.opacity >= 0.999 and not clip.has_alpha:
                 clip.opacity = 0.85
+            clip.ai_lane = True
+            # Stack onto AI sáv → queue person/edge polish (orchestration, not new model)
+            if not clip.has_alpha and (clip.ai_polish or "idle") in {"idle", "error"}:
+                clip.ai_polish = "pending"
         else:
+            clip.ai_lane = False
+            if (clip.ai_polish or "") == "pending":
+                clip.ai_polish = "idle"
             if not clip.has_alpha:
                 clip.opacity = 1.0
             self.relayout_sequential()
@@ -379,13 +401,16 @@ class TimelineDoc:
             scale=max(0.05, float(scale)),
         )
         if int(clip.track) >= 1:
-            # Overlay / B-roll: place at playhead (or explicit start); do not pack into V1
+            # AI sáv / overlay: place at playhead (or explicit start); do not pack into V1
             start = (
                 float(timeline_start_sec)
                 if timeline_start_sec is not None
                 else float(self.playhead_sec)
             )
             clip.timeline_start_sec = max(0.0, start)
+            clip.ai_lane = True
+            if not clip.has_alpha and (clip.ai_polish or "idle") == "idle":
+                clip.ai_polish = "pending"
             self.clips.append(clip)
         elif after_clip_id:
             idx = next((i for i, c in enumerate(self.clips) if c.clip_id == after_clip_id), -1)
@@ -420,7 +445,7 @@ class TimelineDoc:
         pos_y: float = 0.0,
         scale: float = 1.0,
     ) -> ClipRange:
-        """Convenience: place media on V2 overlay track at playhead."""
+        """Convenience: place media on AI sáv (V2) at playhead."""
         return self.add_clip(
             media_path=media_path,
             duration_sec=duration_sec,
@@ -429,7 +454,7 @@ class TimelineDoc:
             height=height,
             in_sec=in_sec,
             out_sec=out_sec,
-            label=label or ("nobg" if has_alpha else "B-roll"),
+            label=label or ("nobg" if has_alpha else "AI"),
             track=1,
             timeline_start_sec=timeline_start_sec,
             opacity=1.0 if has_alpha else opacity,
@@ -562,7 +587,7 @@ class TimelineDoc:
             "selected_clip_id": self.selected_clip_id,
             "tracks": [
                 {"id": 0, "label": "V1"},
-                {"id": 1, "label": "V2 B-roll"},
+                {"id": 1, "label": "AI sáv"},
             ],
             "clips": [
                 {
@@ -571,6 +596,14 @@ class TimelineDoc:
                     "source_duration_sec": c.source_duration(),
                     "display_label": c.display_label(),
                     "track_label": c.track_label(),
+                    "ai_lane": bool(c.ai_lane or int(c.track) >= 1),
+                    "ai_polish": (c.ai_polish or "idle"),
+                    "ai_polish_label_hu": {
+                        "pending": "Polírozás vár",
+                        "running": "Polírozás…",
+                        "done": "Polírozás kész",
+                        "error": "Polírozás hiba",
+                    }.get((c.ai_polish or "idle").lower(), ""),
                 }
                 for c in self.clips
             ],

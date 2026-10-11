@@ -1,4 +1,4 @@
-"""Timeline + BG remove + nobg-layer contracts — stamp ``2026-10-11-paint-face``.
+"""Timeline + BG remove + nobg-layer contracts — stamp ``2026-10-11-ai-tracks``.
 
 Source-contract + TimelineDoc drag/trim/track + composite helper (no ORT).
 """
@@ -29,7 +29,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_timeline_bg():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-paint-face"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-look-peak"
 
 
 def test_remove_extra_v1_and_v2():
@@ -188,10 +188,12 @@ def test_ui_timeline_drag_trim_wand():
     assert "onTrimEdge" in tl
     assert "onSetTrack" in tl
     assert "tl-handle" in tl
-    assert "V1" in tl and "V2" in tl
+    assert "V1" in tl and ("AI sáv" in tl or "V2" in tl)
+    assert "onPolish" in tl or "Polírozás" in tl
     app = APP.read_text(encoding="utf-8")
     assert "trim_edge" in app
     assert "set_track" in app
+    assert "ai_polish" in app or "runAiPolish" in app
     assert "selectedClipId={selected}" in app
     assert "clip-bin-del" in app
     assert "canRemoveClip" in app
@@ -216,7 +218,7 @@ def test_ui_timeline_drag_trim_wand():
     assert "trim_edge" in api
     assert "set_track" in api
     css = CSS.read_text(encoding="utf-8")
-    assert "2026-10-11-paint-face" in css
+    assert "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
     assert ".clip-bin-del" in css
     assert ".tl-handle" in css
     assert ".tl-chrome-bar" in css

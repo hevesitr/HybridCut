@@ -20,6 +20,11 @@ export type ClipInfo = {
   scale?: number;
   /** *_full_nobg.mov / alpha WebM — preserve transparency. */
   has_alpha?: boolean;
+  /** Track 1 = AI sáv (person cutout / edge polish lane). */
+  ai_lane?: boolean;
+  /** idle | pending | running | done | error */
+  ai_polish?: string;
+  ai_polish_label_hu?: string;
 };
 
 export type EditorStatus = {
@@ -105,6 +110,8 @@ export type EditorStatus = {
   seed_mode?: "union" | "replace" | string;
   seed_part?: string | null;
   seed_part_label_hu?: string | null;
+  /** False only while optional face/part replace is active this session. */
+  full_person_matte?: boolean;
   mask_rate?: number;
   analyse_running?: boolean;
   analyse_progress?: number;
@@ -113,6 +120,14 @@ export type EditorStatus = {
   intelligence?: Record<string, unknown>;
   /** CapCut-like sharp person edges (default on for Max/export). */
   sharp_edges?: boolean;
+  /** After stack onto AI sáv — UI should auto-run Polírozás. */
+  ai_polish_recommended?: string | null;
+  ai_polish?: {
+    clip_id?: string | null;
+    status?: string;
+    label_hu?: string;
+    lane_label_hu?: string;
+  } | null;
   /** Max without MatAnyone2 weights → false; clear HU label in person_matte_label_hu */
   matanyone2_active?: boolean;
   person_matte_label_hu?: string | null;
@@ -239,6 +254,7 @@ export const api = {
       | "to_broll"
       | "to_v1"
       | "set_track"
+      | "ai_polish"
       | "place"
       | "trim_edge"
       | "set_transform"
@@ -294,6 +310,7 @@ export const api = {
           method?: string;
           erase?: boolean;
           faces_found?: number;
+          full_person?: boolean;
         };
       }
     >("/api/seed/pick", {

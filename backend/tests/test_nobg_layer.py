@@ -1,4 +1,4 @@
-"""Nobg movable transparent layer — stamp ``2026-10-11-paint-face``.
+"""Nobg movable transparent layer — stamp ``2026-10-11-ai-tracks``.
 
 Research subset shipped: CapCut overlay cutout on V2, position X/Y, scale,
 alpha preserve, reset, result-card → timeline. No keyframes / rotation / blend modes.
@@ -35,7 +35,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_nobg_layer():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-paint-face"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-look-peak"
 
 
 def test_looks_like_alpha_media():
@@ -155,7 +155,7 @@ def test_ui_pozicio_nobg_timeline():
     assert "pos_x" in api
     assert "has_alpha" in api
     css = CSS.read_text(encoding="utf-8")
-    assert "2026-10-11-paint-face" in css
+    assert "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
     assert ".transform-drag-layer" in css
     assert ".transform-block" in css
 

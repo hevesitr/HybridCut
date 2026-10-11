@@ -28,6 +28,9 @@ type Props = {
   autoCommitOnStrokeEnd?: boolean;
   /** Selected timeline clip — wand/seed apply to this clip's mask. */
   selectedClipId?: string | null;
+  /** replace = optional face-only (Varázsceruza); union/default = full person. */
+  seedMode?: "union" | "replace" | string | null;
+  seedPartLabelHu?: string | null;
   /**
    * Varázsceruza part-pick (face-only). Normalized coords in source frame space.
    * When omitted, falls back to local colour flood (legacy).
@@ -37,6 +40,8 @@ type Props = {
     yNorm: number;
     erase: boolean;
   }) => Promise<WandPickResult>;
+  /** Exit face-only → full-person auto RVM matte. */
+  onRestoreFullPerson?: () => void;
   /** Fires when a paint stroke is actively capturing the pointer (timeline must ignore). */
   onPaintGesture?: (active: boolean) => void;
   onCommit: (pngB64: string) => void;
@@ -217,11 +222,15 @@ export function SeedPaint({
   frame,
   autoCommitOnStrokeEnd = false,
   selectedClipId = null,
+  seedMode = "union",
+  seedPartLabelHu = null,
   onWandPick,
+  onRestoreFullPerson,
   onPaintGesture,
   onCommit,
   onClear,
 }: Props) {
+  const faceOnly = seedMode === "replace";
   const bgRef = useRef<HTMLCanvasElement>(null);
   const maskRef = useRef<HTMLCanvasElement>(null);
   const frameWrapRef = useRef<HTMLDivElement>(null);
@@ -658,7 +667,7 @@ export function SeedPaint({
         type="button"
         className={`btn ${tool === "wand" ? "primary" : ""}`}
         disabled={disabled}
-        title="Varázsceruza: kattints az arcra — csak az arc (rész) kerül a nobg alphába. Alt+katt = törlés."
+        title="Opcionális: kattints az arcra — csak az arc kerül a nobg alphába. Alapból a teljes ember automatikus. Alt+katt = törlés."
         onClick={() => setTool("wand")}
       >
         Varázsceruza
@@ -712,12 +721,33 @@ export function SeedPaint({
         className="btn"
         disabled={disabled}
         onClick={localClear}
-        title="Kézi maszk törlése."
+        title={
+          faceOnly
+            ? "Arc mód törlése — vissza a teljes ember auto maszhoz."
+            : "Kézi finomítás törlése — auto ember-maszk marad."
+        }
       >
-        Maszk törlése
+        {faceOnly ? "Teljes ember" : "Maszk törlése"}
       </button>
     </div>
   );
+
+  const modeBanner = faceOnly ? (
+    <p className="seed-mode-banner" role="status">
+      Arc mód ({seedPartLabelHu || "Rész"}) — export csak ezt a részt viszi.{" "}
+      <button
+        type="button"
+        className="linkish"
+        disabled={disabled}
+        onClick={() => {
+          if (onRestoreFullPerson) onRestoreFullPerson();
+          else onClear();
+        }}
+      >
+        Vissza: teljes ember
+      </button>
+    </p>
+  ) : null;
 
   const maskCanvas = (
     <canvas
@@ -735,10 +765,10 @@ export function SeedPaint({
         disabled
           ? "Mozgatás be — festés szünetel (kapcsold ki a Mozgatást a festéshez)"
           : tool === "wand"
-            ? "Varázsceruza — kattints az arcra (csak arc nobg)"
+            ? "Varázsceruza (opcionális) — kattints az arcra a face-only nobghoz"
             : tool === "erase"
               ? "Radír — csak az előnézet maszkon"
-              : "Fesd a kézi maszkot a forrás képkockára."
+              : "Fesd a kézi finomítást a teljes ember auto maszkra."
       }
     />
   );
@@ -746,32 +776,39 @@ export function SeedPaint({
   if (docked) {
     return (
       <div
-        className={`seed-paint seed-paint--docked${paintingUi ? " seed-painting" : ""}`}
+        className={`seed-paint seed-paint--docked${paintingUi ? " seed-painting" : ""}${faceOnly ? " seed-paint--face-only" : ""}`}
         data-paint-tool={tool}
+        data-seed-mode={faceOnly ? "replace" : "union"}
       >
         {tools}
+        {modeBanner}
         <div className="seed-frame" ref={frameWrapRef}>
           {frame}
           {maskCanvas}
         </div>
         {actions}
         <p className="seed-hint seed-hint--docked">
-          Ecset / Radír csak az előnézeten · Varázsceruza = arc / rész → átlátszó nobg
+          Alap: teljes ember auto (RVM) · Ecset/Radír = finomítás · Varázsceruza = opcionális arc
         </p>
       </div>
     );
   }
 
   return (
-    <div className={`seed-paint${paintingUi ? " seed-painting" : ""}`} data-paint-tool={tool}>
+    <div
+      className={`seed-paint${paintingUi ? " seed-painting" : ""}${faceOnly ? " seed-paint--face-only" : ""}`}
+      data-paint-tool={tool}
+      data-seed-mode={faceOnly ? "replace" : "union"}
+    >
       {tools}
+      {modeBanner}
       <div className="seed-stage">
         <canvas ref={bgRef} className="seed-bg" />
         {maskCanvas}
       </div>
       {actions}
       <p className="seed-hint">
-        Forrás a maszk alatt. Varázsceruza = arc-only nobg. Export → Max minőség.
+        Alap: teljes ember auto maszk. Varázsceruza opcionális (arc). Export → Max / Gyors.
       </p>
     </div>
   );

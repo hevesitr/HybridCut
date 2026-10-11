@@ -81,17 +81,65 @@ class EditorSession:
             return None
         return ROOT / "cache" / "seeds" / f"{Path(media_path).stem}_seed.png"
 
+    def _purge_seed_disk(self, sp: Optional[Path] = None) -> None:
+        """Delete seed PNG + meta (used for face-only / sticky replace cleanup)."""
+        from hybrid_editor.cache.seed_mask import seed_meta_path
+
+        path = sp if sp is not None else self._seed_path()
+        if path is None:
+            return
+        if path.is_file():
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        mp = seed_meta_path(path)
+        if mp.is_file():
+            try:
+                mp.unlink()
+            except OSError:
+                pass
+
     def _load_seed_for_selection(self) -> None:
-        """Swap in disk seed for the currently selected clip (or clear)."""
+        """Swap in disk seed for the currently selected clip (or clear).
+
+        Face-only (``replace``) is session-scoped and never restored from disk —
+        that was the person-auto hole: clip select re-armed sticky face gate.
+        """
         sp = self._seed_path()
         if sp is not None and sp.is_file():
             loaded = load_seed(sp)
             meta = load_seed_meta(sp)
-            self._apply_seed_to_engine(
-                loaded, mode=meta.get("mode"), part=meta.get("part")
-            )
+            mode = str(meta.get("mode") or "union").lower()
+            if mode == "replace":
+                self._purge_seed_disk(sp)
+                self._apply_seed_to_engine(None)
+            elif loaded is not None:
+                self._apply_seed_to_engine(
+                    loaded, mode="union", part=meta.get("part")
+                )
+            else:
+                self._apply_seed_to_engine(None)
         else:
             self._apply_seed_to_engine(None)
+
+    def _preview_matte_long(self) -> int:
+        """Long-side for timeline composite matte decode — Max keeps near-4K detail."""
+        if self.mode is EngineMode.MAX and self.sharp_edges:
+            try:
+                return max(960, int(os.environ.get("HYBRID_MAX_PREVIEW_LONG", "1440") or "1440"))
+            except ValueError:
+                return 1440
+        return 960
+
+    def _bake_matte_long(self) -> int:
+        """Long-side for multiclip bake decode — Max prefers native/4K-friendly."""
+        if self.mode is EngineMode.MAX:
+            try:
+                return max(1080, int(os.environ.get("HYBRID_MAX_BAKE_LONG", "2160") or "2160"))
+            except ValueError:
+                return 2160
+        return 720
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -183,6 +231,10 @@ class EditorSession:
                     {"face": "Arc", "region": "Rész"}.get(self._seed_part or "", None)
                     if self._seed_alpha is not None and self._seed_part
                     else None
+                ),
+                # True unless Varázsceruza face/part replace is active this session.
+                "full_person_matte": not (
+                    self._seed_alpha is not None and self._seed_mode == "replace"
                 ),
                 "mask_rate": MASK_RATE,
                 "intelligence": intel,
@@ -298,6 +350,8 @@ class EditorSession:
                 )
             else:
                 self.engine.clear_user_seed()
+            # Drop live quality-seed cache so next preview/bake re-reads mode.
+            self.engine._seed = None  # noqa: SLF001
 
     def _ensure_timeline(self, *, reset: bool = False, has_alpha: bool = False) -> None:
         from hybrid_editor.media.video_io import looks_like_alpha_media
@@ -399,18 +453,23 @@ class EditorSession:
                 if isinstance(self.engine, MaxQualityEngine):
                     self.engine.clear_user_seed()
                 self._ensure_timeline(reset=True, has_alpha=is_nobg)
-                # Restore seed from disk if present (survives reload) — skip for alpha masters
+                # Restore brush/lasso (union) seed from disk — skip for alpha masters.
+                # Face-only (replace) is session-scoped only — never reload from disk.
                 if not is_nobg:
                     sp = self._seed_path()
                     if sp is not None:
                         loaded = load_seed(sp)
                         if loaded is not None:
                             meta = load_seed_meta(sp)
-                            self._apply_seed_to_engine(
-                                loaded,
-                                mode=meta.get("mode"),
-                                part=meta.get("part"),
-                            )
+                            mode = str(meta.get("mode") or "union").lower()
+                            if mode == "replace":
+                                self._purge_seed_disk(sp)
+                            else:
+                                self._apply_seed_to_engine(
+                                    loaded,
+                                    mode="union",
+                                    part=meta.get("part"),
+                                )
             return self.status()
 
     def update_timeline(
@@ -477,17 +536,22 @@ class EditorSession:
                 else:
                     clip = self.timeline._find(cid)
                     if clip is None:
-                        raise RuntimeError("No clip to move to B-roll")
+                        raise RuntimeError("No clip to move to AI sáv")
                     if int(clip.track) >= 1:
-                        return self.status()
+                        return self._status_with_ai_polish(clip.clip_id)
                     if not self.timeline.set_track(
                         cid, 1, timeline_start_sec=float(self.timeline.playhead_sec)
                     ):
-                        raise RuntimeError("Need another V1 clip before promoting to B-roll")
+                        raise RuntimeError("Need another V1 clip before promoting to AI sáv")
+                moved = self.timeline._find(cid)
+                if moved is not None and int(moved.track) >= 1 and not moved.has_alpha:
+                    return self._status_with_ai_polish(moved.clip_id, recommend=True)
             elif act in {"to_v1", "demote_broll"}:
                 cid = kwargs.get("clip_id") or self.timeline.selected_clip_id
                 if not cid or not self.timeline.set_track(cid, 0):
                     raise RuntimeError("No clip")
+            elif act in {"ai_polish", "polish", "polirozas"}:
+                return self.polish_ai_clip(kwargs.get("clip_id"))
             elif act in {"place", "set_start"}:
                 cid = kwargs.get("clip_id") or self.timeline.selected_clip_id
                 start = kwargs.get("timeline_start_sec")
@@ -521,6 +585,121 @@ class EditorSession:
                 raise ValueError(f"Unknown timeline action: {action}")
             return self.status()
 
+    def _status_with_ai_polish(
+        self,
+        clip_id: Optional[str],
+        *,
+        recommend: bool = False,
+    ) -> dict[str, Any]:
+        st = self.status()
+        clip = None
+        if self.timeline is not None and clip_id:
+            clip = self.timeline._find(clip_id)
+        status = (clip.ai_polish if clip is not None else "idle") or "idle"
+        label_map = {
+            "pending": "Polírozás vár — AI sáv",
+            "running": "Polírozás…",
+            "done": "Polírozás kész",
+            "error": "Polírozás hiba",
+            "idle": "",
+        }
+        st["ai_polish"] = {
+            "clip_id": clip_id,
+            "status": status,
+            "label_hu": label_map.get(status.lower(), ""),
+            "lane_label_hu": "AI sáv",
+        }
+        if recommend and clip_id and status in {"pending", "idle", "error"}:
+            st["ai_polish_recommended"] = clip_id
+        return st
+
+    def polish_ai_clip(self, clip_id: Optional[str] = None) -> dict[str, Any]:
+        """Run existing RVM/APEX polish on an AI-sáv (stacked) clip — no new model.
+
+        Keeps full-person default (does not set seed_mode=replace / face-only).
+        """
+        with self._lock:
+            if self.timeline is None:
+                raise RuntimeError("Open a video first")
+            clip = self.timeline._find(clip_id)
+            if clip is None:
+                raise RuntimeError("Nincs klip a polírozáshoz")
+            # Stack onto AI sáv when another V1 remains (hand-drag multi-track)
+            if int(clip.track) == 0 and len(self.timeline.clips_on(0)) > 1:
+                if not self.timeline.set_track(
+                    clip.clip_id, 1, timeline_start_sec=float(clip.timeline_start_sec)
+                ):
+                    raise RuntimeError("Nem lehet AI sávra tenni")
+                clip = self.timeline._find(clip.clip_id)
+            if clip is None:
+                raise RuntimeError("Nincs klip a polírozáshoz")
+            clip.ai_lane = True
+            clip.ai_polish = "running"
+            self.timeline.selected_clip_id = clip.clip_id
+            mid_tl = float(clip.timeline_start_sec) + 0.5 * clip.source_duration()
+            self.timeline.set_playhead(mid_tl)
+
+            # Ensure Max + Éles szélek (existing apex polish path).
+            # AI Polírozás always uses full-person auto matte (person-fix2) —
+            # never inherit session face-only / replace from Varázsceruza.
+            if self._seed_mode == "replace" or (
+                self._seed_alpha is not None and self._seed_mode == "replace"
+            ):
+                self._apply_seed_to_engine(None)
+            if self.mode is not EngineMode.MAX:
+                media_path = clip.media_path
+                seed = self._seed_alpha
+                seed_mode = self._seed_mode
+                # Near-empty / face-only must not shadow auto full-person polish
+                if seed is not None:
+                    s = np.asarray(seed, dtype=np.float32)
+                    if s.ndim == 3:
+                        s = s[..., 0]
+                    if (
+                        float(s.max()) < 0.05
+                        or float((s > 0.15).mean()) < 0.002
+                        or str(seed_mode).lower() == "replace"
+                    ):
+                        seed = None
+                        self._seed_alpha = None
+                        seed_mode = "union"
+                old = self.engine
+                old.close()
+                self.mode = EngineMode.MAX
+                self.engine = create_engine(EngineMode.MAX)
+                self.sharp_edges = True
+                self._sync_sharp_to_engine()
+                self.media = self.engine.open_media(Path(media_path))
+                self._open_path = media_path
+                self._apply_seed_to_engine(
+                    seed, mode="union", part=None if seed is None else self._seed_part
+                )
+            else:
+                self.sharp_edges = True
+                self._sync_sharp_to_engine()
+                self._ensure_engine_media(clip.media_path)
+                # Reload union brush seed only — skip replace (person-fix2)
+                self._load_seed_for_selection()
+                if self._seed_mode == "replace":
+                    self._apply_seed_to_engine(None)
+
+            try:
+                from hybrid_editor.media.video_io import downscale_long_side, is_matte_empty, read_frame_at
+
+                src_t = float(clip.in_sec) + 0.5 * clip.source_duration()
+                bgr, _t = read_frame_at(Path(clip.media_path), src_t)
+                # Sharp 4K-friendly long-side (person-fix2 Max preview)
+                bgr = downscale_long_side(bgr, self._preview_matte_long())
+                alpha = self._matte_bgr(bgr, warmup=True)
+                ok = alpha is not None and not is_matte_empty(alpha)
+                clip.ai_polish = "done" if ok else "error"
+            except Exception as exc:  # noqa: BLE001
+                clip.ai_polish = "error"
+                st = self._status_with_ai_polish(clip.clip_id)
+                st["detail"] = f"Polírozás hiba: {exc}"[:240]
+                return st
+            return self._status_with_ai_polish(clip.clip_id)
+
     def get_frame_plan(self, t_sec: Optional[float] = None) -> dict[str, Any]:
         with self._lock:
             if self.timeline is None:
@@ -533,9 +712,12 @@ class EditorSession:
             return
         self.media = self.engine.open_media(Path(media_path))
         self._open_path = media_path
-        # Re-apply seed for Max when switching media
+        # Re-apply seed for Max when switching media (preserve union/replace mode).
         if isinstance(self.engine, MaxQualityEngine) and self._seed_alpha is not None:
-            self.engine.set_user_seed(self._seed_alpha)
+            self.engine.set_user_seed(
+                self._seed_alpha, mode=self._seed_mode, part=self._seed_part
+            )
+            self.engine._seed = None  # noqa: SLF001
 
     def _matte_bgr(self, bgr: "np.ndarray", *, warmup: bool = False) -> "np.ndarray":
         """Alpha for one BGR frame — selected-clip seed applies when engine has it."""
@@ -606,10 +788,14 @@ class EditorSession:
                     )
                     source_t = matte_layer.source_t_sec
                     self._ensure_engine_media(matte_layer.media_path)
-                    # Keep seed bound to selected clip media
+                    # Keep seed bound to selected clip media (mode-aware).
                     if self._seed_media_path() == matte_layer.media_path:
                         if isinstance(self.engine, MaxQualityEngine) and self._seed_alpha is not None:
-                            self.engine.set_user_seed(self._seed_alpha)
+                            self.engine.set_user_seed(
+                                self._seed_alpha,
+                                mode=self._seed_mode,
+                                part=self._seed_part,
+                            )
                     if overlays or getattr(matte_layer, "has_alpha", False):
                         overlay_meta = {
                             "overlay_layers": [
@@ -652,8 +838,9 @@ class EditorSession:
                 )
 
                 try:
+                    matte_long = self._preview_matte_long()
                     bgr, alpha, t = self._decode_layer_pixels(
-                        matte_layer, source_t, max_long=960, warmup=True
+                        matte_layer, source_t, max_long=matte_long, warmup=True
                     )
                     # Apply V1 transform when user repositioned the base cutout
                     if (
@@ -677,7 +864,7 @@ class EditorSession:
                     for ov in overlays:
                         try:
                             obgr, oalpha, _ = self._decode_layer_pixels(
-                                ov, ov.source_t_sec, max_long=960
+                                ov, ov.source_t_sec, max_long=matte_long
                             )
                             ov_frames.append(
                                 OverlayFrame(
@@ -839,14 +1026,18 @@ class EditorSession:
             apply_mode = mode if mode is not None else self._seed_mode
             apply_part = part if part is not None else self._seed_part
             self._apply_seed_to_engine(alpha, mode=apply_mode, part=apply_part)
-            sp = self._seed_path()
-            if sp is not None:
-                save_seed(
-                    sp,
-                    alpha,
-                    mode=self._seed_mode,
-                    part=self._seed_part,
-                )
+            # Persist union brush refine only — face-only (replace) stays session RAM.
+            if self._seed_mode == "replace":
+                self._purge_seed_disk()
+            else:
+                sp = self._seed_path()
+                if sp is not None:
+                    save_seed(
+                        sp,
+                        alpha,
+                        mode="union",
+                        part=self._seed_part,
+                    )
             st = self.status()
             st["seed_mask_png_b64"] = encode_alpha_png_b64(alpha)
             return st
@@ -879,10 +1070,34 @@ class EditorSession:
                 existing=self._seed_alpha,
             )
             alpha = result["alpha"]
-            if int(result.get("pixels") or 0) < 8 and not erase:
+            pixels = int(result.get("pixels") or 0)
+            if pixels < 8 and not erase:
                 raise RuntimeError(
                     "Varázsceruza: nincs találat az arcon — kattints az arcra"
                 )
+            # Erase that empties the part seed → back to full-person auto matte.
+            if erase and pixels < 8:
+                self._apply_seed_to_engine(None)
+                if isinstance(self.engine, MaxQualityEngine):
+                    self.engine._seed = None  # noqa: SLF001
+                    if hasattr(self.engine, "_stabilizer"):
+                        try:
+                            self.engine._stabilizer.reset()
+                        except Exception:
+                            pass
+                self._purge_seed_disk()
+                st = self.status()
+                st["seed_mask_png_b64"] = None
+                st["pick"] = {
+                    "part": None,
+                    "label_hu": "Teljes ember",
+                    "pixels": 0,
+                    "method": "clear-full-person",
+                    "erase": True,
+                    "faces_found": int(result.get("faces_found") or 0),
+                    "full_person": True,
+                }
+                return st
             part = str(result.get("part") or "region")
             self._apply_seed_to_engine(alpha, mode="replace", part=part)
             # Reset Max stabilizer/seed cache so next preview uses replace gate
@@ -893,23 +1108,18 @@ class EditorSession:
                         self.engine._stabilizer.reset()
                     except Exception:
                         pass
-            sp = self._seed_path()
-            if sp is not None:
-                save_seed(
-                    sp,
-                    alpha,
-                    mode=self._seed_mode,
-                    part=self._seed_part,
-                )
+            # Face-only is session RAM only — never write replace to disk.
+            self._purge_seed_disk()
             st = self.status()
             st["seed_mask_png_b64"] = encode_alpha_png_b64(alpha)
             st["pick"] = {
                 "part": part,
                 "label_hu": result.get("label_hu"),
-                "pixels": int(result.get("pixels") or 0),
+                "pixels": pixels,
                 "method": result.get("method"),
                 "erase": bool(erase),
                 "faces_found": int(result.get("faces_found") or 0),
+                "full_person": False,
             }
             return st
 
@@ -927,22 +1137,16 @@ class EditorSession:
             }
 
     def clear_seed_mask(self) -> dict[str, Any]:
-        from hybrid_editor.cache.seed_mask import seed_meta_path
-
         with self._lock:
             self._apply_seed_to_engine(None)
-            sp = self._seed_path()
-            if sp is not None and sp.is_file():
-                try:
-                    sp.unlink()
-                except OSError:
-                    pass
-                meta = seed_meta_path(sp)
-                if meta.is_file():
+            if isinstance(self.engine, MaxQualityEngine):
+                self.engine._seed = None  # noqa: SLF001
+                if hasattr(self.engine, "_stabilizer"):
                     try:
-                        meta.unlink()
-                    except OSError:
+                        self.engine._stabilizer.reset()
+                    except Exception:
                         pass
+            self._purge_seed_disk()
             return self.status()
 
     def _bake_timeline_multiclip(
@@ -992,8 +1196,9 @@ class EditorSession:
                 continue
             v1 = next((L for L in plan.layers if int(L.track) == 0), plan.layers[0])
             overlays = [L for L in plan.layers if int(L.track) >= 1]
+            bake_long = self._bake_matte_long()
             bgr, alpha, _ = self._decode_layer_pixels(
-                v1, v1.source_t_sec, max_long=720, warmup=(written == 0)
+                v1, v1.source_t_sec, max_long=bake_long, warmup=(written == 0)
             )
             from hybrid_editor.media.video_io import (
                 OverlayFrame,
@@ -1020,7 +1225,9 @@ class EditorSession:
             ov_frames = []
             for ov in overlays:
                 try:
-                    obgr, oalpha, _ = self._decode_layer_pixels(ov, ov.source_t_sec, max_long=720)
+                    obgr, oalpha, _ = self._decode_layer_pixels(
+                        ov, ov.source_t_sec, max_long=bake_long
+                    )
                     ov_frames.append(
                         OverlayFrame(
                             bgr=obgr,

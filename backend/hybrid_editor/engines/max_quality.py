@@ -92,6 +92,7 @@ class MaxQualityEngine(MattingEngine):
 
     def person_matte_info(self) -> dict:
         active = bool(self._adapter.available)
+        face_only = self._user_seed is not None and self._seed_mode == "replace"
         return {
             "matanyone2_active": active,
             "matanyone2_available": active,
@@ -99,7 +100,9 @@ class MaxQualityEngine(MattingEngine):
             "person_matte_backend": "matanyone2" if active else "rvm-quality-pipeline",
             "person_matte_label_hu": self.person_matte_label(),
             "auto_person_matte": True,
-            "manual_seed_refinement_only": True,
+            "full_person_default": not face_only,
+            "multi_person": True,
+            "manual_seed_refinement_only": not face_only,
         }
 
     def set_user_seed(
@@ -128,6 +131,9 @@ class MaxQualityEngine(MattingEngine):
         # Near-empty paint must not arm a "seed present" path that BG-clamps the frame.
         if float(a.max()) < 0.05 or float((a > 0.15).mean()) < 0.002:
             self._user_seed = None
+            # Drop sticky face-only (replace) when seed vanishes — full person returns.
+            self._seed_mode = "union"
+            self._seed_part = None
             return
         self._user_seed = a
 

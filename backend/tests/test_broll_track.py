@@ -68,5 +68,5 @@ def test_promote_and_to_dict_tracks():
     assert len(doc.clips_on(0)) == 1
     assert len(doc.clips_on(1)) == 1
     d = doc.to_dict()
-    assert d["tracks"][1]["label"] == "V2 B-roll"
+    assert d["tracks"][1]["label"] == "AI sáv"
     assert any(c["track"] == 1 for c in d["clips"])

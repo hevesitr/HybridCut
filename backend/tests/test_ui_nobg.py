@@ -1,4 +1,4 @@
-"""UI contracts for nobg result card + stamp ``2026-10-11-paint-face``."""
+"""UI contracts for nobg result card + stamp ``2026-10-11-ai-tracks``."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ HTML = ROOT / "frontend" / "index.html"
 
 
 def test_sync_stamp_concat_flow():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-paint-face"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-look-peak"
 
 
 def test_app_result_card_and_explorer():
@@ -96,7 +96,10 @@ def test_css_result_and_checker_motion():
     assert ".empty-workspace" in css
     assert ".empty-drop" in css
     assert "min(720px" not in css
-    assert "2026-10-11-paint-face" in css
+    assert "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
+    assert "@keyframes playhead-glow" in css
+    assert "@keyframes stage-focus" in css
+    assert "--ink-tl" in css
     # Concat-flow: Forrás/Cutout/Maszk fill stage (not tiny intrinsic proxy)
     assert "place-items: stretch" in css
     assert ".clip-add-row" in css

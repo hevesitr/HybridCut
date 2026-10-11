@@ -20,8 +20,10 @@ type Props = {
   onTrimEdge?: (clipId: string, edge: "in" | "out", timelineT: number) => void;
   /** Horizontal place / reorder. */
   onPlace?: (clipId: string, timelineStartSec: number) => void;
-  /** Vertical stack: drop onto V1 (0) or V2 (1). */
+  /** Vertical stack: drop onto V1 (0) or AI sáv / V2 (1). */
   onSetTrack?: (clipId: string, track: number, timelineStartSec?: number) => void;
+  /** Manual AI polírozás on AI-sáv clip. */
+  onPolish?: (clipId: string) => void;
   onAddClip?: () => void;
   onDelete?: () => void;
   onCut?: () => void;
@@ -29,7 +31,7 @@ type Props = {
 };
 
 const V1_COLORS = ["#8fd14f", "#6ecf7a", "#5bbf8a", "#3ecf9a"];
-const V2_COLORS = ["#c8e86a", "#a8d44a", "#9ad000", "#7ab800"];
+const AI_COLORS = ["#c8e86a", "#a8d44a", "#9ad000", "#7ab800"];
 
 type DragKind = "move" | "in" | "out";
 
@@ -71,6 +73,7 @@ export function TimelineTrack({
   onTrimEdge,
   onPlace,
   onSetTrack,
+  onPolish,
   onAddClip,
   onDelete,
   onCut,
@@ -297,10 +300,14 @@ export function TimelineTrack({
                 const width = (Math.max(0.05, end - start) / dur) * 100;
                 const selected = c.clip_id === selectedId;
                 const dragging = drag?.clipId === c.clip_id;
+                const polish = (c.ai_polish || "idle").toLowerCase();
+                const polishRunning = polish === "running" || polish === "pending";
                 return (
                   <div
                     key={c.clip_id}
-                    className={`tl-clip ${selected ? "selected" : ""} ${dragging ? "dragging" : ""}`}
+                    className={`tl-clip ${selected ? "selected" : ""} ${dragging ? "dragging" : ""}${
+                      trackIndex === 1 ? " tl-clip-ai" : ""
+                    }${polishRunning ? " tl-clip-polish" : ""}${polish === "done" ? " tl-clip-polish-done" : ""}`}
                     style={{
                       left: `${left}%`,
                       width: `${width}%`,
@@ -308,7 +315,9 @@ export function TimelineTrack({
                       borderColor: colors[i % colors.length],
                       opacity: st.mute ? 0.45 : 1,
                     }}
-                    title={`${c.display_label || c.clip_id} · ${c.track_label || label} · húzd a sávok között · szélek = Be/Ki`}
+                    title={`${c.display_label || c.clip_id} · ${c.track_label || label} · húzd a sávok között · szélek = Be/Ki${
+                      c.ai_polish_label_hu ? ` · ${c.ai_polish_label_hu}` : ""
+                    }`}
                     onPointerDown={(ev) => beginDrag(ev, c, "move")}
                   >
                     <button
@@ -320,6 +329,30 @@ export function TimelineTrack({
                       onPointerDown={(ev) => beginDrag(ev, c, "in")}
                     />
                     <span className="tl-clip-label">{c.display_label || c.clip_id}</span>
+                    {trackIndex === 1 && onPolish ? (
+                      <button
+                        type="button"
+                        className={`tl-polish-btn${polishRunning ? " running" : ""}`}
+                        title={
+                          polishRunning
+                            ? "Polírozás folyamatban…"
+                            : "Polírozás — ember-kivágás / él (RVM/APEX)"
+                        }
+                        aria-label="Polírozás"
+                        disabled={disabled || st.lock || polishRunning}
+                        onPointerDown={(ev) => {
+                          ev.preventDefault();
+                          ev.stopPropagation();
+                        }}
+                        onClick={(ev) => {
+                          ev.preventDefault();
+                          ev.stopPropagation();
+                          onPolish(c.clip_id);
+                        }}
+                      >
+                        {polishRunning ? "…" : "P"}
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className="tl-handle tl-handle-out"
@@ -418,9 +451,9 @@ export function TimelineTrack({
         ))}
       </div>
       {renderLane(v1, "V1", V1_COLORS, "v1", v1TrackRef, 0)}
-      {renderLane(v2, "V2", V2_COLORS, "v2", v2TrackRef, 1)}
+      {renderLane(v2, "AI sáv", AI_COLORS, "v2 ai", v2TrackRef, 1)}
       <p className="tl-hint">
-        Kattints · húzd V1↔V2 · szélek = Be/Ki · zárolás / szem / némítás a sávfejben
+        Kattints · húzd egymás alá → AI sáv · Polírozás auto · szélek = Be/Ki · L/V/M
       </p>
     </div>
   );

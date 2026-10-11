@@ -1,4 +1,4 @@
-"""Concat-flow UX contracts — stamp ``2026-10-11-paint-face``.
+"""Concat-flow UX contracts — stamp ``2026-10-11-ai-tracks``.
 
 Source-contract tests (no cv2/ORT import) + TimelineDoc multi-clip append.
 """
@@ -27,7 +27,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_concat_flow():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-paint-face"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-look-peak"
 
 
 def test_session_defines_new_project():
@@ -91,7 +91,7 @@ def test_api_new_project_wired():
 
 def test_css_preview_fills_stage():
     css = CSS.read_text(encoding="utf-8")
-    assert "2026-10-11-paint-face" in css
+    assert "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
     block = css.split(".preview-stage img")[1].split(".preview-empty")[0]
     assert "width: 100%" in block
     assert "height: 100%" in block

@@ -256,21 +256,34 @@ def probe_ort_runtime() -> dict[str, Any]:
 
 
 def heuristic_person_alpha(bgr: np.ndarray) -> np.ndarray:
-    """Soft person-ish matte without ML — scaffold / CI fallback only."""
+    """Soft person-ish matte without ML — scaffold / CI fallback only.
+
+    Prefers **all** skin/body blobs (multi-person), not a single center oval, so
+    secondary subjects survive when RVM weights are missing.
+    """
     h, w = bgr.shape[:2]
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     skin = cv2.inRange(hsv, (0, 30, 50), (25, 180, 255))
     skin2 = cv2.inRange(hsv, (160, 30, 50), (180, 180, 255))
     skin = cv2.bitwise_or(skin, skin2)
+    # Clothing / body mass: mid-sat non-green (avoid grass BG) + warm/neutral
+    body = cv2.inRange(hsv, (0, 20, 35), (40, 200, 245))
+    body2 = cv2.inRange(hsv, (140, 15, 35), (180, 200, 245))
+    body = cv2.bitwise_or(body, body2)
     lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    # Multi-lobed prior: left / center / right thirds (group shots)
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-    cx, cy = w * 0.5, h * 0.55
-    dist = np.sqrt(((xx - cx) / (w * 0.35)) ** 2 + ((yy - cy) / (h * 0.45)) ** 2)
-    center = np.clip(1.0 - dist, 0.0, 1.0)
+    priors = []
+    for cx_frac in (0.28, 0.50, 0.72):
+        cx, cy = w * cx_frac, h * 0.52
+        dist = np.sqrt(((xx - cx) / (w * 0.28)) ** 2 + ((yy - cy) / (h * 0.48)) ** 2)
+        priors.append(np.clip(1.0 - dist, 0.0, 1.0))
+    center = np.maximum.reduce(priors)
     edges = cv2.Canny(cv2.GaussianBlur(lab[:, :, 0], (5, 5), 0), 40, 120)
     edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
     mask = np.full((h, w), cv2.GC_PR_BGD, np.uint8)
-    mask[center > 0.55] = cv2.GC_PR_FGD
+    mask[center > 0.50] = cv2.GC_PR_FGD
+    mask[body > 0] = cv2.GC_PR_FGD
     mask[skin > 0] = cv2.GC_FGD
     border = max(4, min(h, w) // 40)
     mask[:border, :] = cv2.GC_BGD
@@ -293,9 +306,23 @@ def heuristic_person_alpha(bgr: np.ndarray) -> np.ndarray:
         if scale != 1.0:
             gc = cv2.resize(gc, (w, h), interpolation=cv2.INTER_LINEAR)
     except Exception:
-        gc = center * 0.7 + (skin.astype(np.float32) / 255.0) * 0.3
-    alpha = 0.75 * gc + 0.15 * center + 0.10 * (edges.astype(np.float32) / 255.0)
-    alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=2.0)
+        gc = center * 0.55 + (skin.astype(np.float32) / 255.0) * 0.25 + (
+            body.astype(np.float32) / 255.0
+        ) * 0.20
+    alpha = (
+        0.70 * gc
+        + 0.12 * center
+        + 0.10 * (skin.astype(np.float32) / 255.0)
+        + 0.08 * (edges.astype(np.float32) / 255.0)
+    )
+    alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=1.6)
+    # Keep every person-sized blob from the soft prior (not only the largest)
+    try:
+        from hybrid_editor.engines.videoeditor_polish import keep_person_instances_soft
+
+        alpha = keep_person_instances_soft(alpha, min_area_frac=0.004, relative_frac=0.10)
+    except Exception:
+        pass
     return np.clip(alpha, 0.0, 1.0).astype(np.float32)
 
 

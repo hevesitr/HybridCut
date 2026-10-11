@@ -82,16 +82,16 @@ APEX_SPEC = VideoeditorPolishSpec(
     morph_open=0,
     morph_close=2,
     guided_radius=7,
-    hair_boost=0.72,
+    hair_boost=0.74,
     target_long_side=0.0,
     decontaminate=0.88,
     despill=0.82,
     residual_hard_thresh=0.48,
-    residual_halo_px=9,
-    unknown_hair=0.68,
+    residual_halo_px=11,  # reach hands/feet after reconnect
+    unknown_hair=0.70,
     bright_fringe=0.82,
-    edge_sharpen=0.52,
-    hair_strand=0.62,
+    edge_sharpen=0.54,
+    hair_strand=0.64,
     micro_despill=0.45,
 )
 # Slightly lighter for Max preview if needed
@@ -200,26 +200,52 @@ def _person_instance_ids(
     return [i for i, area in areas if area >= floor]
 
 
-def keep_person_instances_soft(
-    alpha: np.ndarray,
-    min_area_frac: float = 0.008,
-    *,
-    relative_frac: float = 0.20,
-) -> np.ndarray:
-    """Kill BG islands; keep all person-sized FG instances + tight soft halo.
+def reconnect_body_parts(alpha: np.ndarray, *, gap_px: int = 7) -> np.ndarray:
+    """Bridge small gaps between torso and hands/feet/hair before instance keep.
 
-    Replaces single-CC keep-largest so 2+ people in frame do not leave secondary
-    subjects as a solid background plate.
+    RVM sometimes splits a limb into a separate CC; a modest close keeps body
+    parts attached without swallowing far BG islands.
     """
     a = _as_hw_float(alpha)
+    if float(a.max()) < 0.05:
+        return a
+    px = max(3, int(gap_px))
+    if px % 2 == 0:
+        px += 1
+    soft = (a > 0.16).astype(np.uint8) * 255
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (px, px))
+    closed = cv2.morphologyEx(soft, cv2.MORPH_CLOSE, k, iterations=1)
+    # Only fill where we closed a gap near existing person alpha
+    gained = cv2.bitwise_and(closed, cv2.bitwise_not(soft))
+    near = cv2.dilate(soft, k, iterations=1)
+    gained = cv2.bitwise_and(gained, near)
+    if int(gained.max()) < 1:
+        return a
+    boost = cv2.GaussianBlur(gained.astype(np.float32) / 255.0, (0, 0), sigmaX=0.8)
+    return np.clip(np.maximum(a, boost * 0.88), 0.0, 1.0).astype(np.float32)
+
+
+def keep_person_instances_soft(
+    alpha: np.ndarray,
+    min_area_frac: float = 0.005,
+    *,
+    relative_frac: float = 0.12,
+) -> np.ndarray:
+    """Kill BG islands; keep all person-sized FG instances + soft limb halo.
+
+    Replaces single-CC keep-largest so 2+ people in frame do not leave secondary
+    subjects as a solid background plate. Lower relative floor keeps smaller
+    people and near-detached hands/feet that survived reconnect.
+    """
+    a = reconnect_body_parts(_as_hw_float(alpha), gap_px=7)
     h, w = a.shape
-    mask = (a > 0.28).astype(np.uint8) * 255
+    mask = (a > 0.26).astype(np.uint8) * 255
     if int(mask.max()) < 1:
         return a
     n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     if n <= 2:
         return a
-    min_area = max(48, int(h * w * float(min_area_frac)))
+    min_area = max(36, int(h * w * float(min_area_frac)))
     keep_ids = _person_instance_ids(
         labels, stats, n, min_area=min_area, relative_frac=relative_frac
     )
@@ -228,14 +254,14 @@ def keep_person_instances_soft(
     keep = np.zeros((h, w), dtype=np.uint8)
     for i in keep_ids:
         keep = cv2.bitwise_or(keep, (labels == i).astype(np.uint8) * 255)
-    # Tighter halo than CapCut default (9×9×2 + σ2.2) — less shoulder fog
-    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    # Slightly wider halo so fingers/hair at silhouette survive residual kill
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
     halo = cv2.dilate(keep, k, iterations=1)
-    halo_f = cv2.GaussianBlur(halo.astype(np.float32) / 255.0, (0, 0), sigmaX=1.1)
+    halo_f = cv2.GaussianBlur(halo.astype(np.float32) / 255.0, (0, 0), sigmaX=1.2)
     return np.clip(a * np.clip(halo_f, 0.0, 1.0), 0.0, 1.0).astype(np.float32)
 
 
-def keep_largest_person_soft(alpha: np.ndarray, min_area_frac: float = 0.008) -> np.ndarray:
+def keep_largest_person_soft(alpha: np.ndarray, min_area_frac: float = 0.005) -> np.ndarray:
     """Compat alias → multi-instance person keep (secondary subjects retained)."""
     return keep_person_instances_soft(alpha, min_area_frac=min_area_frac)
 
@@ -245,8 +271,8 @@ def suppress_residual_bg(
     *,
     hard_thresh: float = 0.52,
     halo_px: int = 7,
-    min_area_frac: float = 0.006,
-    relative_frac: float = 0.20,
+    min_area_frac: float = 0.004,
+    relative_frac: float = 0.12,
 ) -> np.ndarray:
     """Kill large soft BG leftovers near neck/shoulders without CapCut-style thick morph.
 
@@ -731,13 +757,15 @@ def refine_alpha_matte(
     a = np.maximum(a, thin_protect * raw * 0.85)
     a = fill_hair_holes(a, close_iters=max(1, int(spec.morph_close)))
 
-    # Classic soft island kill, then hard-core residual BG suppress (neck/shoulder chunks)
-    a = keep_largest_person_soft(a, min_area_frac=0.008)
+    # Reconnect limbs, keep all person instances, then residual BG suppress
+    a = reconnect_body_parts(a, gap_px=7)
+    a = keep_largest_person_soft(a, min_area_frac=0.005)
     a = suppress_residual_bg(
         a,
         hard_thresh=float(spec.residual_hard_thresh),
-        halo_px=int(spec.residual_halo_px),
-        min_area_frac=0.006,
+        halo_px=max(9, int(spec.residual_halo_px)),
+        min_area_frac=0.004,
+        relative_frac=0.12,
     )
     hair_prior = a.copy()
 
@@ -768,8 +796,9 @@ def refine_alpha_matte(
     a = suppress_residual_bg(
         a,
         hard_thresh=float(spec.residual_hard_thresh),
-        halo_px=max(5, int(spec.residual_halo_px) - 1),
-        min_area_frac=0.006,
+        halo_px=max(7, int(spec.residual_halo_px) - 1),
+        min_area_frac=0.004,
+        relative_frac=0.12,
     )
     # Apex: recover thin strands lost to residual kill
     if float(spec.hair_strand) > 0.01:
@@ -778,10 +807,12 @@ def refine_alpha_matte(
         a = suppress_residual_bg(
             a,
             hard_thresh=min(0.55, float(spec.residual_hard_thresh) + 0.04),
-            halo_px=max(4, int(spec.residual_halo_px) - 2),
-            min_area_frac=0.007,
+            halo_px=max(5, int(spec.residual_halo_px) - 2),
+            min_area_frac=0.005,
+            relative_frac=0.12,
         )
-    a = keep_largest_person_soft(a, min_area_frac=0.008)
+    a = reconnect_body_parts(a, gap_px=5)
+    a = keep_largest_person_soft(a, min_area_frac=0.005)
     a = np.where(a < bg_threshold, 0.0, a)
     a = np.where(a > fg_threshold, 1.0, a)
     return np.clip(a, 0.0, 1.0).astype(np.float32)

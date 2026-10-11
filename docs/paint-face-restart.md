@@ -1,6 +1,8 @@
 # HybridCut restart — paint-face (`2026-10-11-paint-face`)
 
-Feature stamp: **`2026-10-11-paint-face`**.
+> **Tip stamp moved:** use **`2026-10-11-person-fix2`** — full-person auto matte restored; face wand stays optional. See [`person-fix2-restart.md`](person-fix2-restart.md).
+
+Feature stamp (historical): **`2026-10-11-paint-face`**.
 
 Includes prior: `2026-10-11-nobg-layer` (overlay Mozgatás / Pozíció) · concat-look · timeline-bg.
 

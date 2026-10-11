@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-11-paint-face` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-11-look-peak` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-11-paint-face
+# expect: 2026-10-11-look-peak
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA PATH (no remount pip): .\hybrid_cut\start_hybrid_cuda.ps1
@@ -72,9 +72,41 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 ---
 
-## Stamp — paint-face (`2026-10-11-paint-face`)
+## Stamp — look-peak (`2026-10-11-look-peak`)
 
-On top of `2026-10-11-nobg-layer` (overlay **Mozgatás** / Pozíció kept). **Radír / paint hit-testing:** brush tools only paint on the preview mask surface; pointer capture + timeline `z-index` / paint-lock so strokes never hit V1/V2 tracks. **Varázsceruza:** click a face → part-pick (Haar/skin) → **replace** seed → preview + `*_full_nobg.mov` alpha is **face-only** (not whole person). HU labels: Ecset, Radír, Lasszó, Varázsceruza, Arc.
+On top of `2026-10-11-ai-tracks` + `2026-10-11-person-fix2`. **Visual shell peak only** (CapCut desktop feel): deeper charcoal, lime Export, preview focus, dark timeline + playhead glow, Syne/Figtree, atmospheric grain — **no** cutout/person/RVM/paint/timeline logic changes. **AI sáv + Polírozás retained** from ai-tracks.
+
+Restart: [`docs/look-peak-restart.md`](docs/look-peak-restart.md) · store [`../hybrid-look-peak-restart.md`](../hybrid-look-peak-restart.md)
+
+---
+
+## Prior — ai-tracks (`2026-10-11-ai-tracks`)
+
+On top of person-fix2. **AI sáv + Polírozás** on stack/drop (existing RVM/APEX). Hand-drag multi-track kept; full-person default unchanged. Tip stamp moved to **look-peak** (visual).
+
+Restart: [`docs/ai-tracks-restart.md`](docs/ai-tracks-restart.md) · store [`../hybrid-ai-tracks-restart.md`](../hybrid-ai-tracks-restart.md)
+
+---
+
+## Prior — person-fix2 (`2026-10-11-person-fix2`)
+
+On top of incomplete `2026-10-11-person-auto`. **Full-person auto matte is the rock-solid default:** Megnyitás → Előnézet → RVM keeps **all people** + body parts (hair/hands/feet) → Cutout/Export `*_full_nobg` without Varázsceruza. Face-only wand is **session RAM only** (never disk); clip-select cannot re-arm sticky replace. Max preview/bake long-side raised for sharp 4K. Radír isolation + overlay Mozgatás kept.
+
+Restart: [`docs/person-fix2-restart.md`](docs/person-fix2-restart.md) · store [`../hybrid-person-fix2-restart.md`](../hybrid-person-fix2-restart.md)
+
+---
+
+## Prior — person-auto (`2026-10-11-person-auto`) — incomplete
+
+Partial sticky-seed fix on Megnyitás only; clip-select + disk write of `replace` still broke default person detect. Superseded by **person-fix2**.
+
+Restart (historical): [`docs/person-auto-restart.md`](docs/person-auto-restart.md)
+
+---
+
+## Prior — paint-face (`2026-10-11-paint-face`)
+
+On top of `2026-10-11-nobg-layer` (overlay **Mozgatás** / Pozíció kept). **Radír / paint hit-testing:** brush tools only paint on the preview mask surface; pointer capture + timeline `z-index` / paint-lock so strokes never hit V1/V2 tracks. **Varázsceruza:** click a face → part-pick (Haar/skin) → **replace** seed → preview + `*_full_nobg.mov` alpha is **face-only** (not whole person). Superseded tip: **person-fix2** full-person default. HU labels: Ecset, Radír, Lasszó, Varázsceruza, Arc, Teljes ember.
 
 Restart: [`docs/paint-face-restart.md`](docs/paint-face-restart.md) · store [`../hybrid-paint-face-restart.md`](../hybrid-paint-face-restart.md)
 
