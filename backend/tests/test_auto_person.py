@@ -1,4 +1,4 @@
-"""Auto-person only (feature ``2026-10-11-matte-visible``).
+"""Auto-person only (feature ``2026-10-11-rvm-matte``).
 
 Paint/wand removed. Full-person RVM is the sole selection path.
 Delete/Backspace removes any selected timeline clip (V1 / AI sáv).
@@ -23,20 +23,20 @@ TL = ROOT / "frontend" / "src" / "components" / "TimelineTrack.tsx"
 API_TS = ROOT / "frontend" / "src" / "lib" / "api.ts"
 ROUTES = ROOT / "backend" / "hybrid_editor" / "api" / "routes.py"
 FRAME_PLAN = ROOT / "backend" / "hybrid_editor" / "timeline" / "frame_plan.py"
-RESTART = ROOT / "docs" / "matte-visible-restart.md"
+RESTART = ROOT / "docs" / "rvm-matte-restart.md"
 README = ROOT / "README.md"
 CSS = ROOT / "frontend" / "src" / "styles" / "app.css"
 
 
 def test_stamp_and_docs():
-    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-11-matte-visible"
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-matte-visible"
+    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
     assert RESTART.is_file()
     restart = RESTART.read_text(encoding="utf-8")
-    assert "2026-10-11-matte-visible" in restart
+    assert "2026-10-11-rvm-matte" in restart
     assert "Delete" in restart or "Backspace" in restart
     assert "Varázsceruza" in restart  # documented as removed
-    assert "2026-10-11-matte-visible" in README.read_text(encoding="utf-8")
+    assert "2026-10-11-rvm-matte" in README.read_text(encoding="utf-8")
     css = CSS.read_text(encoding="utf-8")
     assert "person-restore" in css or "auto-person" in css
 

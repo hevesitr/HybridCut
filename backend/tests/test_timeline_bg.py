@@ -29,7 +29,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_timeline_bg():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-matte-visible"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
 
 
 def test_remove_extra_v1_and_v2():
@@ -229,7 +229,7 @@ def test_ui_timeline_drag_trim_wand():
 
 def test_readme_and_dist():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-11-matte-visible" in readme or "2026-10-11-paint-face" in readme
+    assert "2026-10-11-rvm-matte" in readme or "2026-10-11-paint-face" in readme
     assert "2026-10-11-concat-look" in readme
     assert "concat-look" in readme
     assets = list(DIST_ASSETS.glob("index-*.js")) + list(DIST_ASSETS.glob("index-*.css"))

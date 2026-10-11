@@ -1,4 +1,4 @@
-"""Person-fix2 contracts folded into ``2026-10-11-matte-visible``.
+"""Person-fix2 contracts folded into ``2026-10-11-rvm-matte``.
 
 Locks full-person auto RVM, multi-person/limb keep, 4K long-side helpers.
 Wand/paint permanently removed.
@@ -19,22 +19,22 @@ SESSION = ROOT / "backend" / "hybrid_editor" / "session.py"
 POLISH = ROOT / "backend" / "hybrid_editor" / "engines" / "videoeditor_polish.py"
 CSS = ROOT / "frontend" / "src" / "styles" / "app.css"
 README = ROOT / "README.md"
-RESTART = ROOT / "docs" / "matte-visible-restart.md"
+RESTART = ROOT / "docs" / "rvm-matte-restart.md"
 AI_RESTART = ROOT / "docs" / "ai-tracks-restart.md"
 
 
 def test_feature_docs_and_stamp_string():
-    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-11-matte-visible"
-    assert FEATURE_AUTO.read_text(encoding="utf-8").strip() == "2026-10-11-matte-visible"
+    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
+    assert FEATURE_AUTO.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
     tip = SYNC.read_text(encoding="utf-8").strip()
-    assert tip == "2026-10-11-matte-visible"
+    assert tip == "2026-10-11-rvm-matte"
     assert RESTART.is_file()
     restart = RESTART.read_text(encoding="utf-8")
-    assert "2026-10-11-matte-visible" in restart
+    assert "2026-10-11-rvm-matte" in restart
     assert AI_RESTART.is_file()
     ai = AI_RESTART.read_text(encoding="utf-8")
     assert "AI sáv" in ai and "Polírozás" in ai
-    assert "2026-10-11-matte-visible" in README.read_text(encoding="utf-8")
+    assert "2026-10-11-rvm-matte" in README.read_text(encoding="utf-8")
     css = CSS.read_text(encoding="utf-8")
     assert "person-restore" in css or "auto-person" in css
     session = SESSION.read_text(encoding="utf-8")

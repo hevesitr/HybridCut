@@ -1,4 +1,4 @@
-"""Paint-face removed under ``2026-10-11-matte-visible``.
+"""Paint-face removed under ``2026-10-11-rvm-matte``.
 
 Contracts assert Varázsceruza / Ecset / Radír / face_pick are gone;
 nobg-layer transform + auto person remain.
@@ -18,11 +18,11 @@ FACE = ROOT / "backend" / "hybrid_editor" / "cache" / "face_pick.py"
 ROUTES = ROOT / "backend" / "hybrid_editor" / "api" / "routes.py"
 SESSION = ROOT / "backend" / "hybrid_editor" / "session.py"
 MAX_Q = ROOT / "backend" / "hybrid_editor" / "engines" / "max_quality.py"
-RESTART = ROOT / "docs" / "matte-visible-restart.md"
+RESTART = ROOT / "docs" / "rvm-matte-restart.md"
 
 
 def test_sync_stamp_auto_person():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-matte-visible"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
 
 
 def test_face_pick_and_seedpaint_gone():

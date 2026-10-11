@@ -37,6 +37,16 @@ def _make_session(run_fn) -> _OrtRvmSession:
         def get_inputs(self):
             return _fake_inputs()
 
+        def get_outputs(self):
+            return [
+                SimpleNamespace(name="fgr"),
+                SimpleNamespace(name="pha"),
+                SimpleNamespace(name="r1o"),
+                SimpleNamespace(name="r2o"),
+                SimpleNamespace(name="r3o"),
+                SimpleNamespace(name="r4o"),
+            ]
+
         def get_providers(self):
             return ["CPUExecutionProvider"]
 
@@ -47,6 +57,9 @@ def _make_session(run_fn) -> _OrtRvmSession:
     obj.session = _Sess()
     obj.provider = "CPUExecutionProvider"
     obj._uses_cuda = False
+    obj._cpu_session = None
+    obj._ort = None
+    obj._so = None
     obj._r1 = obj._r2 = obj._r3 = obj._r4 = None
     obj._rec_key = None
     obj.model_path = Path("rvm_mobilenetv3_fp32.onnx")
@@ -56,11 +69,12 @@ def _make_session(run_fn) -> _OrtRvmSession:
 
 
 def _pha_outs(h: int, w: int, *, rec_hw: tuple[int, int] | None = None):
-    """fgr, pha, r1..r4 — recurrent spatial dims track last successful grid."""
+    """fgr, pha, r1..r4 — structured pha (not a uniform slab) + recurrent grid."""
     rh, rw = rec_hw if rec_hw is not None else (max(1, h // 4), max(1, w // 4))
     dtype = np.float32
     fgr = np.zeros((1, 3, h, w), dtype=dtype)
-    pha = np.ones((1, 1, h, w), dtype=dtype) * 0.55
+    pha = np.zeros((1, 1, h, w), dtype=dtype)
+    pha[0, 0, h // 5 : 4 * h // 5, w // 5 : 4 * w // 5] = 0.88
     r = np.ones((1, 16, rh, rw), dtype=dtype) * 0.1
     return [fgr, pha, r, r.copy(), r.copy(), r.copy()]
 

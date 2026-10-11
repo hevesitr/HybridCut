@@ -84,11 +84,23 @@ def test_matte_feed_cast_fp16(monkeypatch):
 
         def run(self, _outs, feeds):
             captured["feeds"] = feeds
-            # fgr, pha, r1..r4
-            pha = np.ones((1, 1, 8, 8), dtype=np.float16) * 0.5
-            fgr = np.zeros((1, 3, 8, 8), dtype=np.float16)
+            # fgr, pha, r1..r4 — structured pha (not a uniform slab)
+            h, w = int(feeds["src"].shape[2]), int(feeds["src"].shape[3])
+            pha = np.zeros((1, 1, h, w), dtype=np.float16)
+            pha[0, 0, h // 4 : 3 * h // 4, w // 4 : 3 * w // 4] = 0.85
+            fgr = np.zeros((1, 3, h, w), dtype=np.float16)
             z = np.zeros((1, 1, 1, 1), dtype=np.float16)
             return [fgr, pha, z, z, z, z]
+
+        def get_outputs(self):
+            return [
+                SimpleNamespace(name="fgr"),
+                SimpleNamespace(name="pha"),
+                SimpleNamespace(name="r1o"),
+                SimpleNamespace(name="r2o"),
+                SimpleNamespace(name="r3o"),
+                SimpleNamespace(name="r4o"),
+            ]
 
     monkeypatch.setattr(fr, "acquire_cuda", lambda *a, **k: None)
     monkeypatch.setattr(fr, "release_cuda", lambda *a, **k: None)
@@ -98,8 +110,12 @@ def test_matte_feed_cast_fp16(monkeypatch):
     obj.session = _Sess()
     obj.provider = "CPUExecutionProvider"
     obj._uses_cuda = False
+    obj._cpu_session = None
+    obj._ort = None
+    obj._so = None
     obj._r1 = obj._r2 = obj._r3 = obj._r4 = None
     obj._rec_key = None
+    obj.fallback_note = None
     obj.model_path = Path("rvm_mobilenetv3_fp16.onnx")
     obj.input_dtype = resolve_rvm_input_dtype(obj.session, obj.model_path)
 
@@ -142,10 +158,21 @@ def test_matte_resets_recurrent_on_spatial_change(monkeypatch):
             # Fake recurrent sized like RVM internal grid (~src * ds)
             ds = float(feeds["downsample_ratio"][0])
             rh, rw = max(1, int(h * ds)), max(1, int(w * ds))
-            pha = np.ones((1, 1, h, w), dtype=np.float32) * 0.5
+            pha = np.zeros((1, 1, h, w), dtype=np.float32)
+            pha[0, 0, h // 5 : 4 * h // 5, w // 5 : 4 * w // 5] = 0.9
             fgr = np.zeros((1, 3, h, w), dtype=np.float32)
             z = np.zeros((1, 128, rh, rw), dtype=np.float32)
             return [fgr, pha, z, z, z, z]
+
+        def get_outputs(self):
+            return [
+                SimpleNamespace(name="fgr"),
+                SimpleNamespace(name="pha"),
+                SimpleNamespace(name="r1o"),
+                SimpleNamespace(name="r2o"),
+                SimpleNamespace(name="r3o"),
+                SimpleNamespace(name="r4o"),
+            ]
 
     monkeypatch.setattr(fr, "acquire_cuda", lambda *a, **k: None)
     monkeypatch.setattr(fr, "release_cuda", lambda *a, **k: None)
@@ -154,8 +181,12 @@ def test_matte_resets_recurrent_on_spatial_change(monkeypatch):
     obj.session = _Sess()
     obj.provider = "CPUExecutionProvider"
     obj._uses_cuda = False
+    obj._cpu_session = None
+    obj._ort = None
+    obj._so = None
     obj._r1 = obj._r2 = obj._r3 = obj._r4 = None
     obj._rec_key = None
+    obj.fallback_note = None
     obj.model_path = Path("rvm_mobilenetv3_fp32.onnx")
     obj.input_dtype = np.dtype(np.float32)
 

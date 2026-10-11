@@ -1,4 +1,4 @@
-"""AI sáv + Polírozás on stack — stamp ``2026-10-11-matte-visible`` (AI sáv kept)."""
+"""AI sáv + Polírozás on stack — stamp ``2026-10-11-rvm-matte`` (AI sáv kept)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_ai_tracks():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-matte-visible"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
 
 
 def test_stack_marks_ai_lane_pending():
@@ -103,7 +103,7 @@ def test_ui_ai_sav_labels_and_auto_polish():
     assert "ai_polish_recommended" in app or "ai_polish" in app
     assert "Polírozás" in app
     assert '"ai_polish"' in api or "ai_polish" in api
-    assert "2026-10-11-matte-visible" in css
+    assert "2026-10-11-rvm-matte" in css
     assert "2026-10-11-ai-tracks" in css or "look-peak" in css  # prior retained
     assert ".tl-polish-btn" in css
     assert ".tl-lane.ai" in css or "tl-lane.ai" in css
@@ -111,7 +111,7 @@ def test_ui_ai_sav_labels_and_auto_polish():
 
 def test_readme_restart_dist():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-11-matte-visible" in readme
+    assert "2026-10-11-rvm-matte" in readme
     assert "2026-10-11-ai-tracks" in readme
     assert RESTART.is_file()
     restart = RESTART.read_text(encoding="utf-8")

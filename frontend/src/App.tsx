@@ -1131,7 +1131,7 @@ export default function App() {
 
   if (!hasMedia) {
     return (
-      <div className="app empty concat-home look-peak matte-visible">
+      <div className="app empty concat-home look-peak matte-visible rvm-matte">
         {dragOver ? (
           <div className="drop-overlay">
             <strong>Ejtés: videó betöltése</strong>
@@ -1239,7 +1239,7 @@ export default function App() {
   }
 
   return (
-    <div className="app look-peak matte-visible">
+    <div className="app look-peak matte-visible rvm-matte">
       {/* Compact editor chrome: topbar + workspace only (no separate 1fr intel row). look-peak visual shell. */}
 
       <header className="topbar">

@@ -1,4 +1,4 @@
-"""Person-restore (`2026-10-11-matte-visible`).
+"""Person-restore (`2026-10-11-rvm-matte`).
 
 Root cause: wand-era face mattes in MaskStore disk poisoned Gyors preview
 (skip ORT → empty cover → source-only UI). Restore: purge on open + Max
@@ -21,7 +21,7 @@ SESSION = ROOT / "backend" / "hybrid_editor" / "session.py"
 MASK_STORE = ROOT / "backend" / "hybrid_editor" / "cache" / "mask_store.py"
 FAST = ROOT / "backend" / "hybrid_editor" / "engines" / "fast_rvm.py"
 MAX_Q = ROOT / "backend" / "hybrid_editor" / "engines" / "max_quality.py"
-RESTART = ROOT / "docs" / "matte-visible-restart.md"
+RESTART = ROOT / "docs" / "rvm-matte-restart.md"
 RESTART_PRIOR = ROOT / "docs" / "person-restore-restart.md"
 README = ROOT / "README.md"
 CSS = ROOT / "frontend" / "src" / "styles" / "app.css"
@@ -52,17 +52,17 @@ def _write_person_clip(path: Path, n: int = 8) -> None:
 
 
 def test_stamp_and_docs():
-    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-11-matte-visible"
-    assert FEATURE_AUTO.read_text(encoding="utf-8").strip() == "2026-10-11-matte-visible"
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-matte-visible"
+    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
+    assert FEATURE_AUTO.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
     assert RESTART.is_file() and RESTART_PRIOR.is_file()
     restart = RESTART.read_text(encoding="utf-8")
     prior = RESTART_PRIOR.read_text(encoding="utf-8")
-    assert "2026-10-11-matte-visible" in restart
+    assert "2026-10-11-rvm-matte" in restart
     assert "MaskStore" in prior or "cache" in prior.lower()
     assert "Varázsceruza" in prior
     assert "Delete" in prior or "Backspace" in prior or "Delete" in restart
-    assert "2026-10-11-matte-visible" in README.read_text(encoding="utf-8")
+    assert "2026-10-11-rvm-matte" in README.read_text(encoding="utf-8")
     css = CSS.read_text(encoding="utf-8")
     assert "matte-visible" in css or "person-restore" in css
     assert "def purge" in MASK_STORE.read_text(encoding="utf-8")

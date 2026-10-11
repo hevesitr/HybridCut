@@ -27,7 +27,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_concat_flow():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-matte-visible"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
 
 
 def test_session_defines_new_project():
@@ -109,7 +109,7 @@ def test_css_preview_fills_stage():
 
 def test_readme_mentions_concat_flow():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-11-matte-visible" in readme or "2026-10-11-paint-face" in readme
+    assert "2026-10-11-rvm-matte" in readme or "2026-10-11-paint-face" in readme
     assert "2026-10-11-concat-look" in readme
 
 

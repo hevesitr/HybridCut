@@ -369,7 +369,7 @@ class MaxQualityEngine(MattingEngine):
             "rvm_full_res": bool(getattr(self._fast, "_full_res_matte", False)),
             "rvm_weights": Path(weights).name if weights else None,
             "preview_long_side": preview_long,
-            "stamp": "2026-10-11-matte-visible",
+            "stamp": "2026-10-11-rvm-matte",
         }
         if empty and matte_error is None and alpha is not None:
             from hybrid_editor.media.video_io import matte_failure_reason

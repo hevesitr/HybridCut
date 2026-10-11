@@ -71,6 +71,7 @@ def _env_dir(name: str) -> Optional[Path]:
 
 
 # Gyors / scrub: MobileNet first (speed). Override with HYBRID_RVM_ONNX.
+# Prefer fp32 — CUDA EP + torch-jit-export fp16 often MemcpyTransformers to a flat pha.
 _RVM_NAMES_FAST = (
     "rvm_mobilenetv3_fp32.onnx",
     "rvm_mobilenetv3.onnx",
@@ -79,10 +80,11 @@ _RVM_NAMES_FAST = (
     "rvm_resnet50_fp16.onnx",
 )
 # Max / export: ResNet50 first when present (sharper person edges). CapCut BEST/RECOMMENDED.
+# fp32 before fp16: RTX 3060 ORT CUDA + fp16 RVM has produced all-ones / gray-slab mattes.
 _RVM_NAMES_QUALITY = (
-    "rvm_resnet50_fp16.onnx",
     "rvm_resnet50_fp32.onnx",
     "rvm_resnet50.onnx",
+    "rvm_resnet50_fp16.onnx",
     "rvm_mobilenetv3_fp32.onnx",
     "rvm_mobilenetv3.onnx",
     "rvm_mobilenetv3_fp16.onnx",
@@ -118,6 +120,27 @@ def resolve_rvm_input_dtype(session: Any = None, model_path: Optional[Path] = No
         if "fp32" in stem:
             return np.dtype(np.float32)
     return np.dtype(np.float32)
+
+
+def rvm_fp32_sibling(model_path: Path) -> Optional[Path]:
+    """If ``*fp16*.onnx`` has a same-dir fp32 twin, return it (CUDA-stable path)."""
+    p = Path(model_path)
+    stem = p.stem
+    lower = stem.lower()
+    if "fp16" not in lower:
+        return None
+    for repl in ("fp32", "fp32"):
+        cand = p.with_name(lower.replace("fp16", repl) + p.suffix)
+        # Preserve original casing attempt + lowercase stem
+        for c in (p.with_name(stem.replace("fp16", "fp32").replace("FP16", "fp32") + p.suffix), cand):
+            if c.is_file() and c.resolve() != p.resolve():
+                return c
+    return None
+
+
+def cold_recurrent(dtype: np.dtype) -> np.ndarray:
+    """RVM cold-start r1i..r4i — always 1×1×1×1 (CapCut / PeterL1n export)."""
+    return np.zeros((1, 1, 1, 1), dtype=dtype)
 
 
 def _first_rvm_in_dir(models_dir: Path, *, prefer: str = "fast") -> Optional[Path]:
@@ -327,7 +350,14 @@ def heuristic_person_alpha(bgr: np.ndarray) -> np.ndarray:
 
 
 class _OrtRvmSession:
-    """RVM ONNX session — CUDA EP preferred when available."""
+    """RVM ONNX session — CUDA EP preferred when available.
+
+    RTX 3060 note: ORT CUDA + ``torch-jit-export`` RVM (esp. fp16) can emit
+    MemcpyTransformer warnings and a **uniform / all-ones pha**. We prefer fp32
+    weights, feed CapCut-style ``1×1×1×1`` cold recurrent, extract named/positional
+    ``pha`` only when spatial size matches src, and fall back to a CPU session
+    (or fp32 sibling) when CUDA output is a degenerate slab.
+    """
 
     def __init__(self, model_path: Path) -> None:
         from hybrid_editor.cuda_path import (
@@ -341,19 +371,37 @@ class _OrtRvmSession:
         inject_nvidia_pip_libs()
         import onnxruntime as ort  # type: ignore
 
+        model_path = Path(model_path)
+        # Auto-prefer fp32 twin for CUDA stability unless user opts into fp16.
+        allow_fp16 = os.environ.get("HYBRID_RVM_ALLOW_FP16", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if not allow_fp16:
+            sib = rvm_fp32_sibling(model_path)
+            if sib is not None:
+                logger.info(
+                    "RVM: preferring fp32 sibling over fp16 for CUDA-stable pha (%s → %s)",
+                    model_path.name,
+                    sib.name,
+                )
+                model_path = sib
+
         prefer = os.environ.get("HYBRID_ORT_PROVIDER", "cuda").strip().lower()
         avail = list(ort.get_available_providers())
-        providers: list[str] = []
+        providers: list[Any] = []
         uses_cuda = False
         if prefer == "cuda" and "CUDAExecutionProvider" in avail:
-            providers.append("CUDAExecutionProvider")
+            providers.append(self._cuda_provider_tuple())
             uses_cuda = True
         elif prefer == "dml" and "DmlExecutionProvider" in avail:
             providers.append("DmlExecutionProvider")
         elif prefer == "cpu":
             pass
         elif "CUDAExecutionProvider" in avail and prefer != "cpu":
-            providers.append("CUDAExecutionProvider")
+            providers.append(self._cuda_provider_tuple())
             uses_cuda = True
         providers.append("CPUExecutionProvider")
 
@@ -361,8 +409,14 @@ class _OrtRvmSession:
             acquire_cuda("fast-ort", detail=str(model_path))
         self._uses_cuda = uses_cuda
         self.fallback_note: Optional[str] = None
+        self._cpu_session: Any = None
+        self._ort = ort
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        try:
+            so.log_severity_level = 3
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self.session = ort.InferenceSession(
                 str(model_path), sess_options=so, providers=providers
@@ -398,6 +452,7 @@ class _OrtRvmSession:
         self._rec_key: Optional[tuple[int, int, float]] = None
         self.model_path = model_path
         self.input_dtype = resolve_rvm_input_dtype(self.session, model_path)
+        self._so = so
         # If CUDA was requested but session fell back to CPU, release slot
         if uses_cuda and "CUDA" not in self.provider:
             if self._uses_cuda:
@@ -409,6 +464,27 @@ class _OrtRvmSession:
                     "check cudnn64_9.dll on PATH (nvidia-cudnn-cu12)."
                 )
 
+    @staticmethod
+    def _cuda_provider_tuple() -> Any:
+        """CUDA EP options tuned for RTX 3060 RVM (avoid flaky default copies)."""
+        opts = {
+            "device_id": int(os.environ.get("HYBRID_CUDA_DEVICE", "0") or "0"),
+            "arena_extend_strategy": "kNextPowerOfTwo",
+            "cudnn_conv_algo_search": os.environ.get(
+                "HYBRID_CUDNN_CONV_ALGO", "DEFAULT"
+            )
+            or "DEFAULT",
+            "do_copy_in_default_stream": True,
+        }
+        # Soft VRAM cap (~3.5GB) so Fast+scrub leaves headroom on 8GB cards.
+        try:
+            mem_gb = float(os.environ.get("HYBRID_RVM_GPU_MEM_GB", "3.5") or "3.5")
+            if mem_gb > 0:
+                opts["gpu_mem_limit"] = int(mem_gb * (1024**3))
+        except ValueError:
+            pass
+        return ("CUDAExecutionProvider", opts)
+
     def reset(self) -> None:
         self._r1 = self._r2 = self._r3 = self._r4 = None
         self._rec_key = None
@@ -416,6 +492,7 @@ class _OrtRvmSession:
     def close(self) -> None:
         self.reset()
         self.session = None  # type: ignore
+        self._cpu_session = None
         if self._uses_cuda:
             release_cuda("fast-ort")
             self._uses_cuda = False
@@ -434,57 +511,193 @@ class _OrtRvmSession:
     def _zero_recurrent_feeds(
         self, feeds: dict[str, Any], inputs: dict[str, Any], dtype: np.dtype
     ) -> None:
+        """CapCut-safe cold feeds — always 1×1×1×1 (never invent channel/spatial from meta)."""
+        z = cold_recurrent(dtype)
         for name in ("r1i", "r2i", "r3i", "r4i"):
             if name in inputs:
-                shape = [d if isinstance(d, int) else 1 for d in inputs[name].shape]
-                feeds[name] = np.zeros(shape, dtype=dtype)
+                feeds[name] = z.copy()
 
-    def matte(self, bgr: np.ndarray, downsample: float = 0.25) -> np.ndarray:
-        """Run RVM on one frame.
-
-        Passes **full-resolution** ``src`` + ``downsample_ratio`` (RVM-native), matching
-        CapCut Videoeditor ``matting/rvm_onnx.py``. Recurrent ``r1..r4`` are sized for the
-        model's internal spatial grid — reusing them after H/W or ratio changes causes
-        ``Expand_* cannot broadcast`` (e.g. 26×45 vs 51×90). Always reset on size change.
-        """
+    def _ensure_cpu_session(self) -> Any:
+        """Lazy CPU EP session for CUDA→CPU matte recovery (same ONNX weights)."""
+        if self._cpu_session is not None:
+            return self._cpu_session
         if self.session is None:
-            raise RuntimeError("ORT session closed")
-        dtype = self.input_dtype
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        h, w = rgb.shape[:2]
-        ds = float(downsample) if downsample < 1.0 else 1.0
-        # Quantize ratio slightly so tiny float jitter does not thrash recurrent reset.
-        ds_key = round(ds, 4)
-        rec_key = (int(h), int(w), ds_key)
-        if self._rec_key is not None and self._rec_key != rec_key:
-            logger.debug(
-                "RVM recurrent reset — spatial/ratio change %s → %s",
-                self._rec_key,
-                rec_key,
+            return None
+        try:
+            self._cpu_session = self._ort.InferenceSession(
+                str(self.model_path),
+                sess_options=self._so,
+                providers=["CPUExecutionProvider"],
             )
+            logger.warning(
+                "RVM: created CPU EP fallback session (%s) after bad CUDA pha",
+                self.model_path.name,
+            )
+            return self._cpu_session
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RVM CPU fallback session failed: %s", exc)
+            return None
+
+    def _promote_cpu(self, note: str) -> None:
+        """Switch primary session to CPU after CUDA produced a useless matte."""
+        cpu = self._ensure_cpu_session()
+        if cpu is None:
+            return
+        self.session = cpu
+        self.provider = "CPUExecutionProvider"
+        if self._uses_cuda:
+            release_cuda("fast-ort")
+            self._uses_cuda = False
+        self.fallback_note = note
+        self.reset()
+        logger.warning("%s", note)
+
+    @staticmethod
+    def _rec_feed_safe(rec: Optional[np.ndarray], dtype: np.dtype) -> np.ndarray:
+        """Never feed CUDA a stale / non-finite / odd-rank recurrent tensor."""
+        z = cold_recurrent(dtype)
+        if rec is None:
+            return z
+        try:
+            arr = np.asarray(rec)
+            if arr.ndim != 4 or any(int(d) < 1 for d in arr.shape):
+                return z
+            if not np.isfinite(arr.astype(np.float32, copy=False)).all():
+                return z
+            return np.ascontiguousarray(arr, dtype=dtype)
+        except Exception:  # noqa: BLE001
+            return z
+
+    def _extract_pha(
+        self, outs: list[Any], session: Any, h: int, w: int
+    ) -> np.ndarray:
+        """Pull person alpha — CapCut positional fgr,pha,r1.. first; never upscale dust."""
+        pha = None
+        try:
+            out_metas = list(session.get_outputs())
+        except Exception:  # noqa: BLE001
+            out_metas = []
+        names = [str(getattr(m, "name", "") or "").lower() for m in out_metas]
+        # CapCut / PeterL1n layout: fgr, pha, r1o, r2o, r3o, r4o
+        if (
+            len(outs) >= 2
+            and len(names) >= 2
+            and names[0] in {"fgr", "foreground", ""}
+            and names[1] in {"pha", "alpha", "matte", "output_pha", ""}
+            and isinstance(outs[1], np.ndarray)
+        ):
+            pha = outs[1]
+        if pha is None:
+            for meta, o in zip(out_metas, outs):
+                name = str(getattr(meta, "name", "") or "").lower()
+                if name in {"pha", "alpha", "matte", "output_pha"} and isinstance(
+                    o, np.ndarray
+                ):
+                    pha = o
+                    break
+        if pha is None:
+            for o in outs:
+                if not isinstance(o, np.ndarray) or o.ndim != 4 or o.shape[1] != 1:
+                    continue
+                # Full-res (or near) C=1 only — skip recurrent grids / 1×1 dust.
+                if o.shape[2] >= max(8, h // 4) and o.shape[3] >= max(8, w // 4):
+                    pha = o
+                    break
+        if pha is None:
+            pha = outs[1] if len(outs) > 1 else outs[0]
+
+        arr = np.asarray(pha)
+        # CapCut: pha[0, 0] when NCHW
+        if arr.ndim == 4 and arr.shape[0] >= 1 and arr.shape[1] >= 1:
+            alpha = arr[0, 0].astype(np.float32, copy=False)
+        else:
+            alpha = np.squeeze(arr).astype(np.float32)
+            if alpha.ndim == 3:
+                alpha = alpha[0]
+        if alpha.ndim != 2:
+            # Scalar / 1-D garbage (Memcpy / wrong tensor) → empty, not a resized slab.
+            return np.zeros((h, w), dtype=np.float32)
+        ah, aw = int(alpha.shape[0]), int(alpha.shape[1])
+        # Refuse to bilinear-upsample tiny maps to full frame (classic all-ones slab).
+        if ah < max(8, h // 8) or aw < max(8, w // 8):
+            logger.warning(
+                "RVM pha spatial %dx%d too small for src %dx%d — treating as empty",
+                aw,
+                ah,
+                w,
+                h,
+            )
+            return np.zeros((h, w), dtype=np.float32)
+        if (ah, aw) != (h, w):
+            alpha = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_LINEAR)
+        if not np.isfinite(alpha).all():
+            alpha = np.nan_to_num(alpha, nan=0.0, posinf=1.0, neginf=0.0)
+        return alpha.astype(np.float32, copy=False)
+
+    def _store_recurrent(self, outs: list[Any], dtype: np.dtype) -> None:
+        if len(outs) < 6:
+            return
+        # Named r1o.. when present; else CapCut positional outs[2:6]
+        try:
+            metas = list(self.session.get_outputs()) if self.session is not None else []
+        except Exception:  # noqa: BLE001
+            metas = []
+        by_name = {
+            str(getattr(m, "name", "") or "").lower(): o
+            for m, o in zip(metas, outs)
+            if isinstance(o, np.ndarray)
+        }
+        r1 = by_name.get("r1o", outs[2])
+        r2 = by_name.get("r2o", outs[3])
+        r3 = by_name.get("r3o", outs[4])
+        r4 = by_name.get("r4o", outs[5])
+        self._r1 = self._rec_feed_safe(r1, dtype)
+        self._r2 = self._rec_feed_safe(r2, dtype)
+        self._r3 = self._rec_feed_safe(r3, dtype)
+        self._r4 = self._rec_feed_safe(r4, dtype)
+
+    def _run_once(
+        self,
+        session: Any,
+        bgr: np.ndarray,
+        downsample: float,
+        *,
+        cold: bool = False,
+    ) -> np.ndarray:
+        from hybrid_editor.media.video_io import normalize_alpha
+
+        dtype = self.input_dtype
+        # BGR→RGB + scale in float32 then cast (matches CapCut multiply path).
+        rgb_u8 = np.ascontiguousarray(bgr[:, :, ::-1])
+        rgb = rgb_u8.astype(np.float32) * (1.0 / 255.0)
+        h, w = int(rgb.shape[0]), int(rgb.shape[1])
+        ds = float(downsample) if downsample < 1.0 else 1.0
+        ds_key = round(ds, 4)
+        rec_key = (h, w, ds_key)
+        if cold or (self._rec_key is not None and self._rec_key != rec_key):
             self._r1 = self._r2 = self._r3 = self._r4 = None
         self._rec_key = rec_key
 
-        # Full-res src; model downsamples internally via downsample_ratio.
         x = np.ascontiguousarray(np.transpose(rgb, (2, 0, 1))[None, ...], dtype=dtype)
-        feeds: dict[str, Any] = {"src": x}
-        inputs = {i.name: i for i in self.session.get_inputs()}
-        for name, rec in (("r1i", self._r1), ("r2i", self._r2), ("r3i", self._r3), ("r4i", self._r4)):
-            if name in inputs:
-                shape = [d if isinstance(d, int) else 1 for d in inputs[name].shape]
-                if rec is None:
-                    feeds[name] = np.zeros(shape, dtype=dtype)
-                else:
-                    feeds[name] = np.ascontiguousarray(rec, dtype=dtype)
-        if "downsample_ratio" in inputs:
-            # RVM exports keep downsample_ratio as float32 even for fp16 graphs.
+        feeds: dict[str, Any] = {
+            "src": x,
+            "r1i": self._rec_feed_safe(None if cold else self._r1, dtype),
+            "r2i": self._rec_feed_safe(None if cold else self._r2, dtype),
+            "r3i": self._rec_feed_safe(None if cold else self._r3, dtype),
+            "r4i": self._rec_feed_safe(None if cold else self._r4, dtype),
+            "downsample_ratio": np.array([ds], dtype=np.float32),
+        }
+        # Only feed inputs the graph declares (some exports omit ratio name variants).
+        inputs = {i.name: i for i in session.get_inputs()}
+        feeds = {k: v for k, v in feeds.items() if k in inputs}
+        if "downsample_ratio" in inputs and "downsample_ratio" not in feeds:
             feeds["downsample_ratio"] = np.array([ds], dtype=np.float32)
+
         try:
-            outs = self.session.run(None, feeds)
+            outs = session.run(None, feeds)
         except Exception as exc:  # noqa: BLE001
             if not self._is_expand_broadcast_error(exc):
                 raise
-            # Missed size change / stale r1..r4 — zero state and retry once at current size.
             logger.warning(
                 "RVM Expand/broadcast at %dx%d ds=%.4f — reset recurrent and retry once: %s",
                 h,
@@ -494,50 +707,67 @@ class _OrtRvmSession:
             )
             self.reset()
             self._rec_key = rec_key
-            self._zero_recurrent_feeds(feeds, inputs, dtype)
-            outs = self.session.run(None, feeds)
-        # Prefer named ``pha`` (CapCut rvm_onnx layout: fgr, pha, r1o..r4o).
-        # Blind "first C=1 tensor" can grab a wrong map and yield a flat slab.
-        from hybrid_editor.media.video_io import normalize_alpha
+            for name in ("r1i", "r2i", "r3i", "r4i"):
+                if name in inputs:
+                    feeds[name] = cold_recurrent(dtype)
+            outs = session.run(None, feeds)
 
-        pha = None
-        try:
-            out_metas = list(self.session.get_outputs())
-        except Exception:  # noqa: BLE001
-            out_metas = []
-        for meta, o in zip(out_metas, outs):
-            name = str(getattr(meta, "name", "") or "").lower()
-            if name in {"pha", "alpha", "matte", "output_pha"} and isinstance(o, np.ndarray):
-                pha = o
-                break
-        if pha is None:
-            for o in outs:
-                if isinstance(o, np.ndarray) and o.ndim == 4 and o.shape[1] == 1:
-                    # Skip tiny recurrent-looking grids when a full-res C=1 exists later.
-                    if o.shape[2] >= h // 4 and o.shape[3] >= w // 4:
-                        pha = o
-                        break
-        if pha is None:
-            for o in outs:
-                if isinstance(o, np.ndarray) and o.ndim >= 3:
-                    if o.ndim == 4 and o.shape[1] == 1:
-                        pha = o
-                        break
-        if pha is None:
-            pha = outs[1] if len(outs) > 1 else outs[0]
-        alpha = np.squeeze(pha).astype(np.float32)
-        if alpha.ndim == 3:
-            alpha = alpha[0]
-        if alpha.shape != (h, w):
-            alpha = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_LINEAR)
-        # Recurrent outputs — common export layout fgr, pha, r1o..r4o
-        if len(outs) >= 6:
-            self._r1 = np.ascontiguousarray(outs[2], dtype=dtype)
-            self._r2 = np.ascontiguousarray(outs[3], dtype=dtype)
-            self._r3 = np.ascontiguousarray(outs[4], dtype=dtype)
-            self._r4 = np.ascontiguousarray(outs[5], dtype=dtype)
-        # Scale 0–255-ish ORT floats before clip (bare clip → all-ones gray Maszk).
-        return normalize_alpha(alpha)
+        alpha = self._extract_pha(outs, session, h, w)
+        alpha = normalize_alpha(alpha)
+        # Only keep recurrent when pha looks structured — garbage state poisons the next frame.
+        from hybrid_editor.media.video_io import is_matte_degenerate, is_matte_empty
+
+        if not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
+            self._store_recurrent(outs, dtype)
+        else:
+            self._r1 = self._r2 = self._r3 = self._r4 = None
+        return alpha
+
+    def matte(self, bgr: np.ndarray, downsample: float = 0.25) -> np.ndarray:
+        """Run RVM on one frame.
+
+        Passes **full-resolution** ``src`` + ``downsample_ratio`` (RVM-native), matching
+        CapCut Videoeditor ``matting/rvm_onnx.py``. On CUDA all-ones / flat pha (common
+        with MemcpyTransformer + fp16), cold-retry then CPU EP (same weights).
+        """
+        if self.session is None:
+            raise RuntimeError("ORT session closed")
+        from hybrid_editor.media.video_io import is_matte_degenerate, is_matte_empty
+
+        alpha = self._run_once(self.session, bgr, downsample, cold=False)
+        if not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
+            return alpha
+
+        # Cold recurrent retry on the active provider (stale r1–r4 → slab / empty).
+        logger.warning(
+            "RVM pha useless on %s (empty/degenerate) — cold-start retry",
+            self.provider,
+        )
+        self.reset()
+        alpha = self._run_once(self.session, bgr, downsample, cold=True)
+        if not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
+            return alpha
+
+        # CUDA MemcpyTransformer / fp16 path → CPU EP (known-good for PeterL1n export).
+        cuda_active = self._uses_cuda or "CUDA" in str(self.provider)
+        if cuda_active:
+            cpu = self._ensure_cpu_session()
+            if cpu is not None:
+                logger.warning(
+                    "RVM CUDA pha still useless — CPU EP retry (%s)",
+                    self.model_path.name,
+                )
+                self.reset()
+                alpha_cpu = self._run_once(cpu, bgr, downsample, cold=True)
+                if not is_matte_empty(alpha_cpu) and not is_matte_degenerate(alpha_cpu):
+                    self._promote_cpu(
+                        "CUDA→CPU: RVM pha was uniform/empty on CUDA EP "
+                        "(MemcpyTransformer / fp16) — using CPUExecutionProvider for mattes."
+                    )
+                    return alpha_cpu
+                alpha = alpha_cpu
+
+        return alpha
 
 
 class FastEngine(MattingEngine):
@@ -841,7 +1071,7 @@ class FastEngine(MattingEngine):
             "frame_idx": frame_idx,
             "proxy_lanes": lane_meta,
             "matte_empty": empty,
-            "stamp": "2026-10-11-matte-visible",
+            "stamp": "2026-10-11-rvm-matte",
         }
         if matte_error:
             meta["matte_error"] = matte_error

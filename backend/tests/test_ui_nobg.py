@@ -13,7 +13,7 @@ HTML = ROOT / "frontend" / "index.html"
 
 
 def test_sync_stamp_concat_flow():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-matte-visible"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
 
 
 def test_app_result_card_and_explorer():
@@ -113,7 +113,7 @@ def test_fonts_loaded():
 
 def test_readme_mentions_concat_flow_stamp():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-11-matte-visible" in readme or "2026-10-11-paint-face" in readme
+    assert "2026-10-11-rvm-matte" in readme or "2026-10-11-paint-face" in readme
     assert "2026-10-11-concat-look" in readme  # prior retained
     assert "2026-10-10-look2" in readme  # prior retained in history
     assert "2026-10-10-layout-fix" in readme

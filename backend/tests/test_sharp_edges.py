@@ -140,14 +140,17 @@ def test_resolve_rvm_prefers_resnet_for_quality(tmp_path: Path, monkeypatch: pyt
     models = tmp_path / "models"
     models.mkdir()
     mob = models / "rvm_mobilenetv3_fp32.onnx"
-    res = models / "rvm_resnet50_fp16.onnx"
+    res16 = models / "rvm_resnet50_fp16.onnx"
+    res32 = models / "rvm_resnet50_fp32.onnx"
     mob.write_bytes(b"m")
-    res.write_bytes(b"r")
+    res16.write_bytes(b"r16")
+    res32.write_bytes(b"r32")
     monkeypatch.setattr(fr, "ROOT", tmp_path)
     monkeypatch.setattr(fr, "parent_videoeditor_roots", lambda: [])
 
     assert resolve_rvm_onnx(prefer="fast") == mob
-    assert resolve_rvm_onnx(prefer="quality") == res
+    # Quality prefers ResNet fp32 over fp16 (CUDA-stable pha on RTX 3060).
+    assert resolve_rvm_onnx(prefer="quality") == res32
 
 
 def test_max_engine_defaults_sharp_and_quality_backbone():

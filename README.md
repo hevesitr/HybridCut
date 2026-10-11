@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-11-matte-visible` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-11-rvm-matte` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-11-matte-visible
+# expect: 2026-10-11-rvm-matte
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA PATH (no remount pip): .\hybrid_cut\start_hybrid_cuda.ps1
@@ -72,17 +72,25 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 ---
 
-## Stamp — matte-visible (`2026-10-11-matte-visible`)
+## Stamp — rvm-matte (`2026-10-11-rvm-matte`)
 
-Screenshots after person-restore: **Maszk** = solid light-gray rectangle on checker; **Cutout** = opaque full source; chip still **Gyors**. Cause: near-uniform / all-ones alpha (ORT 0–255 clip or wrong pha) counted as success → gray slab + no BG punch + false Cutout ✓. Fix: `is_matte_degenerate`, RVM `normalize_alpha` + named `pha`, refuse slab cache, toast on failure, Max-on-open kept.
+Toast from **matte-visible** was correct (uniform gray Maszk = degenerate all-ones alpha). RVM on RTX 3060 + CUDA ORT still emitted that slab (`MemcpyTransformer` / fp16-first Max / tiny-pha upscale). Fix: **fp32-first** resolve + fp16→fp32 sibling, CapCut `1×1×1×1` cold recurrent, safe `pha` extract (no dust→full resize), CUDA provider options, **CUDA→CPU session** when pha is empty/degenerate.
 
-Restart: [`docs/matte-visible-restart.md`](docs/matte-visible-restart.md) · store [`../hybrid-matte-visible-restart.md`](../hybrid-matte-visible-restart.md)
+Restart: [`docs/rvm-matte-restart.md`](docs/rvm-matte-restart.md) · store [`../hybrid-rvm-matte-restart.md`](../hybrid-rvm-matte-restart.md)
+
+---
+
+## Prior — matte-visible (`2026-10-11-matte-visible`)
+
+Screenshots after person-restore: **Maszk** = solid light-gray rectangle on checker; **Cutout** = opaque full source; chip still **Gyors**. Cause: near-uniform / all-ones alpha counted as success → gray slab + false Cutout ✓. Fix: `is_matte_degenerate`, toast on failure (detection only). Superseded by **rvm-matte** for real CUDA inference recovery.
+
+Restart (historical): [`docs/matte-visible-restart.md`](docs/matte-visible-restart.md)
 
 ---
 
 ## Prior — person-restore (`2026-10-11-person-restore`)
 
-Wand-era face scraps in MaskStore + Gyors skip RVM. Megnyitás purge + Max + Éles. Superseded by **matte-visible** for the gray-slab / opaque-cutout failure.
+Wand-era face scraps in MaskStore + Gyors skip RVM. Megnyitás purge + Max + Éles. Superseded by **matte-visible** / **rvm-matte** for the gray-slab failure.
 
 Restart (historical): [`docs/person-restore-restart.md`](docs/person-restore-restart.md)
 
