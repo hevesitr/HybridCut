@@ -12,6 +12,7 @@ type Props = {
   duration: number;
   playhead: number;
   selectedId: string | null;
+  fps?: number;
   disabled?: boolean;
   onSeek: (t: number) => void;
   onSelect: (clipId: string) => void;
@@ -21,10 +22,14 @@ type Props = {
   onPlace?: (clipId: string, timelineStartSec: number) => void;
   /** Vertical stack: drop onto V1 (0) or V2 (1). */
   onSetTrack?: (clipId: string, track: number, timelineStartSec?: number) => void;
+  onAddClip?: () => void;
+  onDelete?: () => void;
+  onCut?: () => void;
+  canDelete?: boolean;
 };
 
-const V1_COLORS = ["#3ecf9a", "#2fd4a1", "#6ec6ff", "#5bbf8a"];
-const V2_COLORS = ["#ff7a1a", "#e0b35a", "#e36b5b", "#c39bdc"];
+const V1_COLORS = ["#8fd14f", "#6ecf7a", "#5bbf8a", "#3ecf9a"];
+const V2_COLORS = ["#c8e86a", "#a8d44a", "#9ad000", "#7ab800"];
 
 type DragKind = "move" | "in" | "out";
 
@@ -41,17 +46,35 @@ type DragState = {
   moved: boolean;
 };
 
+/** Concat-style timecode HH:MM:SS:FF */
+export function formatTimecode(sec: number, fps = 24): string {
+  const f = Math.max(1, Math.round(fps));
+  const totalFrames = Math.max(0, Math.round(sec * f));
+  const frames = totalFrames % f;
+  const totalSec = Math.floor(totalFrames / f);
+  const s = totalSec % 60;
+  const m = Math.floor(totalSec / 60) % 60;
+  const h = Math.floor(totalSec / 3600);
+  const pad = (n: number, w = 2) => String(n).padStart(w, "0");
+  return `${pad(h)}:${pad(m)}:${pad(s)}:${pad(frames)}`;
+}
+
 export function TimelineTrack({
   clips,
   duration,
   playhead,
   selectedId,
+  fps = 24,
   disabled,
   onSeek,
   onSelect,
   onTrimEdge,
   onPlace,
   onSetTrack,
+  onAddClip,
+  onDelete,
+  onCut,
+  canDelete,
 }: Props) {
   const dur = Math.max(duration, 0.01);
   const shellRef = useRef<HTMLDivElement>(null);
@@ -64,6 +87,11 @@ export function TimelineTrack({
     track: number;
     label: string;
   } | null>(null);
+  const [snapOn, setSnapOn] = useState(true);
+  const [trackState, setTrackState] = useState({
+    0: { lock: false, hide: false, mute: false },
+    1: { lock: false, hide: false, mute: false },
+  });
 
   const v1 = clips.filter((c) => (c.track ?? 0) === 0);
   const v2 = clips.filter((c) => (c.track ?? 0) >= 1);
@@ -73,16 +101,9 @@ export function TimelineTrack({
     return el?.getBoundingClientRect().width || 1;
   };
 
-  const xToTime = (clientX: number, trackEl: HTMLDivElement | null) => {
-    const el = trackEl || v1TrackRef.current;
-    if (!el) return 0;
-    const rect = el.getBoundingClientRect();
-    const x = Math.min(Math.max(0, clientX - rect.left), rect.width);
-    return (x / Math.max(1, rect.width)) * dur;
-  };
-
-  const onTrackClick = (e: ReactMouseEvent<HTMLDivElement>) => {
+  const onTrackClick = (e: ReactMouseEvent<HTMLDivElement>, trackIndex: number) => {
     if (disabled || drag?.moved) return;
+    if (trackState[trackIndex as 0 | 1]?.lock) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = Math.min(Math.max(0, e.clientX - rect.left), rect.width);
     onSeek((x / rect.width) * dur);
@@ -94,6 +115,8 @@ export function TimelineTrack({
     kind: DragKind,
   ) => {
     if (disabled) return;
+    const t = (clip.track ?? 0) >= 1 ? 1 : 0;
+    if (trackState[t as 0 | 1]?.lock) return;
     e.preventDefault();
     e.stopPropagation();
     onSelect(clip.clip_id);
@@ -147,11 +170,9 @@ export function TimelineTrack({
     } else {
       left = Math.max(0, drag.originStart + dt);
     }
-    // Vertical track target while dragging body
     let track = drag.track;
     if (drag.kind === "move") {
-      const midY = (drag.laneTop + drag.laneBottom) / 2;
-      const v2Top = v2TrackRef.current?.getBoundingClientRect().top ?? midY;
+      const v2Top = v2TrackRef.current?.getBoundingClientRect().top ?? 0;
       track = e.clientY >= v2Top - 4 ? 1 : 0;
     }
     setGhost({
@@ -178,7 +199,10 @@ export function TimelineTrack({
       } else if (drag.kind === "move") {
         const v2Top = v2TrackRef.current?.getBoundingClientRect().top ?? 0;
         const targetTrack = e.clientY >= v2Top - 4 ? 1 : 0;
-        const newStart = Math.max(0, drag.originStart + dt);
+        let newStart = Math.max(0, drag.originStart + dt);
+        if (snapOn) {
+          newStart = Math.round(newStart * fps) / fps;
+        }
         if (targetTrack !== drag.track && onSetTrack) {
           onSetTrack(drag.clipId, targetTrack, newStart);
         } else if (onPlace) {
@@ -193,82 +217,136 @@ export function TimelineTrack({
     setGhost(null);
   };
 
+  const toggleTrack = (track: 0 | 1, key: "lock" | "hide" | "mute") => {
+    setTrackState((prev) => ({
+      ...prev,
+      [track]: { ...prev[track], [key]: !prev[track][key] },
+    }));
+  };
+
+  const rulerMarks = [0, 0.25, 0.5, 0.75, 1].map((p) => ({
+    pct: p * 100,
+    label: formatTimecode(dur * p, fps),
+  }));
+
   const renderLane = (
     laneClips: ClipInfo[],
     label: string,
     colors: string[],
     laneClass: string,
     trackRef: RefObject<HTMLDivElement | null>,
-    trackIndex: number,
-  ) => (
-    <div className={`tl-lane ${laneClass}`}>
-      <div className="tl-lane-label">{label}</div>
+    trackIndex: 0 | 1,
+  ) => {
+    const st = trackState[trackIndex];
+    return (
       <div
-        ref={trackRef}
-        className={`tl-track ${disabled ? "disabled" : ""}`}
-        onClick={onTrackClick}
-        role="slider"
-        aria-valuemin={0}
-        aria-valuemax={dur}
-        aria-valuenow={playhead}
-        tabIndex={0}
-        data-track={trackIndex}
+        className={`tl-lane ${laneClass}${st.hide ? " hidden" : ""}${st.mute ? " muted" : ""}${st.lock ? " locked" : ""}`}
       >
-        {laneClips.map((c, i) => {
-          const start = c.timeline_start_sec;
-          const end = c.timeline_end_sec ?? start + (c.out_sec - c.in_sec);
-          const left = (start / dur) * 100;
-          const width = (Math.max(0.05, end - start) / dur) * 100;
-          const selected = c.clip_id === selectedId;
-          const dragging = drag?.clipId === c.clip_id;
-          return (
-            <div
-              key={c.clip_id}
-              className={`tl-clip ${selected ? "selected" : ""} ${dragging ? "dragging" : ""}`}
-              style={{
-                left: `${left}%`,
-                width: `${width}%`,
-                background: `linear-gradient(135deg, ${colors[i % colors.length]}55, ${colors[i % colors.length]}22)`,
-                borderColor: colors[i % colors.length],
-              }}
-              title={`${c.display_label || c.clip_id} · ${c.track_label || label} · húzd a sávok között · szélek = Be/Ki`}
-              onPointerDown={(ev) => beginDrag(ev, c, "move")}
+        <div className="tl-lane-chrome">
+          <div className="tl-lane-label">{label}</div>
+          <div className="tl-lane-toggles" role="group" aria-label={`${label} sáv`}>
+            <button
+              type="button"
+              className={`tl-tog ${st.lock ? "on" : ""}`}
+              title={st.lock ? "Feloldás" : "Zárolás"}
+              aria-label={st.lock ? "Feloldás" : "Zárolás"}
+              aria-pressed={st.lock}
+              onClick={() => toggleTrack(trackIndex, "lock")}
             >
-              <button
-                type="button"
-                className="tl-handle tl-handle-in"
-                aria-label="Be pont (trim)"
-                title="Be — húzd a kezdőpontot"
-                disabled={disabled}
-                onPointerDown={(ev) => beginDrag(ev, c, "in")}
-              />
-              <span className="tl-clip-label">{c.display_label || c.clip_id}</span>
-              <button
-                type="button"
-                className="tl-handle tl-handle-out"
-                aria-label="Ki pont (trim)"
-                title="Ki — húzd a végpontot"
-                disabled={disabled}
-                onPointerDown={(ev) => beginDrag(ev, c, "out")}
-              />
-            </div>
-          );
-        })}
-        {ghost && ghost.track === trackIndex ? (
-          <div
-            className="tl-clip tl-ghost"
-            style={{
-              left: `${ghost.leftPct}%`,
-              width: `${ghost.widthPct}%`,
-            }}
-          >
-            <span className="tl-clip-label">{ghost.label}</span>
+              L
+            </button>
+            <button
+              type="button"
+              className={`tl-tog ${st.hide ? "on" : ""}`}
+              title={st.hide ? "Mutatás" : "Elrejtés"}
+              aria-label={st.hide ? "Mutatás" : "Elrejtés"}
+              aria-pressed={st.hide}
+              onClick={() => toggleTrack(trackIndex, "hide")}
+            >
+              V
+            </button>
+            <button
+              type="button"
+              className={`tl-tog ${st.mute ? "on" : ""}`}
+              title={st.mute ? "Hang be" : "Némítás"}
+              aria-label={st.mute ? "Hang be" : "Némítás"}
+              aria-pressed={st.mute}
+              onClick={() => toggleTrack(trackIndex, "mute")}
+            >
+              M
+            </button>
           </div>
-        ) : null}
-        <div className="tl-playhead" style={{ left: `${(playhead / dur) * 100}%` }} />
+        </div>
+        <div
+          ref={trackRef}
+          className={`tl-track ${disabled || st.lock ? "disabled" : ""}`}
+          onClick={(e) => onTrackClick(e, trackIndex)}
+          role="slider"
+          aria-valuemin={0}
+          aria-valuemax={dur}
+          aria-valuenow={playhead}
+          tabIndex={0}
+          data-track={trackIndex}
+        >
+          {st.hide
+            ? null
+            : laneClips.map((c, i) => {
+                const start = c.timeline_start_sec;
+                const end = c.timeline_end_sec ?? start + (c.out_sec - c.in_sec);
+                const left = (start / dur) * 100;
+                const width = (Math.max(0.05, end - start) / dur) * 100;
+                const selected = c.clip_id === selectedId;
+                const dragging = drag?.clipId === c.clip_id;
+                return (
+                  <div
+                    key={c.clip_id}
+                    className={`tl-clip ${selected ? "selected" : ""} ${dragging ? "dragging" : ""}`}
+                    style={{
+                      left: `${left}%`,
+                      width: `${width}%`,
+                      background: `linear-gradient(135deg, ${colors[i % colors.length]}66, ${colors[i % colors.length]}28)`,
+                      borderColor: colors[i % colors.length],
+                      opacity: st.mute ? 0.45 : 1,
+                    }}
+                    title={`${c.display_label || c.clip_id} · ${c.track_label || label} · húzd a sávok között · szélek = Be/Ki`}
+                    onPointerDown={(ev) => beginDrag(ev, c, "move")}
+                  >
+                    <button
+                      type="button"
+                      className="tl-handle tl-handle-in"
+                      aria-label="Be pont (trim)"
+                      title="Be — húzd a kezdőpontot"
+                      disabled={disabled || st.lock}
+                      onPointerDown={(ev) => beginDrag(ev, c, "in")}
+                    />
+                    <span className="tl-clip-label">{c.display_label || c.clip_id}</span>
+                    <button
+                      type="button"
+                      className="tl-handle tl-handle-out"
+                      aria-label="Ki pont (trim)"
+                      title="Ki — húzd a végpontot"
+                      disabled={disabled || st.lock}
+                      onPointerDown={(ev) => beginDrag(ev, c, "out")}
+                    />
+                  </div>
+                );
+              })}
+          {ghost && ghost.track === trackIndex && !st.hide ? (
+            <div
+              className="tl-clip tl-ghost"
+              style={{
+                left: `${ghost.leftPct}%`,
+                width: `${ghost.widthPct}%`,
+              }}
+            >
+              <span className="tl-clip-label">{ghost.label}</span>
+            </div>
+          ) : null}
+          <div className="tl-playhead" style={{ left: `${(playhead / dur) * 100}%` }} />
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div
@@ -278,15 +356,71 @@ export function TimelineTrack({
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
     >
-      <div className="tl-ruler">
-        <span>0s</span>
-        <span>{(dur / 2).toFixed(1)}s</span>
-        <span>{dur.toFixed(1)}s</span>
+      <div className="tl-chrome-bar">
+        <div className="tl-tabs" role="tablist" aria-label="Idővonal">
+          <button type="button" className="tl-tab active" role="tab" aria-selected>
+            Timeline 1
+          </button>
+        </div>
+        <div className="tl-tools" role="toolbar" aria-label="Idővonal eszközök">
+          <button
+            type="button"
+            className="tl-tool"
+            title="Klip hozzáadása"
+            disabled={disabled || !onAddClip}
+            onClick={() => onAddClip?.()}
+          >
+            +
+          </button>
+          <button type="button" className="tl-tool" title="Visszavonás (helyi)" disabled>
+            Undo
+          </button>
+          <button
+            type="button"
+            className="tl-tool"
+            title="Vágás a lejátszási fejnél"
+            disabled={disabled || !onCut}
+            onClick={() => onCut?.()}
+          >
+            Cut
+          </button>
+          <button type="button" className="tl-tool on" title="Kijelölés" disabled={disabled}>
+            Sel
+          </button>
+          <button
+            type="button"
+            className="tl-tool danger"
+            title="Kijelölt klip törlése"
+            disabled={disabled || !canDelete || !onDelete}
+            onClick={() => onDelete?.()}
+          >
+            Del
+          </button>
+          <button
+            type="button"
+            className={`tl-tool snap ${snapOn ? "on" : ""}`}
+            title={snapOn ? "Snap be" : "Snap ki"}
+            aria-pressed={snapOn}
+            onClick={() => setSnapOn((v) => !v)}
+          >
+            Snap
+          </button>
+          <span className="tl-playhead-tc" title="Lejátszási fej">
+            {formatTimecode(playhead, fps)}
+          </span>
+        </div>
+      </div>
+      <div className="tl-ruler" aria-hidden>
+        {rulerMarks.map((m) => (
+          <span key={m.pct} style={{ left: `${m.pct}%` }} className="tl-ruler-mark">
+            {m.label}
+          </span>
+        ))}
       </div>
       {renderLane(v1, "V1", V1_COLORS, "v1", v1TrackRef, 0)}
       {renderLane(v2, "V2", V2_COLORS, "v2", v2TrackRef, 1)}
       <p className="tl-hint">
-        Kattints a klipre · húzd V1↔V2 közé · szélek = Be/Ki trim
+        Kattints · húzd V1↔V2 · szélek = Be/Ki · zárolás / szem / némítás a sávfejben
       </p>
     </div>
   );

@@ -35,6 +35,12 @@ class ClipRange:
     label: str = ""
     # 0 = V1 main (sequential pack), 1 = V2 overlay / B-roll
     track: int = 0
+    # CapCut-like transform — center offset as fraction of canvas (−1…1), scale 1=100%
+    pos_x: float = 0.0
+    pos_y: float = 0.0
+    scale: float = 1.0
+    # True for *_full_nobg.mov / alpha WebM — decode+composite preserve alpha (no re-matte)
+    has_alpha: bool = False
 
     def effective_out(self) -> float:
         end = self.out_sec if self.out_sec > 0 else self.media_duration_sec
@@ -55,6 +61,10 @@ class ClipRange:
         return name or self.clip_id
 
     def track_label(self) -> str:
+        if self.has_alpha and int(self.track) >= 1:
+            return "V2 nobg"
+        if self.has_alpha:
+            return "V1 nobg"
         return "V2 B-roll" if int(self.track) >= 1 else "V1"
 
 
@@ -67,6 +77,10 @@ class PlannedLayer:
     width: int
     height: int
     track: int = 0
+    pos_x: float = 0.0
+    pos_y: float = 0.0
+    scale: float = 1.0
+    has_alpha: bool = False
 
 
 @dataclass(frozen=True)
@@ -111,6 +125,11 @@ class TimelineDoc:
         out_sec: float = 0.0,
         label: str = "",
         track: int = 0,
+        has_alpha: bool = False,
+        pos_x: float = 0.0,
+        pos_y: float = 0.0,
+        scale: float = 1.0,
+        opacity: float = 1.0,
     ) -> "TimelineDoc":
         clip = ClipRange(
             media_path=path,
@@ -123,6 +142,11 @@ class TimelineDoc:
             media_duration_sec=float(duration_sec),
             label=label,
             track=int(track),
+            has_alpha=bool(has_alpha),
+            pos_x=float(pos_x),
+            pos_y=float(pos_y),
+            scale=max(0.05, float(scale)),
+            opacity=np_clip(opacity, 0.0, 1.0),
         )
         return cls(
             clips=[clip],
@@ -210,12 +234,51 @@ class TimelineDoc:
                 else float(self.playhead_sec)
             )
             clip.timeline_start_sec = max(0.0, start)
-            if clip.opacity >= 0.999:
+            # Alpha nobg overlays stay fully opaque; plain B-roll softens slightly
+            if clip.opacity >= 0.999 and not clip.has_alpha:
                 clip.opacity = 0.85
         else:
-            clip.opacity = 1.0
+            if not clip.has_alpha:
+                clip.opacity = 1.0
             self.relayout_sequential()
         self.selected_clip_id = clip_id
+        return True
+
+    def set_transform(
+        self,
+        clip_id: Optional[str] = None,
+        *,
+        pos_x: Optional[float] = None,
+        pos_y: Optional[float] = None,
+        scale: Optional[float] = None,
+        opacity: Optional[float] = None,
+    ) -> bool:
+        """CapCut-like position / scale on the selected (or given) clip."""
+        clip = self._find(clip_id)
+        if clip is None:
+            return False
+        if pos_x is not None:
+            clip.pos_x = float(np_clip(pos_x, -2.0, 2.0))
+        if pos_y is not None:
+            clip.pos_y = float(np_clip(pos_y, -2.0, 2.0))
+        if scale is not None:
+            clip.scale = float(np_clip(scale, 0.05, 4.0))
+        if opacity is not None:
+            clip.opacity = float(np_clip(opacity, 0.0, 1.0))
+        self.selected_clip_id = clip.clip_id
+        return True
+
+    def reset_transform(self, clip_id: Optional[str] = None) -> bool:
+        """Reset position/scale to centered 100% (CapCut Reset)."""
+        clip = self._find(clip_id)
+        if clip is None:
+            return False
+        clip.pos_x = 0.0
+        clip.pos_y = 0.0
+        clip.scale = 1.0
+        if clip.has_alpha or int(clip.track) == 0:
+            clip.opacity = 1.0
+        self.selected_clip_id = clip.clip_id
         return True
 
     def set_timeline_start(self, clip_id: str, timeline_start_sec: float) -> bool:
@@ -294,6 +357,10 @@ class TimelineDoc:
         track: int = 0,
         timeline_start_sec: Optional[float] = None,
         opacity: float = 1.0,
+        has_alpha: bool = False,
+        pos_x: float = 0.0,
+        pos_y: float = 0.0,
+        scale: float = 1.0,
     ) -> ClipRange:
         clip = ClipRange(
             media_path=media_path,
@@ -306,6 +373,10 @@ class TimelineDoc:
             label=label,
             track=max(0, int(track)),
             opacity=np_clip(opacity, 0.0, 1.0),
+            has_alpha=bool(has_alpha),
+            pos_x=float(pos_x),
+            pos_y=float(pos_y),
+            scale=max(0.05, float(scale)),
         )
         if int(clip.track) >= 1:
             # Overlay / B-roll: place at playhead (or explicit start); do not pack into V1
@@ -344,6 +415,10 @@ class TimelineDoc:
         label: str = "",
         timeline_start_sec: Optional[float] = None,
         opacity: float = 0.85,
+        has_alpha: bool = False,
+        pos_x: float = 0.0,
+        pos_y: float = 0.0,
+        scale: float = 1.0,
     ) -> ClipRange:
         """Convenience: place media on V2 overlay track at playhead."""
         return self.add_clip(
@@ -354,10 +429,14 @@ class TimelineDoc:
             height=height,
             in_sec=in_sec,
             out_sec=out_sec,
-            label=label or "B-roll",
+            label=label or ("nobg" if has_alpha else "B-roll"),
             track=1,
             timeline_start_sec=timeline_start_sec,
-            opacity=opacity,
+            opacity=1.0 if has_alpha else opacity,
+            has_alpha=has_alpha,
+            pos_x=pos_x,
+            pos_y=pos_y,
+            scale=scale,
         )
 
     def duplicate_selected(self) -> Optional[ClipRange]:
@@ -379,6 +458,10 @@ class TimelineDoc:
                 None if int(src.track) == 0 else float(src.timeline_end())
             ),
             opacity=src.opacity,
+            has_alpha=src.has_alpha,
+            pos_x=src.pos_x,
+            pos_y=src.pos_y,
+            scale=src.scale,
         )
 
     def remove_clip(self, clip_id: Optional[str] = None) -> bool:
@@ -458,6 +541,10 @@ class TimelineDoc:
             track=int(clip.track),
             opacity=clip.opacity,
             timeline_start_sec=t if int(clip.track) >= 1 else 0.0,
+            has_alpha=bool(clip.has_alpha),
+            pos_x=float(clip.pos_x),
+            pos_y=float(clip.pos_y),
+            scale=float(clip.scale),
         )
         clip.out_sec = cut_source
         self.clips.insert(idx + 1, right)
@@ -515,6 +602,10 @@ def plan_frame(doc: TimelineDoc, t_sec: float) -> FramePlan:
                 width=int(clip.width),
                 height=int(clip.height),
                 track=int(clip.track),
+                pos_x=float(clip.pos_x),
+                pos_y=float(clip.pos_y),
+                scale=max(0.05, float(clip.scale)),
+                has_alpha=bool(clip.has_alpha),
             )
         )
     return FramePlan(

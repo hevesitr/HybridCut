@@ -30,6 +30,7 @@ class OpenBody(BaseModel):
     append: bool = False
     track: int = 0
     as_broll: bool = False
+    as_nobg: bool = False
 
 
 class PreviewBody(BaseModel):
@@ -62,7 +63,7 @@ class TimelineActionBody(BaseModel):
         ...,
         description=(
             "duplicate|remove|cut|move|select|to_broll|to_v1|"
-            "set_track|place|trim_edge"
+            "set_track|place|trim_edge|set_transform|reset_transform"
         ),
     )
     clip_id: Optional[str] = None
@@ -72,6 +73,10 @@ class TimelineActionBody(BaseModel):
     timeline_start_sec: Optional[float] = None
     timeline_t: Optional[float] = None
     edge: Optional[str] = None
+    pos_x: Optional[float] = None
+    pos_y: Optional[float] = None
+    scale: Optional[float] = None
+    opacity: Optional[float] = None
 
 
 class PlanBody(BaseModel):
@@ -85,6 +90,17 @@ class AnalyseBody(BaseModel):
 
 class SeedBody(BaseModel):
     png_b64: str = Field(..., description="PNG alpha (or RGBA) as base64 / data-URL")
+    mode: Optional[str] = Field(
+        None, description="union (brush refine) | replace (part-pick face-only)"
+    )
+    part: Optional[str] = Field(None, description="face | region | …")
+
+
+class SeedPickBody(BaseModel):
+    x: float = Field(..., ge=0.0, le=1.0, description="Normalized click X on source frame")
+    y: float = Field(..., ge=0.0, le=1.0, description="Normalized click Y on source frame")
+    t_sec: Optional[float] = None
+    erase: bool = False
 
 
 class AssistChatBody(BaseModel):
@@ -138,6 +154,7 @@ def open_path(body: OpenBody) -> dict:
             append=body.append,
             track=body.track,
             as_broll=body.as_broll,
+            as_nobg=body.as_nobg,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -148,6 +165,7 @@ async def upload_video(
     file: UploadFile = File(...),
     append: bool = False,
     as_broll: bool = False,
+    as_nobg: bool = False,
     track: int = 0,
 ) -> dict:
     suffix = Path(file.filename or "clip.mp4").suffix or ".mp4"
@@ -155,7 +173,7 @@ async def upload_video(
     dest_dir.mkdir(parents=True, exist_ok=True)
     # Unique name when appending so multi-clip keeps distinct files
     stem = "upload"
-    if append or as_broll:
+    if append or as_broll or as_nobg:
         from uuid import uuid4
 
         stem = f"upload-{uuid4().hex[:8]}"
@@ -165,9 +183,10 @@ async def upload_video(
     try:
         return SESSION.open_media(
             dest,
-            append=append or as_broll,
+            append=append or as_broll or as_nobg,
             track=track,
             as_broll=as_broll,
+            as_nobg=as_nobg,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -220,6 +239,10 @@ def timeline_action(body: TimelineActionBody) -> dict:
             timeline_start_sec=body.timeline_start_sec,
             timeline_t=body.timeline_t,
             edge=body.edge,
+            pos_x=body.pos_x,
+            pos_y=body.pos_y,
+            scale=body.scale,
+            opacity=body.opacity,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -257,7 +280,18 @@ def analyse_progress() -> dict:
 @router.post("/seed")
 def set_seed(body: SeedBody) -> dict:
     try:
-        return SESSION.set_seed_mask(body.png_b64)
+        return SESSION.set_seed_mask(body.png_b64, mode=body.mode, part=body.part)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/seed/pick")
+def pick_seed(body: SeedPickBody) -> dict:
+    """Varázsceruza — face/region part pick → replace-mode seed (face-only nobg)."""
+    try:
+        return SESSION.pick_seed_part(
+            x=body.x, y=body.y, t_sec=body.t_sec, erase=body.erase
+        )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

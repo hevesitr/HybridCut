@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-11-clip-delete` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-11-paint-face` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-11-clip-delete
+# expect: 2026-10-11-paint-face
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # CUDA PATH (no remount pip): .\hybrid_cut\start_hybrid_cuda.ps1
@@ -72,7 +72,31 @@ cd $env:USERPROFILE\Documents\Videoeditor
 
 ---
 
-## Stamp — clip-delete (`2026-10-11-clip-delete`)
+## Stamp — paint-face (`2026-10-11-paint-face`)
+
+On top of `2026-10-11-nobg-layer` (overlay **Mozgatás** / Pozíció kept). **Radír / paint hit-testing:** brush tools only paint on the preview mask surface; pointer capture + timeline `z-index` / paint-lock so strokes never hit V1/V2 tracks. **Varázsceruza:** click a face → part-pick (Haar/skin) → **replace** seed → preview + `*_full_nobg.mov` alpha is **face-only** (not whole person). HU labels: Ecset, Radír, Lasszó, Varázsceruza, Arc.
+
+Restart: [`docs/paint-face-restart.md`](docs/paint-face-restart.md) · store [`../hybrid-paint-face-restart.md`](../hybrid-paint-face-restart.md)
+
+---
+
+## Prior — nobg-layer (`2026-10-11-nobg-layer`)
+
+On top of `2026-10-11-concat-look`. **Movable transparent nobg layers (CapCut/Concat overlay subset):** import `*_full_nobg.mov` / alpha WebM onto V1/V2 with preserved alpha; **Pozíció X/Y** + **Méretérték** + preview **Mozgatás** drag + **Visszaállítás**; preview + bake composite transform over lower track / checker; export card **Nobg a timeline-ra**. No rotation/keyframes/blend modes.
+
+Restart: [`docs/nobg-layer-restart.md`](docs/nobg-layer-restart.md) · store [`../hybrid-nobg-layer-restart.md`](../hybrid-nobg-layer-restart.md)
+
+---
+
+## Prior — concat-look (`2026-10-11-concat-look`)
+
+On top of `2026-10-11-clip-delete`. **Concat visual chrome only** (no effects/text/audio mixer port): charcoal dark + lime primary; projects home with **+ Új projekt** / Megnyitás sidebar; editor shell = big preview + professional timeline (HH:MM:SS:FF ruler, tool strip, L/V/M track chrome) + slim right details (**PROJECT / TIMELINE / CONTENTS**); green **Export** top-right; empty preview „Nincs tartalom a lejátszási fej alatt”. All HybridCut BG-remove kept (Gyors/Max, paint, bake → `C:\bgcut`).
+
+Restart: [`docs/concat-look-restart.md`](docs/concat-look-restart.md) · store [`../hybrid-concat-look-restart.md`](../hybrid-concat-look-restart.md)
+
+---
+
+## Prior — clip-delete (`2026-10-11-clip-delete`)
 
 On top of `2026-10-11-timeline-bg`. **Clip tools back in the rail (apex/concat):** per-row **Töröl** on Klip lista; **Duplikál / Töröl / Vágás / ← → / → B-roll / → V1** next to Be/Ki (not buried under Részletek); Delete/Backspace removes the selected clip; last V1 stays protected. Lime/orange look2 retained.
 

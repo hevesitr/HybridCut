@@ -19,6 +19,7 @@ from hybrid_editor.cache.seed_mask import (
     decode_alpha_png_b64,
     encode_alpha_png_b64,
     load_seed,
+    load_seed_meta,
     save_seed,
 )
 from hybrid_editor.engines import EngineMode, MattingEngine, create_engine, resolve_mode
@@ -53,6 +54,8 @@ class EditorSession:
         self._bake_queue: list[BakeQueueItem] = []
         self.analyser = SparseAnalyser()
         self._seed_alpha: Optional[np.ndarray] = None
+        self._seed_mode: str = "union"  # union | replace (Varázsceruza part-pick)
+        self._seed_part: Optional[str] = None
         self._open_path: Optional[str] = None
         # Default ON for Max/export — CapCut-like needle-sharp person edges.
         self.sharp_edges: bool = True
@@ -81,8 +84,14 @@ class EditorSession:
     def _load_seed_for_selection(self) -> None:
         """Swap in disk seed for the currently selected clip (or clear)."""
         sp = self._seed_path()
-        loaded = load_seed(sp) if sp is not None and sp.is_file() else None
-        self._apply_seed_to_engine(loaded)
+        if sp is not None and sp.is_file():
+            loaded = load_seed(sp)
+            meta = load_seed_meta(sp)
+            self._apply_seed_to_engine(
+                loaded, mode=meta.get("mode"), part=meta.get("part")
+            )
+        else:
+            self._apply_seed_to_engine(None)
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -168,6 +177,13 @@ class EditorSession:
                 "vram": vram_status(),
                 "rvm": rvm,
                 "seed_mask": self._seed_alpha is not None,
+                "seed_mode": self._seed_mode if self._seed_alpha is not None else "union",
+                "seed_part": self._seed_part if self._seed_alpha is not None else None,
+                "seed_part_label_hu": (
+                    {"face": "Arc", "region": "Rész"}.get(self._seed_part or "", None)
+                    if self._seed_alpha is not None and self._seed_part
+                    else None
+                ),
                 "mask_rate": MASK_RATE,
                 "intelligence": intel,
                 **self.analyser.status(),
@@ -257,18 +273,39 @@ class EditorSession:
                 self.engine.clear_user_seed()
             return self.status()
 
-    def _apply_seed_to_engine(self, seed: Optional[np.ndarray]) -> None:
-        self._seed_alpha = seed
+    def _apply_seed_to_engine(
+        self,
+        seed: Optional[np.ndarray],
+        *,
+        mode: Optional[str] = None,
+        part: Optional[str] = None,
+    ) -> None:
+        if mode is not None:
+            m = str(mode).strip().lower()
+            self._seed_mode = "replace" if m == "replace" else "union"
+        if part is not None:
+            self._seed_part = str(part).strip() or None
+        if seed is None:
+            self._seed_alpha = None
+            self._seed_mode = "union"
+            self._seed_part = None
+        else:
+            self._seed_alpha = seed
         if isinstance(self.engine, MaxQualityEngine):
             if seed is not None:
-                self.engine.set_user_seed(seed)
+                self.engine.set_user_seed(
+                    seed, mode=self._seed_mode, part=self._seed_part
+                )
             else:
                 self.engine.clear_user_seed()
 
-    def _ensure_timeline(self, *, reset: bool = False) -> None:
+    def _ensure_timeline(self, *, reset: bool = False, has_alpha: bool = False) -> None:
+        from hybrid_editor.media.video_io import looks_like_alpha_media
+
         if self.media is None:
             self.timeline = None
             return
+        alpha_flag = bool(has_alpha) or looks_like_alpha_media(self.media.path)
         if reset or self.timeline is None or not self.timeline.clips:
             self.timeline = TimelineDoc.from_media(
                 path=self.media.path,
@@ -276,6 +313,8 @@ class EditorSession:
                 fps=self.media.fps,
                 width=self.media.width,
                 height=self.media.height,
+                has_alpha=alpha_flag,
+                label="nobg" if alpha_flag else "",
             )
             return
         # If primary media path changed and no matching clip, rebuild
@@ -287,6 +326,8 @@ class EditorSession:
                 fps=self.media.fps,
                 width=self.media.width,
                 height=self.media.height,
+                has_alpha=alpha_flag,
+                label="nobg" if alpha_flag else "",
             )
 
     def open_media(
@@ -296,14 +337,27 @@ class EditorSession:
         append: bool = False,
         track: int = 0,
         as_broll: bool = False,
+        as_nobg: bool = False,
     ) -> dict[str, Any]:
+        from hybrid_editor.media.video_io import looks_like_alpha_media
+
         with self._lock:
             if self.bake_running:
                 raise RuntimeError("Bake fut — előbb várj")
             path = Path(path)
             info = probe_video(path)
-            use_track = 1 if as_broll else max(0, int(track))
-            if append and self.timeline is not None and self.timeline.clips:
+            is_nobg = bool(as_nobg) or looks_like_alpha_media(path)
+            has_clips = self.timeline is not None and bool(self.timeline.clips)
+            # CapCut-like: cutout/nobg lands on V2 when the timeline already has clips
+            if (as_nobg or is_nobg) and has_clips and (as_nobg or as_broll or append):
+                append = True
+                use_track = 1
+            elif as_broll:
+                append = True if has_clips else append
+                use_track = 1 if has_clips else max(0, int(track))
+            else:
+                use_track = max(0, int(track))
+            if append and has_clips:
                 if use_track >= 1:
                     self.timeline.add_broll(
                         media_path=info.path,
@@ -311,7 +365,9 @@ class EditorSession:
                         fps=info.fps,
                         width=info.width,
                         height=info.height,
-                        label=Path(info.path).name,
+                        label="nobg" if is_nobg else Path(info.path).name,
+                        has_alpha=is_nobg,
+                        opacity=1.0 if is_nobg else 0.85,
                     )
                 else:
                     self.timeline.add_clip(
@@ -320,11 +376,13 @@ class EditorSession:
                         fps=info.fps,
                         width=info.width,
                         height=info.height,
+                        has_alpha=is_nobg,
+                        label="nobg" if is_nobg else "",
                     )
                 # Keep engine on newly added media for preview convenience
                 self.media = self.engine.open_media(path)
                 self._open_path = info.path
-                # Do not wipe V1 seed when adding B-roll
+                # Do not wipe V1 seed when adding B-roll / nobg overlay
                 if use_track == 0:
                     self._seed_alpha = None
                     if isinstance(self.engine, MaxQualityEngine):
@@ -336,15 +394,23 @@ class EditorSession:
                 self.bake_progress = 0.0
                 self.bake_status = ""
                 self._seed_alpha = None
+                self._seed_mode = "union"
+                self._seed_part = None
                 if isinstance(self.engine, MaxQualityEngine):
                     self.engine.clear_user_seed()
-                self._ensure_timeline(reset=True)
-                # Restore seed from disk if present (survives reload)
-                sp = self._seed_path()
-                if sp is not None:
-                    loaded = load_seed(sp)
-                    if loaded is not None:
-                        self._apply_seed_to_engine(loaded)
+                self._ensure_timeline(reset=True, has_alpha=is_nobg)
+                # Restore seed from disk if present (survives reload) — skip for alpha masters
+                if not is_nobg:
+                    sp = self._seed_path()
+                    if sp is not None:
+                        loaded = load_seed(sp)
+                        if loaded is not None:
+                            meta = load_seed_meta(sp)
+                            self._apply_seed_to_engine(
+                                loaded,
+                                mode=meta.get("mode"),
+                                part=meta.get("part"),
+                            )
             return self.status()
 
     def update_timeline(
@@ -437,6 +503,20 @@ class EditorSession:
                     raise RuntimeError("clip_id and timeline_t required")
                 if not self.timeline.trim_edge(cid, edge=edge, timeline_t=float(t)):
                     raise RuntimeError("Trim failed")
+            elif act in {"set_transform", "transform"}:
+                cid = kwargs.get("clip_id") or self.timeline.selected_clip_id
+                if not self.timeline.set_transform(
+                    cid,
+                    pos_x=kwargs.get("pos_x"),
+                    pos_y=kwargs.get("pos_y"),
+                    scale=kwargs.get("scale"),
+                    opacity=kwargs.get("opacity"),
+                ):
+                    raise RuntimeError("Nincs klip a pozícióhoz / mérethez")
+            elif act in {"reset_transform", "reset_pos"}:
+                cid = kwargs.get("clip_id") or self.timeline.selected_clip_id
+                if not self.timeline.reset_transform(cid):
+                    raise RuntimeError("Nincs klip a visszaállításhoz")
             else:
                 raise ValueError(f"Unknown timeline action: {action}")
             return self.status()
@@ -462,6 +542,46 @@ class EditorSession:
         if self.mode is EngineMode.MAX and isinstance(self.engine, MaxQualityEngine):
             return self.engine._polish(bgr, warmup=warmup).astype(np.float32)
         return np.asarray(self.engine._matte(bgr), dtype=np.float32)  # type: ignore[attr-defined]
+
+    def _decode_layer_pixels(
+        self,
+        layer: Any,
+        source_t: float,
+        *,
+        max_long: int = 960,
+        warmup: bool = False,
+    ) -> tuple[Any, Any, float]:
+        """Decode BGR + alpha for one PlannedLayer (embedded alpha for nobg, else matte)."""
+        from hybrid_editor.media.video_io import (
+            downscale_long_side,
+            normalize_alpha,
+            read_frame_at,
+            read_frame_bgra,
+        )
+
+        path = Path(layer.media_path)
+        has_alpha = bool(getattr(layer, "has_alpha", False))
+        if has_alpha:
+            bgra, t, useful = read_frame_bgra(path, float(source_t))
+            bgr = bgra[:, :, :3]
+            alpha = normalize_alpha(bgra[:, :, 3])
+            bgr = downscale_long_side(bgr, max_long)
+            if alpha.shape[:2] != bgr.shape[:2]:
+                import cv2
+
+                alpha = cv2.resize(
+                    alpha, (bgr.shape[1], bgr.shape[0]), interpolation=cv2.INTER_LINEAR
+                )
+            if not useful:
+                # Fallback: still try engine matte on RGB if alpha decode failed
+                self._ensure_engine_media(layer.media_path)
+                alpha = self._matte_bgr(bgr, warmup=warmup)
+            return bgr, alpha.astype(np.float32), float(t)
+        self._ensure_engine_media(layer.media_path)
+        bgr, t = read_frame_at(path, float(source_t))
+        bgr = downscale_long_side(bgr, max_long)
+        alpha = self._matte_bgr(bgr, warmup=warmup)
+        return bgr, alpha.astype(np.float32), float(t)
 
     def preview(self, t_sec: float = 0.0) -> PreviewFrame:
         """Timeline composition at playhead: V1 cutout + V2 overlays (Concat plan→compose)."""
@@ -490,7 +610,7 @@ class EditorSession:
                     if self._seed_media_path() == matte_layer.media_path:
                         if isinstance(self.engine, MaxQualityEngine) and self._seed_alpha is not None:
                             self.engine.set_user_seed(self._seed_alpha)
-                    if overlays:
+                    if overlays or getattr(matte_layer, "has_alpha", False):
                         overlay_meta = {
                             "overlay_layers": [
                                 {
@@ -499,33 +619,76 @@ class EditorSession:
                                     "source_t_sec": L.source_t_sec,
                                     "opacity": L.opacity,
                                     "track": L.track,
+                                    "pos_x": getattr(L, "pos_x", 0.0),
+                                    "pos_y": getattr(L, "pos_y", 0.0),
+                                    "scale": getattr(L, "scale", 1.0),
+                                    "has_alpha": getattr(L, "has_alpha", False),
                                 }
                                 for L in overlays
                             ],
                             "timeline_composite": True,
                             "matte_clip_id": matte_layer.clip_id,
+                            "matte_has_alpha": bool(getattr(matte_layer, "has_alpha", False)),
+                            "matte_pos_x": float(getattr(matte_layer, "pos_x", 0.0)),
+                            "matte_pos_y": float(getattr(matte_layer, "pos_y", 0.0)),
+                            "matte_scale": float(getattr(matte_layer, "scale", 1.0)),
                         }
 
-            # Multi-layer: decode + matte + composite (same math as bake)
-            if matte_layer is not None and overlays:
+            # Multi-layer OR alpha V1 nobg: decode + composite (same math as bake)
+            need_custom = matte_layer is not None and (
+                bool(overlays) or bool(getattr(matte_layer, "has_alpha", False))
+                or abs(float(getattr(matte_layer, "pos_x", 0.0))) > 1e-6
+                or abs(float(getattr(matte_layer, "pos_y", 0.0))) > 1e-6
+                or abs(float(getattr(matte_layer, "scale", 1.0)) - 1.0) > 1e-6
+            )
+            if need_custom:
                 from hybrid_editor.media.video_io import (
+                    OverlayFrame,
                     composite_overlay_layers,
-                    downscale_long_side,
                     encode_preview_pair,
                     encode_source_only_preview,
+                    place_layer_on_canvas,
                     read_frame_at,
                 )
 
                 try:
-                    bgr, t = read_frame_at(Path(matte_layer.media_path), source_t)
-                    bgr = downscale_long_side(bgr, 960)
-                    alpha = self._matte_bgr(bgr, warmup=True)
-                    ov_frames: list[tuple[Any, float]] = []
+                    bgr, alpha, t = self._decode_layer_pixels(
+                        matte_layer, source_t, max_long=960, warmup=True
+                    )
+                    # Apply V1 transform when user repositioned the base cutout
+                    if (
+                        abs(float(matte_layer.pos_x)) > 1e-6
+                        or abs(float(matte_layer.pos_y)) > 1e-6
+                        or abs(float(matte_layer.scale) - 1.0) > 1e-6
+                    ):
+                        canvas_h, canvas_w = bgr.shape[:2]
+                        placed_bgr, placed_a = place_layer_on_canvas(
+                            canvas_h,
+                            canvas_w,
+                            bgr,
+                            alpha,
+                            pos_x=float(matte_layer.pos_x),
+                            pos_y=float(matte_layer.pos_y),
+                            scale=float(matte_layer.scale),
+                        )
+                        # Keep canvas size; transparent elsewhere → checker in encode
+                        bgr, alpha = placed_bgr, placed_a
+                    ov_frames: list[OverlayFrame] = []
                     for ov in overlays:
                         try:
-                            obgr, _ = read_frame_at(Path(ov.media_path), ov.source_t_sec)
-                            obgr = downscale_long_side(obgr, 960)
-                            ov_frames.append((obgr, float(ov.opacity)))
+                            obgr, oalpha, _ = self._decode_layer_pixels(
+                                ov, ov.source_t_sec, max_long=960
+                            )
+                            ov_frames.append(
+                                OverlayFrame(
+                                    bgr=obgr,
+                                    opacity=float(ov.opacity),
+                                    alpha=oalpha if getattr(ov, "has_alpha", False) else None,
+                                    pos_x=float(getattr(ov, "pos_x", 0.0)),
+                                    pos_y=float(getattr(ov, "pos_y", 0.0)),
+                                    scale=float(getattr(ov, "scale", 1.0)),
+                                )
+                            )
                         except Exception:  # noqa: BLE001
                             continue
                     if ov_frames:
@@ -544,6 +707,7 @@ class EditorSession:
                         backend=self.engine.capabilities().backend,
                         meta={
                             "matte_empty": empty,
+                            "has_alpha_clip": bool(getattr(matte_layer, "has_alpha", False)),
                             **overlay_meta,
                         },
                         source_jpeg_b64=src,
@@ -660,18 +824,93 @@ class EditorSession:
                 progress=_prog,
             )
 
-    def set_seed_mask(self, png_b64: str) -> dict[str, Any]:
+    def set_seed_mask(
+        self,
+        png_b64: str,
+        *,
+        mode: Optional[str] = None,
+        part: Optional[str] = None,
+    ) -> dict[str, Any]:
         with self._lock:
             if self.media is None:
                 raise RuntimeError("Open a video first")
             alpha = decode_alpha_png_b64(png_b64)
-            # Match preview proxy-ish size is fine; bake resizes
-            self._apply_seed_to_engine(alpha)
+            # Preserve replace/part across brush refine commits unless caller overrides.
+            apply_mode = mode if mode is not None else self._seed_mode
+            apply_part = part if part is not None else self._seed_part
+            self._apply_seed_to_engine(alpha, mode=apply_mode, part=apply_part)
             sp = self._seed_path()
             if sp is not None:
-                save_seed(sp, alpha)
+                save_seed(
+                    sp,
+                    alpha,
+                    mode=self._seed_mode,
+                    part=self._seed_part,
+                )
             st = self.status()
             st["seed_mask_png_b64"] = encode_alpha_png_b64(alpha)
+            return st
+
+    def pick_seed_part(
+        self,
+        *,
+        x: float,
+        y: float,
+        t_sec: Optional[float] = None,
+        erase: bool = False,
+    ) -> dict[str, Any]:
+        """Varázsceruza: face/region pick → replace-mode seed (face-only nobg)."""
+        from hybrid_editor.cache.face_pick import pick_part_matte
+        from hybrid_editor.media.video_io import read_frame_at
+
+        with self._lock:
+            media_path = self._seed_media_path()
+            if not media_path:
+                raise RuntimeError("Open a video first")
+            t = float(t_sec) if t_sec is not None else (
+                float(self.timeline.playhead_sec) if self.timeline else 0.0
+            )
+            bgr, _ = read_frame_at(Path(media_path), t)
+            result = pick_part_matte(
+                bgr,
+                float(x),
+                float(y),
+                erase=bool(erase),
+                existing=self._seed_alpha,
+            )
+            alpha = result["alpha"]
+            if int(result.get("pixels") or 0) < 8 and not erase:
+                raise RuntimeError(
+                    "Varázsceruza: nincs találat az arcon — kattints az arcra"
+                )
+            part = str(result.get("part") or "region")
+            self._apply_seed_to_engine(alpha, mode="replace", part=part)
+            # Reset Max stabilizer/seed cache so next preview uses replace gate
+            if isinstance(self.engine, MaxQualityEngine):
+                self.engine._seed = None  # noqa: SLF001 — intentional live refresh
+                if hasattr(self.engine, "_stabilizer"):
+                    try:
+                        self.engine._stabilizer.reset()
+                    except Exception:
+                        pass
+            sp = self._seed_path()
+            if sp is not None:
+                save_seed(
+                    sp,
+                    alpha,
+                    mode=self._seed_mode,
+                    part=self._seed_part,
+                )
+            st = self.status()
+            st["seed_mask_png_b64"] = encode_alpha_png_b64(alpha)
+            st["pick"] = {
+                "part": part,
+                "label_hu": result.get("label_hu"),
+                "pixels": int(result.get("pixels") or 0),
+                "method": result.get("method"),
+                "erase": bool(erase),
+                "faces_found": int(result.get("faces_found") or 0),
+            }
             return st
 
     def get_seed_mask(self) -> dict[str, Any]:
@@ -683,9 +922,13 @@ class EditorSession:
                 "seed_mask_png_b64": encode_alpha_png_b64(self._seed_alpha),
                 "width": int(self._seed_alpha.shape[1]),
                 "height": int(self._seed_alpha.shape[0]),
+                "seed_mode": self._seed_mode,
+                "seed_part": self._seed_part,
             }
 
     def clear_seed_mask(self) -> dict[str, Any]:
+        from hybrid_editor.cache.seed_mask import seed_meta_path
+
         with self._lock:
             self._apply_seed_to_engine(None)
             sp = self._seed_path()
@@ -694,6 +937,12 @@ class EditorSession:
                     sp.unlink()
                 except OSError:
                     pass
+                meta = seed_meta_path(sp)
+                if meta.is_file():
+                    try:
+                        meta.unlink()
+                    except OSError:
+                        pass
             return self.status()
 
     def _bake_timeline_multiclip(
@@ -743,23 +992,45 @@ class EditorSession:
                 continue
             v1 = next((L for L in plan.layers if int(L.track) == 0), plan.layers[0])
             overlays = [L for L in plan.layers if int(L.track) >= 1]
-            self._ensure_engine_media(v1.media_path)
-            bgr, _ = read_frame_at(Path(v1.media_path), v1.source_t_sec)
-            bgr = downscale_long_side(bgr, 720)
-            if self.mode is EngineMode.MAX and isinstance(self.engine, MaxQualityEngine):
-                alpha = self.engine._polish(bgr, warmup=(written == 0))
-            else:
-                alpha = self.engine._matte(bgr)  # type: ignore[attr-defined]
-            alpha = alpha.astype(np.float32)
-            # Composite V2 B-roll over cutout (same helper as monitor preview)
-            from hybrid_editor.media.video_io import composite_overlay_layers
+            bgr, alpha, _ = self._decode_layer_pixels(
+                v1, v1.source_t_sec, max_long=720, warmup=(written == 0)
+            )
+            from hybrid_editor.media.video_io import (
+                OverlayFrame,
+                composite_overlay_layers,
+                place_layer_on_canvas,
+            )
 
+            if (
+                abs(float(getattr(v1, "pos_x", 0.0))) > 1e-6
+                or abs(float(getattr(v1, "pos_y", 0.0))) > 1e-6
+                or abs(float(getattr(v1, "scale", 1.0)) - 1.0) > 1e-6
+            ):
+                ch, cw = bgr.shape[:2]
+                bgr, alpha = place_layer_on_canvas(
+                    ch,
+                    cw,
+                    bgr,
+                    alpha,
+                    pos_x=float(v1.pos_x),
+                    pos_y=float(v1.pos_y),
+                    scale=float(v1.scale),
+                )
+            # Composite V2 B-roll / nobg over cutout (same helper as monitor preview)
             ov_frames = []
             for ov in overlays:
                 try:
-                    obgr, _ = read_frame_at(Path(ov.media_path), ov.source_t_sec)
-                    obgr = downscale_long_side(obgr, 720)
-                    ov_frames.append((obgr, float(ov.opacity)))
+                    obgr, oalpha, _ = self._decode_layer_pixels(ov, ov.source_t_sec, max_long=720)
+                    ov_frames.append(
+                        OverlayFrame(
+                            bgr=obgr,
+                            opacity=float(ov.opacity),
+                            alpha=oalpha if getattr(ov, "has_alpha", False) else None,
+                            pos_x=float(getattr(ov, "pos_x", 0.0)),
+                            pos_y=float(getattr(ov, "pos_y", 0.0)),
+                            scale=float(getattr(ov, "scale", 1.0)),
+                        )
+                    )
                 except Exception:  # noqa: BLE001
                     continue
             if ov_frames:

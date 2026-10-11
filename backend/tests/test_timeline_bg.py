@@ -1,4 +1,4 @@
-"""Timeline + BG remove + clip-delete contracts — stamp ``2026-10-11-clip-delete``.
+"""Timeline + BG remove + nobg-layer contracts — stamp ``2026-10-11-paint-face``.
 
 Source-contract + TimelineDoc drag/trim/track + composite helper (no ORT).
 """
@@ -29,7 +29,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_timeline_bg():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-clip-delete"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-paint-face"
 
 
 def test_remove_extra_v1_and_v2():
@@ -198,26 +198,37 @@ def test_ui_timeline_drag_trim_wand():
     assert 'runAction("remove"' in app or "runAction(\"remove\"" in app
     assert "clip-tools" in app
     assert "deleteSelectedClip" in app
+    assert "concat-workspace" in app
+    assert "topbar-export" in app
+    assert "details-tabs" in app
+    assert "Nincs tartalom a lejátszási fej alatt" in app
+    assert "formatTimecode" in tl
+    assert "tl-chrome-bar" in tl
+    assert "tl-lane-toggles" in tl
     seed = SEED.read_text(encoding="utf-8")
     assert "floodFillMask" in seed
     assert "colorClose" in seed
     assert "scanline" in seed.lower() or "spanUp" in seed
     assert "selectedClipId" in seed
-    assert "wandTol" in seed
+    assert "onWandPick" in seed or "wandTol" in seed
+    assert "floodFillMask" in seed  # legacy / offline fallback kept
     api = API_TS.read_text(encoding="utf-8")
     assert "trim_edge" in api
     assert "set_track" in api
     css = CSS.read_text(encoding="utf-8")
-    assert "2026-10-11-clip-delete" in css
+    assert "2026-10-11-paint-face" in css
     assert ".clip-bin-del" in css
     assert ".tl-handle" in css
+    assert ".tl-chrome-bar" in css
+    assert ".details-tabs" in css
     assert "--accent: #ff7a1a" in css
     assert "--accent-2: #b8f000" in css
 
 
 def test_readme_and_dist():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-11-clip-delete" in readme
-    assert "clip-delete" in readme
+    assert "2026-10-11-paint-face" in readme
+    assert "2026-10-11-concat-look" in readme
+    assert "concat-look" in readme
     assets = list(DIST_ASSETS.glob("index-*.js")) + list(DIST_ASSETS.glob("index-*.css"))
     assert assets, "frontend/dist missing — run vite build"

@@ -2,6 +2,14 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 type Tool = "brush" | "erase" | "lasso" | "wand";
 
+export type WandPickResult = {
+  ok: boolean;
+  pngB64?: string | null;
+  message: string;
+  part?: string | null;
+  labelHu?: string | null;
+};
+
 type Props = {
   imageJpegB64: string | null;
   /** Server-persisted seed alpha PNG (data URL or raw b64) — reloads after scrub. */
@@ -20,6 +28,17 @@ type Props = {
   autoCommitOnStrokeEnd?: boolean;
   /** Selected timeline clip — wand/seed apply to this clip's mask. */
   selectedClipId?: string | null;
+  /**
+   * Varázsceruza part-pick (face-only). Normalized coords in source frame space.
+   * When omitted, falls back to local colour flood (legacy).
+   */
+  onWandPick?: (args: {
+    xNorm: number;
+    yNorm: number;
+    erase: boolean;
+  }) => Promise<WandPickResult>;
+  /** Fires when a paint stroke is actively capturing the pointer (timeline must ignore). */
+  onPaintGesture?: (active: boolean) => void;
   onCommit: (pngB64: string) => void;
   onClear: () => void;
 };
@@ -89,8 +108,8 @@ function colorClose(
 }
 
 /**
- * Scanline flood-fill on mask from reference RGB (Varázsceruza).
- * Applies to the selected clip's seed canvas — contiguous similar colour.
+ * Scanline flood-fill on mask from reference RGB (legacy / offline fallback).
+ * Primary Varázsceruza path is server face/region part-pick.
  */
 function floodFillMask(
   maskCtx: CanvasRenderingContext2D,
@@ -102,9 +121,6 @@ function floodFillMask(
 ) {
   const w = ref.width;
   const h = ref.height;
-  if (maskCtx.canvas.width !== w || maskCtx.canvas.height !== h) {
-    // Keep fill in mask pixel space even if CSS box differs.
-  }
   const x0 = Math.max(0, Math.min(w - 1, Math.round(sx)));
   const y0 = Math.max(0, Math.min(h - 1, Math.round(sy)));
   const mask = maskCtx.getImageData(0, 0, w, h);
@@ -121,8 +137,8 @@ function floodFillMask(
   const visited = new Uint8Array(w * h);
   const stack: number[] = [x0, y0];
   let painted = 0;
-  // Guard against whole-frame flood; allow large BG / subject regions.
-  const maxPaint = Math.floor(w * h * 0.82);
+  // Tight cap — face/part only; whole-person flood is the bug we avoid.
+  const maxPaint = Math.floor(w * h * 0.12);
 
   const paintPx = (pi: number) => {
     if (erase) {
@@ -142,7 +158,6 @@ function floodFillMask(
     const y = stack.pop()!;
     let x = stack.pop()!;
     if (y < 0 || y >= h) continue;
-    // Move left to span start
     while (x >= 0 && !visited[y * w + x] && match(x, y)) x -= 1;
     x += 1;
     let spanUp = false;
@@ -178,6 +193,20 @@ function floodFillMask(
   return painted;
 }
 
+function insideMaskSurface(
+  e: { clientX: number; clientY: number },
+  canvas: HTMLCanvasElement,
+  pad = 2,
+) {
+  const rect = canvas.getBoundingClientRect();
+  return (
+    e.clientX >= rect.left - pad &&
+    e.clientX <= rect.right + pad &&
+    e.clientY >= rect.top - pad &&
+    e.clientY <= rect.bottom + pad
+  );
+}
+
 export function SeedPaint({
   imageJpegB64,
   initialMaskPngB64,
@@ -188,6 +217,8 @@ export function SeedPaint({
   frame,
   autoCommitOnStrokeEnd = false,
   selectedClipId = null,
+  onWandPick,
+  onPaintGesture,
   onCommit,
   onClear,
 }: Props) {
@@ -200,6 +231,7 @@ export function SeedPaint({
   const [brush, setBrush] = useState(28);
   const [wandTol, setWandTol] = useState(40);
   const [wandMsg, setWandMsg] = useState<string | null>(null);
+  const [paintingUi, setPaintingUi] = useState(false);
   const drawing = useRef(false);
   const dirty = useRef(false);
   const lasso = useRef<{ x: number; y: number }[]>([]);
@@ -211,6 +243,11 @@ export function SeedPaint({
 
   const w = Math.max(160, width || 480);
   const h = Math.max(120, height || 360);
+
+  const setGesture = (active: boolean) => {
+    setPaintingUi(active);
+    onPaintGesture?.(active);
+  };
 
   // Keep mask canvas CSS box aligned to the displayed <img> (letterbox-safe).
   useEffect(() => {
@@ -230,6 +267,8 @@ export function SeedPaint({
         mask.style.height = "100%";
         mask.style.left = "0";
         mask.style.top = "0";
+        mask.style.right = "auto";
+        mask.style.bottom = "auto";
         mask.style.transform = "none";
         return;
       }
@@ -237,13 +276,19 @@ export function SeedPaint({
       const wr = wrap.getBoundingClientRect();
       const ir = img.getBoundingClientRect();
       if (wr.width < 1 || wr.height < 1) return;
+      // Never let the mask hit-target spill outside the preview frame (timeline bleed).
+      const left = Math.max(0, ir.left - wr.left);
+      const top = Math.max(0, ir.top - wr.top);
+      const widthPx = Math.min(ir.width, wr.width - left);
+      const heightPx = Math.min(ir.height, wr.height - top);
       mask.style.position = "absolute";
-      mask.style.left = `${ir.left - wr.left}px`;
-      mask.style.top = `${ir.top - wr.top}px`;
-      mask.style.width = `${ir.width}px`;
-      mask.style.height = `${ir.height}px`;
+      mask.style.left = `${left}px`;
+      mask.style.top = `${top}px`;
+      mask.style.width = `${Math.max(1, widthPx)}px`;
+      mask.style.height = `${Math.max(1, heightPx)}px`;
       mask.style.right = "auto";
       mask.style.bottom = "auto";
+      mask.style.inset = "auto";
       mask.style.transform = "none";
     };
 
@@ -259,7 +304,7 @@ export function SeedPaint({
     };
   }, [docked, imageJpegB64, width, height, frame]);
 
-  // Background / reference RGB for wand + panel mode
+  // Background / reference RGB for wand fallback + panel mode
   useEffect(() => {
     const bg = bgRef.current;
     const mask = maskRef.current;
@@ -354,9 +399,13 @@ export function SeedPaint({
   const pos = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = maskRef.current!;
     const rect = canvas.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / Math.max(1, rect.width)) * canvas.width;
+    const y = ((e.clientY - rect.top) / Math.max(1, rect.height)) * canvas.height;
     return {
-      x: ((e.clientX - rect.left) / Math.max(1, rect.width)) * canvas.width,
-      y: ((e.clientY - rect.top) / Math.max(1, rect.height)) * canvas.height,
+      x: Math.max(0, Math.min(canvas.width, x)),
+      y: Math.max(0, Math.min(canvas.height, y)),
+      xNorm: Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width))),
+      yNorm: Math.max(0, Math.min(1, (e.clientY - rect.top) / Math.max(1, rect.height))),
     };
   };
 
@@ -370,11 +419,17 @@ export function SeedPaint({
       }
       pointerId.current = null;
     }
+    setGesture(false);
   };
 
   const paintAt = (x: number, y: number) => {
-    const ctx = maskRef.current?.getContext("2d");
-    if (!ctx) return;
+    const canvas = maskRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!ctx || !canvas) return;
+    // Hard clamp — never paint outside mask bitmap (timeline coords map off-canvas).
+    if (x < -brush || y < -brush || x > canvas.width + brush || y > canvas.height + brush) {
+      return;
+    }
     ctx.save();
     if (tool === "erase") {
       ctx.globalCompositeOperation = "destination-out";
@@ -401,8 +456,6 @@ export function SeedPaint({
     if (tool === "lasso" && lasso.current.length > 2) {
       const ctx = maskRef.current?.getContext("2d");
       if (ctx) {
-        // Clear the temporary stroke polyline by redrawing fill only on closed path.
-        // Snapshot before stroke was drawn is expensive; instead fill closed path over strokes.
         ctx.save();
         ctx.globalCompositeOperation = "source-over";
         ctx.fillStyle = AMBER;
@@ -423,36 +476,65 @@ export function SeedPaint({
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (disabled || !ready) return;
+    // Paint surface only — never let the gesture reach the timeline dock.
     e.preventDefault();
+    e.stopPropagation();
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
       pointerId.current = e.pointerId;
     } catch {
       pointerId.current = e.pointerId;
     }
-    const { x, y } = pos(e);
+    setGesture(true);
+    const { x, y, xNorm, yNorm } = pos(e);
 
     if (tool === "wand") {
-      const ref = refRgb.current;
-      const ctx = maskRef.current?.getContext("2d");
-      if (ref && ctx) {
-        // Alt / right-button = erase similar region from seed
-        const erase = e.altKey || e.button === 2;
-        const n = floodFillMask(ctx, ref, x, y, wandTol, erase);
-        dirty.current = n > 0;
-        drawing.current = false;
+      const erase = e.altKey || e.button === 2;
+      drawing.current = false;
+      const run = async () => {
+        if (onWandPick) {
+          setWandMsg("Varázsceruza: rész kijelölése…");
+          try {
+            const res = await onWandPick({ xNorm, yNorm, erase });
+            setWandMsg(res.message);
+            if (res.ok && res.pngB64) {
+              const ctx = maskRef.current?.getContext("2d");
+              if (ctx && maskRef.current) {
+                await drawMaskFromPng(
+                  ctx,
+                  res.pngB64,
+                  maskRef.current.width || w,
+                  maskRef.current.height || h,
+                );
+                lastMaskKey.current = res.pngB64;
+                dirty.current = false;
+              }
+            }
+          } catch (err) {
+            setWandMsg(err instanceof Error ? err.message : "Varázsceruza hiba");
+          } finally {
+            releasePointer(e.currentTarget);
+          }
+          return;
+        }
+        // Offline fallback — constrained colour flood
+        const ref = refRgb.current;
+        const ctx = maskRef.current?.getContext("2d");
+        if (ref && ctx) {
+          const n = floodFillMask(ctx, ref, x, y, wandTol, erase);
+          dirty.current = n > 0;
+          setWandMsg(
+            n > 0
+              ? `Varázsceruza (helyi): ${n.toLocaleString("hu-HU")} px${erase ? " törölve" : ""}`
+              : "Varázsceruza: nincs találat — növeld a tűrést",
+          );
+          if (n > 0 && autoCommitOnStrokeEnd) commit();
+        } else {
+          setWandMsg("Varázsceruza: várj a képkockára…");
+        }
         releasePointer(e.currentTarget);
-        setWandMsg(
-          n > 0
-            ? `Varázsceruza: ${n.toLocaleString("hu-HU")} px${erase ? " törölve" : ""}${
-                selectedClipId ? " · kijelölt klip" : ""
-              }`
-            : "Varázsceruza: nincs találat — növeld a tűrést",
-        );
-        if (n > 0 && autoCommitOnStrokeEnd) commit();
-      } else {
-        setWandMsg("Varázsceruza: várj a képkockára…");
-      }
+      };
+      void run();
       return;
     }
 
@@ -466,6 +548,13 @@ export function SeedPaint({
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!drawing.current || disabled) return;
+    e.stopPropagation();
+    // If the pointer left the mask surface (e.g. over timeline), stop painting
+    // and release capture so the timeline can receive the next gesture.
+    if (!insideMaskSurface(e, e.currentTarget, 4)) {
+      endStroke(e.currentTarget);
+      return;
+    }
     const { x, y } = pos(e);
     if (tool === "lasso") {
       lasso.current.push({ x, y });
@@ -490,6 +579,7 @@ export function SeedPaint({
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.stopPropagation();
     endStroke(e.currentTarget);
   };
 
@@ -531,6 +621,7 @@ export function SeedPaint({
     if (mask && ctx) ctx.clearRect(0, 0, mask.width, mask.height);
     lastMaskKey.current = null;
     dirty.current = false;
+    setWandMsg(null);
     onClear();
   };
 
@@ -549,7 +640,7 @@ export function SeedPaint({
         type="button"
         className={`btn ${tool === "erase" ? "primary" : ""}`}
         disabled={disabled}
-        title="Radír: téves maszkterület törlése."
+        title="Radír: téves maszkterület törlése — csak az előnézet maszkon, nem az idővonalon."
         onClick={() => setTool("erase")}
       >
         Radír
@@ -567,7 +658,7 @@ export function SeedPaint({
         type="button"
         className={`btn ${tool === "wand" ? "primary" : ""}`}
         disabled={disabled}
-        title="Varázsceruza: kattints a hasonló színű területre (flood-fill a kijelölt klip seedjére). Alt+katt = törlés."
+        title="Varázsceruza: kattints az arcra — csak az arc (rész) kerül a nobg alphába. Alt+katt = törlés."
         onClick={() => setTool("wand")}
       >
         Varázsceruza
@@ -583,8 +674,8 @@ export function SeedPaint({
           onChange={(e) => setBrush(Number(e.target.value))}
         />
       </label>
-      {tool === "wand" ? (
-        <label className="brush-size" title="Varázsceruza tűrése (max RGB csatorna + világosság).">
+      {tool === "wand" && !onWandPick ? (
+        <label className="brush-size" title="Varázsceruza tűrése (helyi fallback).">
           Tűrés
           <input
             type="range"
@@ -631,22 +722,33 @@ export function SeedPaint({
   const maskCanvas = (
     <canvas
       ref={maskRef}
-      className="seed-mask"
+      className={`seed-mask${disabled ? " seed-mask--passthrough" : ""}`}
+      data-paint-surface="1"
+      data-paint-tool={tool}
+      style={disabled ? { pointerEvents: "none" } : undefined}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
+      onContextMenu={(e) => e.preventDefault()}
       title={
-        tool === "wand"
-          ? "Varázsceruza — kattints a kijelölendő területre"
-          : "Fesd a kézi maszkot a forrás képkockára."
+        disabled
+          ? "Mozgatás be — festés szünetel (kapcsold ki a Mozgatást a festéshez)"
+          : tool === "wand"
+            ? "Varázsceruza — kattints az arcra (csak arc nobg)"
+            : tool === "erase"
+              ? "Radír — csak az előnézet maszkon"
+              : "Fesd a kézi maszkot a forrás képkockára."
       }
     />
   );
 
   if (docked) {
     return (
-      <div className="seed-paint seed-paint--docked">
+      <div
+        className={`seed-paint seed-paint--docked${paintingUi ? " seed-painting" : ""}`}
+        data-paint-tool={tool}
+      >
         {tools}
         <div className="seed-frame" ref={frameWrapRef}>
           {frame}
@@ -654,14 +756,14 @@ export function SeedPaint({
         </div>
         {actions}
         <p className="seed-hint seed-hint--docked">
-          Eszközök a képkocka felett · festés a képen · Varázsceruza = flood-fill kattintásra
+          Ecset / Radír csak az előnézeten · Varázsceruza = arc / rész → átlátszó nobg
         </p>
       </div>
     );
   }
 
   return (
-    <div className="seed-paint">
+    <div className={`seed-paint${paintingUi ? " seed-painting" : ""}`} data-paint-tool={tool}>
       {tools}
       <div className="seed-stage">
         <canvas ref={bgRef} className="seed-bg" />
@@ -669,8 +771,7 @@ export function SeedPaint({
       </div>
       {actions}
       <p className="seed-hint">
-        Forrás a maszk alatt. A kézi maszk scrub után is megmarad. Export → Max minőség /
-        MatAnyone2.
+        Forrás a maszk alatt. Varázsceruza = arc-only nobg. Export → Max minőség.
       </p>
     </div>
   );

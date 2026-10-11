@@ -1,25 +1,33 @@
 from hybrid_editor.media.video_io import (
+    OverlayFrame,
     composite_cutout_over_checker,
     composite_overlay_layers,
     encode_preview_pair,
     encode_source_only_preview,
     is_matte_empty,
+    looks_like_alpha_media,
     make_checkerboard,
     normalize_alpha,
+    place_layer_on_canvas,
     probe_video,
     read_frame_at,
+    read_frame_bgra,
     visualize_alpha_matte,
 )
 
 __all__ = [
+    "OverlayFrame",
     "composite_cutout_over_checker",
     "composite_overlay_layers",
     "encode_preview_pair",
     "encode_source_only_preview",
     "is_matte_empty",
+    "looks_like_alpha_media",
     "make_checkerboard",
     "normalize_alpha",
+    "place_layer_on_canvas",
     "probe_video",
     "read_frame_at",
+    "read_frame_bgra",
     "visualize_alpha_matte",
 ]

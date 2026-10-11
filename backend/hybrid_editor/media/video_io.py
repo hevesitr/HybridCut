@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence, Union
 
 import cv2
 import numpy as np
@@ -55,6 +57,18 @@ def probe_video(path: Path) -> MediaInfo:
         cap.release()
 
 
+def looks_like_alpha_media(path: Path | str) -> bool:
+    """Heuristic: HybridCut *_full_nobg.mov / alpha WebM / explicit alpha stems."""
+    p = Path(path)
+    stem = p.stem.lower()
+    suf = p.suffix.lower()
+    if "nobg" in stem or "_alpha" in stem or stem.endswith("-alpha"):
+        return True
+    if suf == ".webm":
+        return True
+    return False
+
+
 def read_frame_at(path: Path, t_sec: float) -> tuple[np.ndarray, float]:
     path = Path(path)
     cap = cv2.VideoCapture(str(path))
@@ -75,6 +89,70 @@ def read_frame_at(path: Path, t_sec: float) -> tuple[np.ndarray, float]:
         return frame, t
     finally:
         cap.release()
+
+
+def _ffmpeg_read_bgra(path: Path, t_sec: float, width: int, height: int) -> Optional[np.ndarray]:
+    """Decode one BGRA frame via ffmpeg (ProRes/qtrle/VP9 alpha). None on failure."""
+    try:
+        from hybrid_editor.export.ffmpeg_bin import resolve_ffmpeg
+    except Exception:  # noqa: BLE001
+        return None
+    ff = resolve_ffmpeg("ffmpeg")
+    if not ff or width <= 0 or height <= 0:
+        return None
+    t = max(0.0, float(t_sec))
+    cmd = [
+        ff,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{t:.4f}",
+        "-i",
+        str(path),
+        "-frames:v",
+        "1",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "bgra",
+        "-",
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, check=False, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    need = int(width) * int(height) * 4
+    if proc.returncode != 0 or len(proc.stdout) < need:
+        return None
+    return np.frombuffer(proc.stdout[:need], dtype=np.uint8).reshape((height, width, 4)).copy()
+
+
+def read_frame_bgra(path: Path, t_sec: float) -> tuple[np.ndarray, float, bool]:
+    """Read BGRA (alpha preserved when possible). Returns (bgra, t, has_useful_alpha)."""
+    path = Path(path)
+    info = probe_video(path)
+    t = float(np.clip(t_sec, 0.0, max(0.0, info.duration_sec)))
+    bgra = _ffmpeg_read_bgra(path, t, info.width, info.height)
+    if bgra is not None:
+        a = bgra[:, :, 3].astype(np.float32) / 255.0
+        useful = float(a.max()) > 0.05 and float((a > 0.15).mean()) > 0.01
+        # Some opaque MOVs decode as full alpha — still valid
+        if useful or looks_like_alpha_media(path):
+            if not useful:
+                # Opaque plate: treat as full coverage so layer still draws
+                bgra = bgra.copy()
+                bgra[:, :, 3] = 255
+            return bgra, t, True
+    # OpenCV fallback (usually drops alpha)
+    bgr, t2 = read_frame_at(path, t)
+    out = cv2.cvtColor(bgr, cv2.COLOR_BGR2BGRA)
+    if looks_like_alpha_media(path):
+        # Without real alpha, keep RGB and full A — caller may still transform as overlay
+        out[:, :, 3] = 255
+        return out, t2, False
+    out[:, :, 3] = 255
+    return out, t2, False
 
 
 def read_frame_index(path: Path, frame_idx: int) -> Optional[np.ndarray]:
@@ -181,28 +259,139 @@ def make_checkerboard(
     return np.stack([plane, plane, plane], axis=-1)
 
 
+@dataclass
+class OverlayFrame:
+    """One overlay layer for monitor + bake (CapCut PiP / nobg cutout)."""
+
+    bgr: np.ndarray
+    opacity: float = 1.0
+    alpha: Optional[np.ndarray] = None
+    pos_x: float = 0.0
+    pos_y: float = 0.0
+    scale: float = 1.0
+
+
+OverlayInput = Union[OverlayFrame, tuple]
+
+
+def _as_overlay(item: OverlayInput) -> OverlayFrame:
+    if isinstance(item, OverlayFrame):
+        return item
+    if not isinstance(item, tuple) or len(item) < 2:
+        raise TypeError("overlay must be OverlayFrame or (bgr, opacity[, ...])")
+    bgr = item[0]
+    opacity = float(item[1])
+    alpha = item[2] if len(item) >= 3 else None
+    pos_x = float(item[3]) if len(item) >= 4 else 0.0
+    pos_y = float(item[4]) if len(item) >= 5 else 0.0
+    scale = float(item[5]) if len(item) >= 6 else 1.0
+    return OverlayFrame(
+        bgr=bgr, opacity=opacity, alpha=alpha, pos_x=pos_x, pos_y=pos_y, scale=scale
+    )
+
+
+def place_layer_on_canvas(
+    canvas_h: int,
+    canvas_w: int,
+    layer_bgr: np.ndarray,
+    layer_alpha: np.ndarray,
+    *,
+    pos_x: float = 0.0,
+    pos_y: float = 0.0,
+    scale: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Contain-fit layer onto canvas with CapCut-like center offset + scale.
+
+    pos_x/pos_y are fractions of canvas size (0,0 = centered). scale 1 = 100%.
+    Returns full-canvas BGR + alpha float32 (zeros outside the placed rect).
+    """
+    lh, lw = layer_bgr.shape[:2]
+    if lh <= 0 or lw <= 0 or canvas_h <= 0 or canvas_w <= 0:
+        z_bgr = np.zeros((canvas_h, canvas_w, 3), np.uint8)
+        z_a = np.zeros((canvas_h, canvas_w), np.float32)
+        return z_bgr, z_a
+    a = normalize_alpha(layer_alpha)
+    if a.shape[:2] != (lh, lw):
+        a = cv2.resize(a, (lw, lh), interpolation=cv2.INTER_LINEAR)
+    fit = min(canvas_w / float(lw), canvas_h / float(lh))
+    sc = max(0.05, float(scale)) * fit
+    out_w = max(1, int(round(lw * sc)))
+    out_h = max(1, int(round(lh * sc)))
+    resized = cv2.resize(layer_bgr, (out_w, out_h), interpolation=cv2.INTER_AREA)
+    a_r = cv2.resize(a, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+    cx = canvas_w * 0.5 + float(pos_x) * canvas_w
+    cy = canvas_h * 0.5 + float(pos_y) * canvas_h
+    x0 = int(round(cx - out_w * 0.5))
+    y0 = int(round(cy - out_h * 0.5))
+    x1, y1 = x0 + out_w, y0 + out_h
+    # Clip to canvas
+    src_x0 = max(0, -x0)
+    src_y0 = max(0, -y0)
+    dst_x0 = max(0, x0)
+    dst_y0 = max(0, y0)
+    dst_x1 = min(canvas_w, x1)
+    dst_y1 = min(canvas_h, y1)
+    placed_bgr = np.zeros((canvas_h, canvas_w, 3), np.uint8)
+    placed_a = np.zeros((canvas_h, canvas_w), np.float32)
+    if dst_x1 <= dst_x0 or dst_y1 <= dst_y0:
+        return placed_bgr, placed_a
+    src_x1 = src_x0 + (dst_x1 - dst_x0)
+    src_y1 = src_y0 + (dst_y1 - dst_y0)
+    placed_bgr[dst_y0:dst_y1, dst_x0:dst_x1] = resized[src_y0:src_y1, src_x0:src_x1]
+    placed_a[dst_y0:dst_y1, dst_x0:dst_x1] = a_r[src_y0:src_y1, src_x0:src_x1]
+    return placed_bgr, placed_a
+
+
 def composite_overlay_layers(
     bgr: np.ndarray,
     alpha: np.ndarray,
-    overlays: list[tuple[np.ndarray, float]],
+    overlays: Sequence[OverlayInput],
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Porter-Duff-ish: stack V2 B-roll frames over V1 cutout RGB + raise alpha.
+    """Porter-Duff over: stack V2 overlays (nobg alpha / B-roll) on V1 cutout.
 
     Concat idea: one compositor path for monitor + export — same blend math as bake.
-    Each overlay is (bgr_uint8, opacity 0..1).
+    Each overlay is OverlayFrame or legacy (bgr_uint8, opacity 0..1).
+    Optional alpha + pos_x/pos_y/scale enable CapCut-like movable cutouts.
     """
     out = bgr.astype(np.float32)
     a = normalize_alpha(alpha).astype(np.float32)
     h, w = out.shape[:2]
-    for obgr, opacity in overlays:
-        op = float(np.clip(opacity, 0.0, 1.0))
+    for raw in overlays:
+        ov = _as_overlay(raw)
+        op = float(np.clip(ov.opacity, 0.0, 1.0))
         if op <= 1e-6:
             continue
-        layer = obgr
-        if layer.shape[:2] != (h, w):
-            layer = cv2.resize(layer, (w, h), interpolation=cv2.INTER_AREA)
-        out = out * (1.0 - op) + layer.astype(np.float32) * op
-        a = np.maximum(a, op)
+        layer = ov.bgr
+        if ov.alpha is not None:
+            la = normalize_alpha(ov.alpha)
+        else:
+            la = np.ones(layer.shape[:2], np.float32)
+        # Identity transform + matching size → fast path (legacy B-roll)
+        identity = (
+            abs(float(ov.pos_x)) < 1e-6
+            and abs(float(ov.pos_y)) < 1e-6
+            and abs(float(ov.scale) - 1.0) < 1e-6
+            and ov.alpha is None
+        )
+        if identity:
+            if layer.shape[:2] != (h, w):
+                layer = cv2.resize(layer, (w, h), interpolation=cv2.INTER_AREA)
+            mask = op
+            out = out * (1.0 - mask) + layer.astype(np.float32) * mask
+            a = np.maximum(a, mask)
+            continue
+        placed_bgr, placed_a = place_layer_on_canvas(
+            h,
+            w,
+            layer,
+            la,
+            pos_x=float(ov.pos_x),
+            pos_y=float(ov.pos_y),
+            scale=float(ov.scale),
+        )
+        mask = np.clip(placed_a * op, 0.0, 1.0)[..., None]
+        out = out * (1.0 - mask) + placed_bgr.astype(np.float32) * mask
+        a = np.maximum(a, mask[..., 0])
     return out.astype(np.uint8), a.astype(np.float32)
 
 

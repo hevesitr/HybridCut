@@ -13,6 +13,13 @@ export type ClipInfo = {
   width?: number;
   height?: number;
   media_duration_sec?: number;
+  /** CapCut-like center offset (−1…1 fraction of canvas). */
+  pos_x?: number;
+  pos_y?: number;
+  /** 1 = 100%. */
+  scale?: number;
+  /** *_full_nobg.mov / alpha WebM — preserve transparency. */
+  has_alpha?: boolean;
 };
 
 export type EditorStatus = {
@@ -94,6 +101,10 @@ export type EditorStatus = {
   bake_queue_len?: number;
   bake_queue?: Array<{ out_dir: string; max_frames?: number | null; label?: string }>;
   seed_mask?: boolean;
+  /** union = brush refine; replace = Varázsceruza face/part-only nobg */
+  seed_mode?: "union" | "replace" | string;
+  seed_part?: string | null;
+  seed_part_label_hu?: string | null;
   mask_rate?: number;
   analyse_running?: boolean;
   analyse_progress?: number;
@@ -201,10 +212,10 @@ export const api = {
   /** Új projekt — clears timeline, media, seeds, bake state. */
   newProject: () =>
     json<EditorStatus>("/api/project/new", { method: "POST", body: "{}" }),
-  openPath: (path: string, append = false, as_broll = false) =>
+  openPath: (path: string, append = false, as_broll = false, as_nobg = false) =>
     json<EditorStatus>("/api/open", {
       method: "POST",
-      body: JSON.stringify({ path, append, as_broll }),
+      body: JSON.stringify({ path, append, as_broll, as_nobg }),
     }),
   preview: (t_sec: number) =>
     json<PreviewResult>("/api/preview", {
@@ -229,7 +240,9 @@ export const api = {
       | "to_v1"
       | "set_track"
       | "place"
-      | "trim_edge";
+      | "trim_edge"
+      | "set_transform"
+      | "reset_transform";
     clip_id?: string;
     direction?: number;
     t_sec?: number;
@@ -237,6 +250,10 @@ export const api = {
     timeline_start_sec?: number;
     timeline_t?: number;
     edge?: "in" | "out" | "be" | "ki";
+    pos_x?: number;
+    pos_y?: number;
+    scale?: number;
+    opacity?: number;
   }) =>
     json<EditorStatus>("/api/timeline/action", { method: "POST", body: JSON.stringify(body) }),
   plan: (t_sec?: number) =>
@@ -257,15 +274,41 @@ export const api = {
       analyse_masks: number;
       mask_rate: number;
     }>("/api/analyse/progress"),
-  setSeed: (png_b64: string) =>
+  setSeed: (png_b64: string, mode?: string | null, part?: string | null) =>
     json<EditorStatus & { seed_mask_png_b64?: string }>("/api/seed", {
       method: "POST",
-      body: JSON.stringify({ png_b64 }),
+      body: JSON.stringify({
+        png_b64,
+        ...(mode ? { mode } : {}),
+        ...(part ? { part } : {}),
+      }),
+    }),
+  seedPick: (body: { x: number; y: number; t_sec?: number; erase?: boolean }) =>
+    json<
+      EditorStatus & {
+        seed_mask_png_b64?: string;
+        pick?: {
+          part?: string;
+          label_hu?: string;
+          pixels?: number;
+          method?: string;
+          erase?: boolean;
+          faces_found?: number;
+        };
+      }
+    >("/api/seed/pick", {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
   getSeed: () =>
-    json<{ seed_mask: boolean; seed_mask_png_b64: string | null; width?: number; height?: number }>(
-      "/api/seed",
-    ),
+    json<{
+      seed_mask: boolean;
+      seed_mask_png_b64: string | null;
+      width?: number;
+      height?: number;
+      seed_mode?: string;
+      seed_part?: string | null;
+    }>("/api/seed"),
   clearSeed: () => json<EditorStatus>("/api/seed", { method: "DELETE" }),
   bake: (max_frames: number | null = null, async_job = true, queue_if_busy = true, label = "") =>
     json<BakeStart>("/api/bake", {
@@ -292,12 +335,13 @@ export const api = {
       "/api/assist/chat",
       { method: "POST", body: JSON.stringify({ prompt }) },
     ),
-  upload: async (file: File, append = false, as_broll = false) => {
+  upload: async (file: File, append = false, as_broll = false, as_nobg = false) => {
     const fd = new FormData();
     fd.append("file", file);
     const qs = new URLSearchParams({
-      append: append || as_broll ? "true" : "false",
+      append: append || as_broll || as_nobg ? "true" : "false",
       as_broll: as_broll ? "true" : "false",
+      as_nobg: as_nobg ? "true" : "false",
     });
     const res = await fetch(`/api/upload?${qs}`, {
       method: "POST",

@@ -1,4 +1,4 @@
-"""UI contracts for nobg result card + stamp ``2026-10-11-timeline-bg``."""
+"""UI contracts for nobg result card + stamp ``2026-10-11-paint-face``."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ HTML = ROOT / "frontend" / "index.html"
 
 
 def test_sync_stamp_concat_flow():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-timeline-bg"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-paint-face"
 
 
 def test_app_result_card_and_explorer():
@@ -53,7 +53,8 @@ def test_app_result_card_and_explorer():
     assert "gpu-chip" in text
     assert "preview-ready" in text
     # Full-bleed empty shell (no skinny centered marketing column)
-    assert 'className="app empty"' in text
+    assert "app empty" in text
+    assert "concat-home" in text
     assert "empty-cta-row" in text
     assert "empty-workspace" in text
     assert "empty-drop" in text
@@ -95,7 +96,7 @@ def test_css_result_and_checker_motion():
     assert ".empty-workspace" in css
     assert ".empty-drop" in css
     assert "min(720px" not in css
-    assert "2026-10-11-timeline-bg" in css
+    assert "2026-10-11-paint-face" in css
     # Concat-flow: Forrás/Cutout/Maszk fill stage (not tiny intrinsic proxy)
     assert "place-items: stretch" in css
     assert ".clip-add-row" in css
@@ -109,6 +110,7 @@ def test_fonts_loaded():
 
 def test_readme_mentions_concat_flow_stamp():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-11-timeline-bg" in readme
+    assert "2026-10-11-paint-face" in readme
+    assert "2026-10-11-concat-look" in readme  # prior retained
     assert "2026-10-10-look2" in readme  # prior retained in history
     assert "2026-10-10-layout-fix" in readme
