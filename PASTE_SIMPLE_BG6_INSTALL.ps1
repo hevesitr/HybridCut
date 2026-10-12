@@ -101,7 +101,7 @@ $assets = Get-ChildItem -LiteralPath (Join-Path $ve "frontend\dist\assets") -Fil
 $js = $assets | Select-Object -First 1
 if (-not $js) { Write-Error "No frontend dist JS" }
 Write-Host ("DIST JS: " + $js.Name)
-$banned = @("index-BGJ2h0CY.js", "index-fyrBYl2A.js", "index-DY2_6z5E.js", "index-DakKRMds.js", "index-7OPITa-N.js")
+$banned = @("index-BGJ2h0CY.js", "index-fyrBYl2A.js", "index-DY2_6z5E.js", "index-DakKRMds.js", "index-7OPITa-N.js", "index-3rVnbc6C.js")
 if ($banned -contains $js.Name) {
   Write-Error ("Stale dist still present: " + $js.Name + " - purge failed; delete frontend\dist and re-run.")
 }
