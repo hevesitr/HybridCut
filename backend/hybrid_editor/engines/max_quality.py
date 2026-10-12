@@ -49,6 +49,7 @@ from hybrid_editor.media.video_io import (
     downscale_long_side,
     encode_preview_pair,
     encode_source_only_preview,
+    is_matte_degenerate,
     is_matte_empty,
     read_frame_at,
 )
@@ -246,14 +247,21 @@ class MaxQualityEngine(MattingEngine):
         # (trimap erode/dilate was the thick halo / hair-hole source on the right side).
         if self.sharp_edges:
             polished = polish_videoeditor(a, bgr, spec=APEX_SPEC, seed=self._seed)
-            return self._stabilizer.update(polished)
-        return apply_quality_pass(
-            a,
-            seed=self._seed,
-            stabilizer=self._stabilizer,
-            sharp_edges=False,
-            frame_bgr=bgr,
-        )
+            out = self._stabilizer.update(polished)
+        else:
+            out = apply_quality_pass(
+                a,
+                seed=self._seed,
+                stabilizer=self._stabilizer,
+                sharp_edges=False,
+                frame_bgr=bgr,
+            )
+        # Never let polish/stabilizer turn a usable person matte into a gray slab.
+        if is_matte_degenerate(out) and not is_matte_empty(a) and not is_matte_degenerate(a):
+            logger.warning("Max polish produced degenerate slab — keeping base RVM/heuristic alpha")
+            self._stabilizer.reset()
+            return np.clip(np.asarray(a, dtype=np.float32), 0.0, 1.0)
+        return out
 
     def preview_frame(self, t_sec: float) -> PreviewFrame:
         if self._media is None:
@@ -369,7 +377,7 @@ class MaxQualityEngine(MattingEngine):
             "rvm_full_res": bool(getattr(self._fast, "_full_res_matte", False)),
             "rvm_weights": Path(weights).name if weights else None,
             "preview_long_side": preview_long,
-            "stamp": "2026-10-11-rvm-matte",
+            "stamp": "2026-10-12-simple-bg2",
         }
         if empty and matte_error is None and alpha is not None:
             from hybrid_editor.media.video_io import matte_failure_reason
@@ -378,8 +386,13 @@ class MaxQualityEngine(MattingEngine):
         if matte_error and empty:
             meta["matte_error"] = matte_error
             meta["source_fallback"] = True
-        elif matte_error and not empty:
-            meta["matte_error_recovered"] = matte_error
+        elif not empty:
+            # CPU/heuristic succeeded — never keep sticky CUDA gray-slab matte_error.
+            meta.pop("matte_error", None)
+            meta.pop("source_fallback", None)
+            if matte_error:
+                meta["matte_error_recovered"] = matte_error
+            meta["matte_recovered"] = True
         return PreviewFrame(
             t_sec=t,
             width=w,

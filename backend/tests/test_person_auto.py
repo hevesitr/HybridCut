@@ -1,4 +1,4 @@
-"""Person-auto contracts superseded by ``2026-10-11-rvm-matte``.
+"""Person-auto contracts superseded by ``2026-10-11-cuda-restore``.
 
 Full-person auto RVM only — no session face wand.
 """
@@ -20,11 +20,11 @@ MAX_Q = ROOT / "backend" / "hybrid_editor" / "engines" / "max_quality.py"
 SESSION = ROOT / "backend" / "hybrid_editor" / "session.py"
 POLISH = ROOT / "backend" / "hybrid_editor" / "engines" / "videoeditor_polish.py"
 README = ROOT / "README.md"
-RESTART = ROOT / "docs" / "rvm-matte-restart.md"
+RESTART = ROOT / "docs" / "seed-crash-restart.md"
 
 
 def test_sync_stamp_auto_person():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
 
 
 def test_default_seed_is_union_full_person():
@@ -136,7 +136,7 @@ def test_ui_auto_only_no_wand():
     assert "full_person_matte" in api
     assert "person-restore" in css or "auto-person" in css
     assert RESTART.is_file()
-    assert "2026-10-11-rvm-matte" in README.read_text(encoding="utf-8")
+    assert "2026-10-11-cuda-restore" in README.read_text(encoding="utf-8")
     assert (
         "person-restore" in MAX_Q.read_text(encoding="utf-8")
         or "auto-person" in MAX_Q.read_text(encoding="utf-8")

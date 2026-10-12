@@ -1,4 +1,4 @@
-"""Auto-person only (feature ``2026-10-11-rvm-matte``).
+"""Auto-person only (feature ``2026-10-11-cuda-restore``).
 
 Paint/wand removed. Full-person RVM is the sole selection path.
 Delete/Backspace removes any selected timeline clip (V1 / AI sáv).
@@ -23,20 +23,20 @@ TL = ROOT / "frontend" / "src" / "components" / "TimelineTrack.tsx"
 API_TS = ROOT / "frontend" / "src" / "lib" / "api.ts"
 ROUTES = ROOT / "backend" / "hybrid_editor" / "api" / "routes.py"
 FRAME_PLAN = ROOT / "backend" / "hybrid_editor" / "timeline" / "frame_plan.py"
-RESTART = ROOT / "docs" / "rvm-matte-restart.md"
+RESTART = ROOT / "docs" / "seed-crash-restart.md"
 README = ROOT / "README.md"
 CSS = ROOT / "frontend" / "src" / "styles" / "app.css"
 
 
 def test_stamp_and_docs():
-    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
+    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
     assert RESTART.is_file()
     restart = RESTART.read_text(encoding="utf-8")
-    assert "2026-10-11-rvm-matte" in restart
+    assert "2026-10-11-cuda-restore" in restart
     assert "Delete" in restart or "Backspace" in restart
     assert "Varázsceruza" in restart  # documented as removed
-    assert "2026-10-11-rvm-matte" in README.read_text(encoding="utf-8")
+    assert "2026-10-11-cuda-restore" in README.read_text(encoding="utf-8")
     css = CSS.read_text(encoding="utf-8")
     assert "person-restore" in css or "auto-person" in css
 
@@ -51,6 +51,9 @@ def test_manual_tools_removed():
     assert "Radír" not in app
     assert "Lasszó" not in app
     assert "onWandPick" not in app
+    # Seed modal leftovers must never throw into Assist status (seed-crash).
+    assert "showLargeSeed" not in app
+    assert "setShowLargeSeed" not in app
     routes = ROUTES.read_text(encoding="utf-8")
     assert "410" in routes or "eltávolítva" in routes
     session = SESSION.read_text(encoding="utf-8")
@@ -58,6 +61,19 @@ def test_manual_tools_removed():
     assert "from hybrid_editor.cache.face_pick" not in session
     api = API_TS.read_text(encoding="utf-8")
     assert "eltávolítva" in api or "Removed" in api
+
+
+def test_seed_crash_stamp_and_max_polish_guard():
+    feature = ROOT / "backend" / "hybrid_editor" / "FEATURE_SEED_CRASH.txt"
+    assert feature.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
+    max_q = MAX_Q.read_text(encoding="utf-8")
+    assert "is_matte_degenerate" in max_q
+    assert "keeping base RVM/heuristic alpha" in max_q
+    dist_js = list((ROOT / "frontend" / "dist" / "assets").glob("index-*.js"))
+    assert dist_js, "frontend dist missing — run npm run build"
+    bundled = dist_js[0].read_text(encoding="utf-8", errors="ignore")
+    assert "setShowLargeSeed" not in bundled
+    assert "showLargeSeed" not in bundled
 
 
 def test_delete_key_ux_wired():

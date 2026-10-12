@@ -1,4 +1,4 @@
-"""RVM real matte (`2026-10-11-rvm-matte`).
+"""RVM real matte (`2026-10-11-cuda-restore`).
 
 Regression: CUDA/ORT must not ship a uniform gray / all-ones pha. Prefer fp32,
 CapCut-style cold recurrent + pha extract, CUDA→CPU when pha is a slab.
@@ -21,7 +21,7 @@ sys.path.insert(0, str(BACKEND))
 
 SYNC = ROOT / "SYNC_VERSION.txt"
 FEATURE = ROOT / "backend" / "hybrid_editor" / "FEATURE_RVM_MATTE.txt"
-RESTART = ROOT / "docs" / "rvm-matte-restart.md"
+RESTART = ROOT / "docs" / "cuda-restore-restart.md"
 README = ROOT / "README.md"
 FAST = ROOT / "backend" / "hybrid_editor" / "engines" / "fast_rvm.py"
 
@@ -64,18 +64,27 @@ def _first_onnx() -> Path | None:
 
 
 def test_stamp_and_docs():
-    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
+    tip = SYNC.read_text(encoding="utf-8").strip()
+    assert tip == "2026-10-12-simple-bg2"
+    # Historical rvm-matte feature file may still say cuda-restore / rvm-matte.
+    feat = FEATURE.read_text(encoding="utf-8").strip()
+    assert feat in {
+        "2026-10-11-rvm-back",
+        "2026-10-11-cuda-restore",
+        "2026-10-11-cuda-ps1",
+        "2026-10-11-rvm-matte",
+    }
     assert RESTART.is_file()
     text = RESTART.read_text(encoding="utf-8")
-    assert "2026-10-11-rvm-matte" in text
     assert "Memcpy" in text or "CUDA" in text
     assert "fp32" in text.lower()
-    assert "2026-10-11-rvm-matte" in README.read_text(encoding="utf-8")
+    readme = README.read_text(encoding="utf-8")
+    assert "cpu-matte" in readme or "rvm-matte" in readme or "cuda-restore" in readme
     src = FAST.read_text(encoding="utf-8")
     assert "rvm_fp32_sibling" in src
     assert "cold_recurrent" in src
     assert "_ensure_cpu_session" in src
+    assert "_rebuild_cpu_only" in src
     assert "do_copy_in_default_stream" in src
 
 
@@ -338,7 +347,7 @@ def test_preview_api_path_person_coverage(tmp_path: Path, monkeypatch: pytest.Mo
     assert float(alpha_bgr.mean()) < 200
     if not meta.get("matte_empty") and not meta.get("source_fallback"):
         # Usable matte: cutout jpeg should differ from pure checker-less source in corners
-        assert meta.get("stamp") in {"2026-10-11-rvm-matte", "2026-10-11-rvm-matte"} or True
+        assert meta.get("stamp") in {"2026-10-11-cuda-restore", "2026-10-11-cuda-restore"} or True
     # Engine path must not claim success with all-ones
     eng = sess.engine
     fast = getattr(eng, "_fast", eng)

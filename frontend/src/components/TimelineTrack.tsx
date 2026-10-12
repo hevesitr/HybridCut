@@ -20,9 +20,9 @@ type Props = {
   onTrimEdge?: (clipId: string, edge: "in" | "out", timelineT: number) => void;
   /** Horizontal place / reorder. */
   onPlace?: (clipId: string, timelineStartSec: number) => void;
-  /** Vertical stack: drop onto V1 (0) or AI sáv / V2 (1). */
+  /** Unused in simple-bg (V1 only) — kept for API compat. */
   onSetTrack?: (clipId: string, track: number, timelineStartSec?: number) => void;
-  /** Manual AI polírozás on AI-sáv clip. */
+  /** Unused in simple-bg — AI Polírozás removed from default flow. */
   onPolish?: (clipId: string) => void;
   onAddClip?: () => void;
   onDelete?: () => void;
@@ -31,7 +31,6 @@ type Props = {
 };
 
 const V1_COLORS = ["#8fd14f", "#6ecf7a", "#5bbf8a", "#3ecf9a"];
-const AI_COLORS = ["#c8e86a", "#a8d44a", "#9ad000", "#7ab800"];
 
 type DragKind = "move" | "in" | "out";
 
@@ -79,10 +78,11 @@ export function TimelineTrack({
   onCut,
   canDelete,
 }: Props) {
+  void onSetTrack;
+  void onPolish;
   const dur = Math.max(duration, 0.01);
   const shellRef = useRef<HTMLDivElement>(null);
   const v1TrackRef = useRef<HTMLDivElement>(null);
-  const v2TrackRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [ghost, setGhost] = useState<{
     leftPct: number;
@@ -93,20 +93,19 @@ export function TimelineTrack({
   const [snapOn, setSnapOn] = useState(true);
   const [trackState, setTrackState] = useState({
     0: { lock: false, hide: false, mute: false },
-    1: { lock: false, hide: false, mute: false },
   });
 
+  // simple-bg2: one V1 lane — ignore any legacy track>=1 clips from old tips
   const v1 = clips.filter((c) => (c.track ?? 0) === 0);
-  const v2 = clips.filter((c) => (c.track ?? 0) >= 1);
 
   const trackWidth = () => {
-    const el = v1TrackRef.current || v2TrackRef.current;
+    const el = v1TrackRef.current;
     return el?.getBoundingClientRect().width || 1;
   };
 
-  const onTrackClick = (e: ReactMouseEvent<HTMLDivElement>, trackIndex: number) => {
+  const onTrackClick = (e: ReactMouseEvent<HTMLDivElement>, _trackIndex: number) => {
     if (disabled || drag?.moved) return;
-    if (trackState[trackIndex as 0 | 1]?.lock) return;
+    if (trackState[0]?.lock) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const x = Math.min(Math.max(0, e.clientX - rect.left), rect.width);
     onSeek((x / rect.width) * dur);
@@ -118,8 +117,7 @@ export function TimelineTrack({
     kind: DragKind,
   ) => {
     if (disabled) return;
-    const t = (clip.track ?? 0) >= 1 ? 1 : 0;
-    if (trackState[t as 0 | 1]?.lock) return;
+    if (trackState[0]?.lock) return;
     e.preventDefault();
     e.stopPropagation();
     onSelect(clip.clip_id);
@@ -133,7 +131,6 @@ export function TimelineTrack({
     const start = clip.timeline_start_sec;
     const end = clip.timeline_end_sec ?? start + (clip.out_sec - clip.in_sec);
     const v1r = v1TrackRef.current?.getBoundingClientRect();
-    const v2r = v2TrackRef.current?.getBoundingClientRect();
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {
@@ -142,19 +139,19 @@ export function TimelineTrack({
     setDrag({
       kind,
       clipId: clip.clip_id,
-      track: clip.track ?? 0,
+      track: 0,
       startClientX: e.clientX,
       startClientY: e.clientY,
       originStart: start,
       originEnd: end,
       laneTop: v1r?.top ?? 0,
-      laneBottom: v2r?.bottom ?? (v1r?.bottom ?? 0),
+      laneBottom: v1r?.bottom ?? 0,
       moved: false,
     });
     setGhost({
       leftPct: (start / dur) * 100,
       widthPct: (Math.max(0.05, end - start) / dur) * 100,
-      track: clip.track ?? 0,
+      track: 0,
       label: clip.display_label || clip.clip_id,
     });
   };
@@ -180,11 +177,8 @@ export function TimelineTrack({
     } else {
       left = Math.max(0, drag.originStart + dt);
     }
-    let track = drag.track;
-    if (drag.kind === "move") {
-      const v2Top = v2TrackRef.current?.getBoundingClientRect().top ?? 0;
-      track = e.clientY >= v2Top - 4 ? 1 : 0;
-    }
+    // simple-bg: stay on V1 — no vertical multi-track stack
+    const track = 0;
     setGhost({
       leftPct: (left / dur) * 100,
       widthPct: (width / dur) * 100,
@@ -207,15 +201,12 @@ export function TimelineTrack({
       } else if (drag.kind === "out" && onTrimEdge) {
         onTrimEdge(drag.clipId, "out", drag.originEnd + dt);
       } else if (drag.kind === "move") {
-        const v2Top = v2TrackRef.current?.getBoundingClientRect().top ?? 0;
-        const targetTrack = e.clientY >= v2Top - 4 ? 1 : 0;
         let newStart = Math.max(0, drag.originStart + dt);
         if (snapOn) {
           newStart = Math.round(newStart * fps) / fps;
         }
-        if (targetTrack !== drag.track && onSetTrack) {
-          onSetTrack(drag.clipId, targetTrack, newStart);
-        } else if (onPlace) {
+        // simple-bg: horizontal place only (single V1 lane)
+        if (onPlace) {
           onPlace(drag.clipId, newStart);
         }
       }
@@ -227,10 +218,10 @@ export function TimelineTrack({
     setGhost(null);
   };
 
-  const toggleTrack = (track: 0 | 1, key: "lock" | "hide" | "mute") => {
+  const toggleTrack = (_track: 0 | 1, key: "lock" | "hide" | "mute") => {
     setTrackState((prev) => ({
       ...prev,
-      [track]: { ...prev[track], [key]: !prev[track][key] },
+      0: { ...prev[0], [key]: !prev[0][key] },
     }));
   };
 
@@ -247,7 +238,7 @@ export function TimelineTrack({
     trackRef: RefObject<HTMLDivElement | null>,
     trackIndex: 0 | 1,
   ) => {
-    const st = trackState[trackIndex];
+    const st = trackState[0];
     return (
       <div
         className={`tl-lane ${laneClass}${st.hide ? " hidden" : ""}${st.mute ? " muted" : ""}${st.lock ? " locked" : ""}`}
@@ -261,7 +252,7 @@ export function TimelineTrack({
               title={st.lock ? "Feloldás" : "Zárolás"}
               aria-label={st.lock ? "Feloldás" : "Zárolás"}
               aria-pressed={st.lock}
-              onClick={() => toggleTrack(trackIndex, "lock")}
+              onClick={() => toggleTrack(0, "lock")}
             >
               L
             </button>
@@ -271,7 +262,7 @@ export function TimelineTrack({
               title={st.hide ? "Mutatás" : "Elrejtés"}
               aria-label={st.hide ? "Mutatás" : "Elrejtés"}
               aria-pressed={st.hide}
-              onClick={() => toggleTrack(trackIndex, "hide")}
+              onClick={() => toggleTrack(0, "hide")}
             >
               V
             </button>
@@ -281,7 +272,7 @@ export function TimelineTrack({
               title={st.mute ? "Hang be" : "Némítás"}
               aria-label={st.mute ? "Hang be" : "Némítás"}
               aria-pressed={st.mute}
-              onClick={() => toggleTrack(trackIndex, "mute")}
+              onClick={() => toggleTrack(0, "mute")}
             >
               M
             </button>
@@ -296,7 +287,7 @@ export function TimelineTrack({
           aria-valuemax={dur}
           aria-valuenow={playhead}
           tabIndex={0}
-          data-track={trackIndex}
+          data-track={0}
         >
           {st.hide
             ? null
@@ -307,14 +298,10 @@ export function TimelineTrack({
                 const width = (Math.max(0.05, end - start) / dur) * 100;
                 const selected = c.clip_id === selectedId;
                 const dragging = drag?.clipId === c.clip_id;
-                const polish = (c.ai_polish || "idle").toLowerCase();
-                const polishRunning = polish === "running" || polish === "pending";
                 return (
                   <div
                     key={c.clip_id}
-                    className={`tl-clip ${selected ? "selected" : ""} ${dragging ? "dragging" : ""}${
-                      trackIndex === 1 ? " tl-clip-ai" : ""
-                    }${polishRunning ? " tl-clip-polish" : ""}${polish === "done" ? " tl-clip-polish-done" : ""}`}
+                    className={`tl-clip ${selected ? "selected" : ""} ${dragging ? "dragging" : ""}`}
                     style={{
                       left: `${left}%`,
                       width: `${width}%`,
@@ -322,9 +309,7 @@ export function TimelineTrack({
                       borderColor: colors[i % colors.length],
                       opacity: st.mute ? 0.45 : 1,
                     }}
-                    title={`${c.display_label || c.clip_id} · ${c.track_label || label} · húzd a sávok között · szélek = Be/Ki${
-                      c.ai_polish_label_hu ? ` · ${c.ai_polish_label_hu}` : ""
-                    }`}
+                    title={`${c.display_label || c.clip_id} · V1 · szélek = Be/Ki · háttéreltávolítás`}
                     onPointerDown={(ev) => beginDrag(ev, c, "move")}
                   >
                     <button
@@ -336,30 +321,7 @@ export function TimelineTrack({
                       onPointerDown={(ev) => beginDrag(ev, c, "in")}
                     />
                     <span className="tl-clip-label">{c.display_label || c.clip_id}</span>
-                    {trackIndex === 1 && onPolish ? (
-                      <button
-                        type="button"
-                        className={`tl-polish-btn${polishRunning ? " running" : ""}`}
-                        title={
-                          polishRunning
-                            ? "Polírozás folyamatban…"
-                            : "Polírozás — ember-kivágás / él (RVM/APEX)"
-                        }
-                        aria-label="Polírozás"
-                        disabled={disabled || st.lock || polishRunning}
-                        onPointerDown={(ev) => {
-                          ev.preventDefault();
-                          ev.stopPropagation();
-                        }}
-                        onClick={(ev) => {
-                          ev.preventDefault();
-                          ev.stopPropagation();
-                          onPolish(c.clip_id);
-                        }}
-                      >
-                        {polishRunning ? "…" : "P"}
-                      </button>
-                    ) : null}
+                    
                     <button
                       type="button"
                       className="tl-handle tl-handle-out"
@@ -416,9 +378,8 @@ export function TimelineTrack({
           <button
             type="button"
             className="tl-tool"
-            title="Klip hozzáadása"
-            disabled={disabled || !onAddClip}
-            onClick={() => onAddClip?.()}
+            title="Egy klip — második videó nem adható hozzá"
+            disabled
           >
             +
           </button>
@@ -468,9 +429,8 @@ export function TimelineTrack({
         ))}
       </div>
       {renderLane(v1, "V1", V1_COLORS, "v1", v1TrackRef, 0)}
-      {renderLane(v2, "AI sáv", AI_COLORS, "v2 ai", v2TrackRef, 1)}
       <p className="tl-hint">
-        Kattints · húzd egymás alá → AI sáv · Polírozás auto · szélek = Be/Ki · L/V/M
+        Egy klip · V1 · Delete = törlés · szélek = Be/Ki · háttéreltávolítás · simple-bg2
       </p>
     </div>
   );

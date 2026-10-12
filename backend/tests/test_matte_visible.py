@@ -1,4 +1,4 @@
-"""Matte-visible (`2026-10-11-rvm-matte`).
+"""Matte-visible (`2026-10-11-cuda-restore`).
 
 Screenshots: Maszk = solid light-gray slab on checker; Cutout = opaque full
 source; chip still Gyors. Cause: near-uniform / all-ones alpha treated as
@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SYNC = ROOT / "SYNC_VERSION.txt"
 FEATURE = ROOT / "backend" / "hybrid_editor" / "FEATURE_MATTE_VISIBLE.txt"
 FEATURE_RESTORE = ROOT / "backend" / "hybrid_editor" / "FEATURE_PERSON_RESTORE.txt"
-RESTART = ROOT / "docs" / "rvm-matte-restart.md"
+RESTART = ROOT / "docs" / "seed-crash-restart.md"
 README = ROOT / "README.md"
 CSS = ROOT / "frontend" / "src" / "styles" / "app.css"
 APP = ROOT / "frontend" / "src" / "App.tsx"
@@ -49,15 +49,15 @@ def _write_person_clip(path: Path, n: int = 8) -> None:
 
 
 def test_stamp_and_docs():
-    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
-    assert FEATURE_RESTORE.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
+    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
+    assert FEATURE_RESTORE.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
     assert RESTART.is_file()
     restart = RESTART.read_text(encoding="utf-8")
-    assert "2026-10-11-rvm-matte" in restart
+    assert "2026-10-11-cuda-restore" in restart
     assert "egyenletes" in restart.lower() or "all-ones" in restart.lower() or "szürke" in restart
     assert "Gyors" in restart
-    assert "2026-10-11-rvm-matte" in README.read_text(encoding="utf-8")
+    assert "2026-10-11-cuda-restore" in README.read_text(encoding="utf-8")
     assert "matte-visible" in CSS.read_text(encoding="utf-8")
     assert "is_matte_degenerate" in VIDEO_IO.read_text(encoding="utf-8")
     assert "normalize_alpha" in FAST.read_text(encoding="utf-8")
@@ -199,7 +199,7 @@ def test_session_preview_flags_degenerate_not_cutout_ready(tmp_path: Path, monke
 
     sess = EditorSession()
     st = sess.open_media(clip)
-    assert st["mode"] == "max"
+    assert st["mode"] == "gyors"  # simple-bg
 
     eng = sess.engine
     fast = getattr(eng, "_fast", eng)
@@ -242,6 +242,6 @@ def test_max_recovers_from_all_ones_via_heuristic(tmp_path: Path, monkeypatch: p
     meta = frame.meta or {}
     if not meta.get("matte_empty") and not meta.get("source_fallback"):
         # Decoded cutout must differ from source in transparent regions if real matte.
-        assert meta.get("matte_recovered") or meta.get("stamp") == "2026-10-11-rvm-matte"
+        assert meta.get("matte_recovered") or meta.get("stamp") == "2026-10-11-cuda-restore"
     else:
         assert meta.get("matte_error") or meta.get("source_fallback")

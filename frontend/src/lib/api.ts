@@ -91,7 +91,12 @@ export type EditorStatus = {
     onnx_path: string | null;
     onnx_name?: string | null;
     ort_available: boolean;
+    /** True only when CUDA EP plugin is actually registered (not merely listed). */
     cuda_ep: boolean;
+    cuda_ep_listed?: boolean;
+    cuda_ep_registered?: boolean;
+    cuda_ep_detail?: string | null;
+    ort_label_hu?: string;
     providers: string[];
     prefer?: string;
     source?: string | null;
@@ -160,6 +165,7 @@ export type PreviewResult = {
     matte_empty?: boolean;
     source_fallback?: boolean;
     matte_error?: string;
+    matte_recovered?: boolean;
     matanyone2_active?: boolean;
     person_matte_label_hu?: string;
     person_matte_backend?: string;

@@ -1,4 +1,5 @@
 # HybridCut one-click launcher (API + built UI on port 3847)
+# Stamp: 2026-10-12-simple-bg2 (CPU-first ORT; single V1 BG remove)
 # ASCII-only. Resolves root via Documents sync target or this script's folder.
 # Safe from ANY cwd - never assumes System32 or a prior cd.
 # Phase 5: skip pip upgrade; trusted-host; parent Videoeditor .venv reuse;
@@ -30,7 +31,7 @@ if (-not $Root) {
     Write-HybridError `
         -Hu "Nem talalom a HybridCut fat (backend\requirements.txt). Eloszor: hybrid-editor\sync.ps1 (Agent Store)." `
         -En "HybridCut tree not found. Run docs/hybrid-editor/sync.ps1 from the Agent Store first."
-    Write-Host "Pelda / Example (any directory):"
+    Write-Host 'Pelda / Example (any directory):'
     Write-Host '  & "$env:LOCALAPPDATA\Cursor\AgentStores\cursor_agent_stores\bc-41930eab-1501-4c19-acf3-0c9d63afbf4d\files\docs\hybrid-editor\sync.ps1"'
     Write-Host '  cd $env:USERPROFILE\Documents\Videoeditor\hybrid_cut'
     Write-Host "  .\run_hybrid.ps1"
@@ -71,6 +72,8 @@ if (Test-Path -LiteralPath $verFile) {
 Write-Host ("ROOT: " + $Root)
 Write-Host ("SYNC_VERSION: " + $stamp)
 Write-Host "UI+API: http://127.0.0.1:3847"
+Write-Host "CWD tip: inside hybrid_cut -> .\run_hybrid.ps1 / .\start_hybrid_cuda.ps1"
+Write-Host '         from Videoeditor -> .\hybrid_cut\start_hybrid_cuda.ps1 (NOT .\\hybrid_cut\\... when already inside)'
 
 # Parent CapCut Videoeditor (Documents\Videoeditor when Root is ...\hybrid_cut)
 $parentRoot = Split-Path -Parent $Root
@@ -113,17 +116,20 @@ if (-not $env:HYBRID_RVM_ONNX) {
         }
     }
     if (-not $env:HYBRID_RVM_ONNX) {
-        Write-Host "RVM ONNX: not found yet (heuristic fallback). Parent models/ or scripts\download_rvm.ps1."
+        Write-Host 'RVM ONNX: not found yet (heuristic fallback). Parent models/ or scripts\download_rvm.ps1.'
     }
 }
 
-# Prefer CUDA like CapCut Videoeditor; override: $env:HYBRID_ORT_PROVIDER = "cpu"
+# CPU-first (real person matte). Optional CUDA only after start_hybrid_cuda.ps1
+# hard probe OK. Override: $env:HYBRID_ORT_PROVIDER = "cuda"
 if (-not $env:HYBRID_ORT_PROVIDER) {
-    $env:HYBRID_ORT_PROVIDER = "cuda"
+    $env:HYBRID_ORT_PROVIDER = "cpu"
+    # ASCII-only; single quotes - em-dash in double quotes breaks PS 5.1 (mojibake ")
+    Write-Host 'HYBRID_ORT_PROVIDER=cpu (default - skip broken CUDA Conv Fallback)'
 }
 
 # Prepend pip nvidia cudnn/cublas bins to PATH (hybrid + parent CapCut venv).
-# Same idea as CapCut run_gpu.ps1 / remount_ort_gpu.ps1 — needed before ORT CUDA EP.
+# Same idea as CapCut run_gpu.ps1 / remount_ort_gpu.ps1 - needed before ORT CUDA EP.
 function Add-NvidiaPipBinsToPath {
     param([string[]]$SiteRoots)
     foreach ($site in $SiteRoots) {
@@ -197,7 +203,7 @@ if ($env:HYBRID_REUSE_PARENT_VENV -eq "1") {
 }
 
 if (-not $usingParentVenv -and -not (Test-Path -LiteralPath $venvPy)) {
-    Write-Host "Creating venv (.venv)..."
+    Write-Host 'Creating venv (.venv)...'
     $ok = Invoke-PyLauncher -PyArgs @("-m", "venv", $venvDir)
     if (-not $ok -or -not (Test-Path -LiteralPath $venvPy)) {
         # Fall back to parent Videoeditor .venv if hybrid venv create fails
@@ -235,7 +241,7 @@ if ($env:HYBRID_PIP_USE_CACHE -ne "1") {
 }
 
 if ($env:HYBRID_UPGRADE_PIP -eq "1") {
-    Write-Host "pip upgrade (HYBRID_UPGRADE_PIP=1) ..."
+    Write-Host 'pip upgrade (HYBRID_UPGRADE_PIP=1) ...'
     & $venvPy -m pip install --upgrade pip @pipTrusted @pipNoCache
     if ($LASTEXITCODE -ne 0) {
         Write-HybridError `
@@ -244,7 +250,7 @@ if ($env:HYBRID_UPGRADE_PIP -eq "1") {
         exit 1
     }
 } else {
-    Write-Host "Skipping pip upgrade (set HYBRID_UPGRADE_PIP=1 to force)."
+    Write-Host 'Skipping pip upgrade (set HYBRID_UPGRADE_PIP=1 to force).'
 }
 
 Write-Host "pip install -r backend\requirements.txt ..."
@@ -279,12 +285,23 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # Optional GPU ORT note (do not force-uninstall; CapCut parent may already have onnxruntime-gpu)
-$ortProbe = & $venvPy -c "import importlib.util; print('1' if importlib.util.find_spec('onnxruntime') else '0')" 2>$null
+# Use a .py helper - never python -c with nested quotes/parens (PS 5.1 quoting).
+$ortPresentScript = Join-Path $Root "scripts\ort_present.py"
+$ortProbe = "0"
+if (Test-Path -LiteralPath $ortPresentScript) {
+    $prevOrtEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $ortProbe = ([string](& $venvPy $ortPresentScript 2>$null)).Trim()
+    } finally {
+        $ErrorActionPreference = $prevOrtEap
+    }
+}
 if ($ortProbe -ne "1") {
-    Write-Host "NOTE: onnxruntime not installed. For CUDA RVM on RTX 3060:"
+    Write-Host 'NOTE: onnxruntime not installed. For CUDA RVM on RTX 3060:'
     Write-Host ("  & '" + $venvPy + "' -m pip install onnxruntime-gpu --trusted-host pypi.org --trusted-host files.pythonhosted.org --no-cache-dir")
-    Write-Host "  (or reuse parent Videoeditor\.venv after .\setup_gpu.ps1 / .\remount_ort_gpu.ps1)"
-    Write-Host "  Or: .\start_hybrid_cuda.ps1"
+    Write-Host '  (or reuse parent Videoeditor\.venv after .\setup_gpu.ps1 / .\remount_ort_gpu.ps1)'
+    Write-Host '  Or: .\start_hybrid_cuda.ps1'
 }
 
 # Auto-install nvidia-cudnn-cu12 into active venv when cudnn64_*.dll is missing.
@@ -305,7 +322,7 @@ function Test-CudnnDllPresent {
 
 $hasCudnnDll = Test-CudnnDllPresent -SiteRoots @($siteHybrid, $parentSite, $docsVeSite)
 if (-not $hasCudnnDll) {
-    Write-Host "cudnn64_*.dll missing - auto-installing nvidia-cudnn-cu12 (+ cublas/cudart) into active venv..."
+    Write-Host 'cudnn64_*.dll missing - auto-installing nvidia-cudnn-cu12 (+ cublas/cudart) into active venv...'
     & $venvPy -m pip install `
         "nvidia-cudnn-cu12>=9.0.0" `
         "nvidia-cublas-cu12>=12.0.0" `
@@ -326,7 +343,7 @@ if (-not $hasCudnnDll) {
 # PATH inject AFTER possible install so new bins are visible to ORT CUDA EP.
 Add-NvidiaPipBinsToPath -SiteRoots @($siteHybrid, $parentSite, $docsVeSite)
 if ($hasCudnnDll) {
-    Write-Host "cuDNN DLL available; PATH prepended for ORT CUDA EP (Python also uses os.add_dll_directory)."
+    Write-Host 'cuDNN DLL available; PATH prepended for ORT CUDA EP (Python also uses os.add_dll_directory).'
 } else {
     Write-Host "WARN: cuDNN still missing after install attempt - HybridCut will soft-fallback to CPU if CUDA EP fails."
 }
@@ -379,10 +396,11 @@ $env:HYBRID_PORT = "3847"
 
 Write-Host ""
 Write-Host "Starting HybridCut..."
-Write-Host ("Python: " + $venvPy + $(if ($usingParentVenv) { " (parent venv)" } else { "" }))
+$pyExtra = if ($usingParentVenv) { " (parent venv)" } else { "" }
+Write-Host ("Python: " + $venvPy + $pyExtra)
 if ($env:HYBRID_RVM_ONNX) { Write-Host ("RVM: " + $env:HYBRID_RVM_ONNX) }
 Write-Host "Browser: http://127.0.0.1:3847"
-Write-Host "Manual start (user-confirmed working):"
+Write-Host 'Manual start (user-confirmed working):'
 Write-Host '  cd hybrid_cut'
 Write-Host '  $env:PYTHONPATH="$PWD\backend"'
 Write-Host '  & .\.venv\Scripts\python.exe -m hybrid_editor.main'

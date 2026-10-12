@@ -19,8 +19,14 @@ CHECKER_DARK = 0x2A  # #2a2a2a
 CHECKER_LIGHT = 0x35  # #353535
 # Empty / useless matte: max alpha below this OR almost no opaque coverage.
 EMPTY_ALPHA_MAX = 0.05
-EMPTY_ALPHA_COVER = 0.04  # fraction of pixels with a > 0.15 (was 0.002 — feet-only noise hid video)
-EMPTY_ALPHA_MEAN = 0.03  # mean alpha below this ⇒ treat as empty / weak
+# Soft RVM person in a wide shot often lands cover≈0.03–0.08 / mean≈0.015–0.05.
+# Floors must not reject those (cpu-matte/matte-cpu2 false-empty → toast / heuristic).
+EMPTY_ALPHA_COVER = 0.012  # fraction of pixels with a > 0.15 (was 0.04 — too strict)
+EMPTY_ALPHA_MEAN = 0.008  # mean alpha below this ⇒ treat as empty / weak (was 0.03)
+# Structured soft person: peak + std can accept below cover/mean floors.
+STRUCTURED_ALPHA_MAX = 0.35
+STRUCTURED_ALPHA_STD = 0.035
+STRUCTURED_ALPHA_COVER = 0.008
 # Degenerate full-frame slab: near-uniform high alpha → Maszk = solid gray, Cutout = opaque source.
 # (RVM 0–255 clip bug, wrong ORT tensor, or poisoned all-ones MaskStore.)
 DEGENERATE_COVER = 0.90  # fraction a > 0.15
@@ -239,6 +245,23 @@ def is_matte_degenerate(alpha: np.ndarray) -> bool:
     return False
 
 
+def is_matte_structured(alpha: np.ndarray) -> bool:
+    """True when alpha looks like a soft person silhouette (not dust, not slab)."""
+    if alpha is None:
+        return False
+    a = normalize_alpha(alpha)
+    if a.size == 0 or is_matte_degenerate(a):
+        return False
+    mx = float(a.max())
+    std = float(a.std())
+    cover = float((a > 0.15).mean())
+    return (
+        mx >= STRUCTURED_ALPHA_MAX
+        and std >= STRUCTURED_ALPHA_STD
+        and cover >= STRUCTURED_ALPHA_COVER
+    )
+
+
 def matte_failure_reason(alpha: np.ndarray) -> Optional[str]:
     """Short HU/tech reason when matte is useless for Cutout, else None."""
     if alpha is None:
@@ -251,6 +274,8 @@ def matte_failure_reason(alpha: np.ndarray) -> Optional[str]:
             "egyenletes/teljes-keret maszk (hibás RVM vagy 0–255 clip) — "
             f"cover={float((a > 0.15).mean()):.2f} std={float(a.std()):.3f}"
         )
+    if is_matte_structured(a):
+        return None
     if float(a.max()) < EMPTY_ALPHA_MAX:
         return f"gyenge/üres maszk — max={float(a.max()):.3f}"
     cover = float((a > 0.15).mean())
@@ -268,20 +293,27 @@ def is_matte_empty(alpha: np.ndarray) -> bool:
     Degenerate all-ones / flat-gray mattes must NOT count as success — they
     previously showed Cutout ✓ while Maszk was a solid gray rectangle and
     Cutout kept the full background.
+
+    Soft CPU RVM person mattes (wide shot, low mean/cover but clear peak+std)
+    must count as success — matte-cpu2 false-empty rejected those and left
+    Előnézet on heuristic / sticky gray toast after broken CUDA.
     """
     if alpha is None:
         return True
     a = normalize_alpha(alpha)
     if a.size == 0:
         return True
+    if is_matte_degenerate(a):
+        return True
+    # Real soft person silhouette — accept before cover/mean floors.
+    if is_matte_structured(a):
+        return False
     if float(a.max()) < EMPTY_ALPHA_MAX:
         return True
     # Tiny speck / noise / feet-only scraps must not hide the source under checker.
     if float((a > 0.15).mean()) < EMPTY_ALPHA_COVER:
         return True
     if float(a.mean()) < EMPTY_ALPHA_MEAN:
-        return True
-    if is_matte_degenerate(a):
         return True
     return False
 

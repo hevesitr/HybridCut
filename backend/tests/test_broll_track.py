@@ -68,5 +68,8 @@ def test_promote_and_to_dict_tracks():
     assert len(doc.clips_on(0)) == 1
     assert len(doc.clips_on(1)) == 1
     d = doc.to_dict()
-    assert d["tracks"][1]["label"] == "AI sáv"
-    assert any(c["track"] == 1 for c in d["clips"])
+    # simple-bg2: API exposes V1 only — legacy track>=1 clips are hidden from payload.
+    assert len(d["tracks"]) == 1
+    assert d["tracks"][0]["label"] == "V1"
+    assert all(int(c["track"]) == 0 for c in d["clips"])
+    assert "AI sáv" not in str(d["tracks"])

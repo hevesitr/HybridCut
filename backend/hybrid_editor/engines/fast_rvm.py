@@ -222,14 +222,27 @@ def resolve_rvm_onnx(*, prefer: str = "fast") -> Optional[Path]:
 
 
 def probe_ort_runtime() -> dict[str, Any]:
-    """Lightweight ORT / CUDA EP probe for UI status chips (no session load)."""
+    """ORT / CUDA EP probe for UI status chips.
+
+    ``cuda_ep`` is True only when the CUDA **plugin EP is actually registered**
+    (session can activate CUDAExecutionProvider) — not merely listed.
+    """
     try:
-        from hybrid_editor.cuda_path import inject_nvidia_pip_libs, pip_cudnn_present
+        from hybrid_editor.cuda_path import (
+            CUDA_EP_MISSING_HINT_HU,
+            inject_nvidia_pip_libs,
+            pip_cudnn_present,
+            probe_cuda_ep_usable,
+        )
 
         inject_nvidia_pip_libs()
         cudnn_ok, cudnn_detail = pip_cudnn_present()
     except Exception as exc:  # noqa: BLE001
         cudnn_ok, cudnn_detail = False, f"cuda_path unavailable: {exc}"
+        CUDA_EP_MISSING_HINT_HU = (
+            "CPU ORT: CUDA EP plugin hiányzik — onnxruntime-gpu + cudnn PATH."
+        )
+        probe_cuda_ep_usable = None  # type: ignore[assignment]
 
     prefer = os.environ.get("HYBRID_RVM_PREFER", "fast").strip().lower() or "fast"
     onnx = resolve_rvm_onnx(prefer=prefer if prefer in {"fast", "quality"} else "fast")
@@ -240,12 +253,16 @@ def probe_ort_runtime() -> dict[str, Any]:
         "onnx_prefer": prefer,
         "ort_available": False,
         "cuda_ep": False,
+        "cuda_ep_listed": False,
+        "cuda_ep_registered": False,
         "providers": [],
-        "prefer": os.environ.get("HYBRID_ORT_PROVIDER", "cuda").strip().lower() or "cuda",
+        "prefer": os.environ.get("HYBRID_ORT_PROVIDER", "cpu").strip().lower() or "cpu",
         "source": None,
         "cudnn_ok": cudnn_ok,
         "cudnn_detail": cudnn_detail,
         "cuda_fallback": None,
+        "cuda_ep_detail": None,
+        "ort_label_hu": "ORT —",
     }
     if onnx is not None:
         try:
@@ -272,9 +289,40 @@ def probe_ort_runtime() -> dict[str, Any]:
         providers = list(ort.get_available_providers())
         info["ort_available"] = True
         info["providers"] = providers
-        info["cuda_ep"] = "CUDAExecutionProvider" in providers
+        listed = "CUDAExecutionProvider" in providers
+        info["cuda_ep_listed"] = listed
+        # Skip heavy session probe when env forces CPU.
+        force_cpu = info["prefer"] in {"cpu", "cpuexecutionprovider"}
+        if force_cpu:
+            info["cuda_ep"] = False
+            info["cuda_ep_registered"] = False
+            info["cuda_ep_detail"] = "HYBRID_ORT_PROVIDER=cpu"
+            info["ort_label_hu"] = "CPU ORT"
+        elif listed and probe_cuda_ep_usable is not None:
+            ok, detail = probe_cuda_ep_usable(ort, model_path=onnx)
+            info["cuda_ep_registered"] = bool(ok)
+            info["cuda_ep"] = bool(ok)
+            info["cuda_ep_detail"] = detail
+            if ok:
+                info["ort_label_hu"] = "RVM CUDA"
+            else:
+                info["cuda_fallback"] = detail or CUDA_EP_MISSING_HINT_HU
+                info["ort_label_hu"] = "CPU ORT"
+        elif listed:
+            # Probe helper unavailable — be honest: listed ≠ registered.
+            info["cuda_ep"] = False
+            info["cuda_ep_registered"] = False
+            info["cuda_ep_detail"] = "CUDA listed; registration not verified"
+            info["ort_label_hu"] = "CPU ORT?"
+        else:
+            info["cuda_ep"] = False
+            info["cuda_ep_registered"] = False
+            info["cuda_ep_detail"] = f"CUDA EP not listed: {providers}"
+            info["ort_label_hu"] = "CPU ORT"
+            info["cuda_fallback"] = CUDA_EP_MISSING_HINT_HU
     except Exception as exc:  # noqa: BLE001
         info["ort_error"] = str(exc)
+        info["ort_label_hu"] = "ORT hiba"
     return info
 
 
@@ -350,24 +398,28 @@ def heuristic_person_alpha(bgr: np.ndarray) -> np.ndarray:
 
 
 class _OrtRvmSession:
-    """RVM ONNX session — CUDA EP preferred when available.
+    """RVM ONNX session — CPU-first; CUDA only when HYBRID_ORT_PROVIDER=cuda.
 
     RTX 3060 note: ORT CUDA + ``torch-jit-export`` RVM (esp. fp16) can emit
-    MemcpyTransformer warnings and a **uniform / all-ones pha**. We prefer fp32
-    weights, feed CapCut-style ``1×1×1×1`` cold recurrent, extract named/positional
-    ``pha`` only when spatial size matches src, and fall back to a CPU session
-    (or fp32 sibling) when CUDA output is a degenerate slab.
+    MemcpyTransformer / Conv Fallback warnings and a **uniform / all-ones pha**.
+    Default launch is CPUExecutionProvider so Előnézet never hits that path.
+    When CUDA is requested we prefer fp32 weights, CapCut-style ``1×1×1×1`` cold
+    recurrent, safe ``pha`` extract, and rebuild CPU-only on gray-slab smoke.
     """
 
     def __init__(self, model_path: Path) -> None:
         from hybrid_editor.cuda_path import (
+            CUDA_EP_MISSING_HINT_HU,
+            _OrtWarningCatcher,
             brief_ort_error,
             inject_nvidia_pip_libs,
             is_cudnn_or_cuda_ep_error,
+            is_plugin_ep_missing_text,
             pip_cudnn_present,
+            probe_cuda_ep_usable,
         )
 
-        # Must run BEFORE InferenceSession — LoadLibrary looks up cudnn64_9.dll via PATH.
+        # Must run BEFORE InferenceSession — LoadLibrary looks up cudnn64_*.dll via PATH.
         inject_nvidia_pip_libs()
         import onnxruntime as ort  # type: ignore
 
@@ -389,51 +441,101 @@ class _OrtRvmSession:
                 )
                 model_path = sib
 
-        prefer = os.environ.get("HYBRID_ORT_PROVIDER", "cuda").strip().lower()
+        prefer = os.environ.get("HYBRID_ORT_PROVIDER", "cpu").strip().lower() or "cpu"
         avail = list(ort.get_available_providers())
         providers: list[Any] = []
         uses_cuda = False
-        if prefer == "cuda" and "CUDAExecutionProvider" in avail:
-            providers.append(self._cuda_provider_tuple())
-            uses_cuda = True
-        elif prefer == "dml" and "DmlExecutionProvider" in avail:
+        self.fallback_note: Optional[str] = None
+
+        # CPU-first: never auto-pick CUDA just because it is listed (plugin EP often broken).
+        want_cuda = prefer in {"cuda", "gpu", "cudaexecutionprovider"}
+        if prefer == "dml" and "DmlExecutionProvider" in avail:
             providers.append("DmlExecutionProvider")
-        elif prefer == "cpu":
-            pass
-        elif "CUDAExecutionProvider" in avail and prefer != "cpu":
-            providers.append(self._cuda_provider_tuple())
-            uses_cuda = True
-        providers.append("CPUExecutionProvider")
+            want_cuda = False
+        elif prefer in {"cpu", "cpuexecutionprovider", ""}:
+            want_cuda = False
+
+        # Probe plugin EP **before** RVM inference — listed CUDA ≠ registered CUDA.
+        # Missing ort-cuda plugin → gray-slab pha; fall back to CPUExecutionProvider now.
+        # CRITICAL: when CUDA is unusable, providers must be CPU-ONLY (never [CUDA, CPU]).
+        # A dual list still logs MemcpyTransformer and can emit all-ones gray pha.
+        if want_cuda and "CUDAExecutionProvider" in avail:
+            ok, detail = probe_cuda_ep_usable(ort, model_path=model_path)
+            if ok:
+                providers.append(self._cuda_provider_tuple())
+                uses_cuda = True
+            else:
+                self.fallback_note = (
+                    f"CUDA→CPU: {detail}"
+                    if detail.startswith("CUDA") or detail.startswith("ORT")
+                    else f"CUDA→CPU: plugin EP hiányzik — {detail}"
+                )
+                if CUDA_EP_MISSING_HINT_HU not in self.fallback_note:
+                    self.fallback_note = f"{self.fallback_note} · {CUDA_EP_MISSING_HINT_HU}"
+                logger.warning(
+                    "RVM: CUDA EP not actually registered — CPU-only session before inference. %s",
+                    detail,
+                )
+                if os.environ.get("HYBRID_ORT_PROVIDER", "").strip().lower() != "cpu":
+                    os.environ["HYBRID_ORT_PROVIDER"] = "cpu"
+                try:
+                    from hybrid_editor.cuda_path import set_cuda_ep_probe_cache
+
+                    set_cuda_ep_probe_cache(False, detail)
+                except Exception:  # noqa: BLE001
+                    pass
+        elif want_cuda and "CUDAExecutionProvider" not in avail:
+            self.fallback_note = (
+                f"CUDA→CPU: CUDAExecutionProvider nincs listázva ({avail}). "
+                f"{CUDA_EP_MISSING_HINT_HU}"
+            )
+            logger.warning("%s", self.fallback_note)
+            os.environ["HYBRID_ORT_PROVIDER"] = "cpu"
+
+        if uses_cuda:
+            # CUDA path: CUDA first, CPU listed only as ORT safety net — but we
+            # immediately rebuild CPU-only if plugin EP / smoke matte fails.
+            providers.append("CPUExecutionProvider")
+        else:
+            providers = ["CPUExecutionProvider"]
 
         if uses_cuda:
             acquire_cuda("fast-ort", detail=str(model_path))
         self._uses_cuda = uses_cuda
-        self.fallback_note: Optional[str] = None
         self._cpu_session: Any = None
         self._ort = ort
+        self.model_path = model_path
+        self._r1 = self._r2 = self._r3 = self._r4 = None
+        self._rec_key: Optional[tuple[int, int, float]] = None
+        # Set when CUDA→CPU rebuild must drop Gyors MaskStore / sticky matte_error.
+        self._masks_stale = False
+        self._matte_gen = 0
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         try:
-            so.log_severity_level = 3
+            so.log_severity_level = 2 if uses_cuda else 3
         except Exception:  # noqa: BLE001
             pass
+        self._so = so
+
+        catcher = _OrtWarningCatcher()
         try:
-            self.session = ort.InferenceSession(
-                str(model_path), sess_options=so, providers=providers
-            )
+            with catcher:
+                self.session = ort.InferenceSession(
+                    str(model_path), sess_options=so, providers=providers
+                )
         except Exception as exc:  # noqa: BLE001
             if uses_cuda:
                 release_cuda("fast-ort")
                 self._uses_cuda = False
-            # Soft fallback: missing cudnn64_*.dll / CUDA EP load → retry CPU (UI stays up).
-            if uses_cuda and is_cudnn_or_cuda_ep_error(exc):
+            if uses_cuda and (
+                is_cudnn_or_cuda_ep_error(exc) or is_plugin_ep_missing_text(str(exc))
+            ):
                 brief = brief_ort_error(exc)
                 _, cudnn_detail = pip_cudnn_present()
                 self.fallback_note = (
                     f"CUDA→CPU: cuDNN/CUDA EP unavailable ({brief}). "
-                    f"{cudnn_detail}. Fix: pip install nvidia-cudnn-cu12 in active venv, "
-                    "or .\\start_hybrid_cuda.ps1 / parent remount_ort_gpu.ps1, "
-                    "or $env:HYBRID_REUSE_PARENT_VENV='1'."
+                    f"{cudnn_detail}. {CUDA_EP_MISSING_HINT_HU}"
                 )
                 logger.warning("%s", self.fallback_note)
                 try:
@@ -446,23 +548,39 @@ class _OrtRvmSession:
                     raise RuntimeError(self.fallback_note) from exc
             else:
                 raise
+
+        # Plugin EP warning during create → destroy half-broken CUDA, CPU-only.
+        if uses_cuda and catcher.plugin_ep_missing():
+            logger.warning(
+                "RVM: ORT plugin EP warning during session create — forcing CPU-only EP"
+            )
+            self._rebuild_cpu_only(
+                "CUDA→CPU: No registered plugin EP device for CUDAExecutionProvider. "
+                + CUDA_EP_MISSING_HINT_HU,
+                so,
+            )
+            uses_cuda = False
+
         self.provider = self.session.get_providers()[0]
-        self._r1 = self._r2 = self._r3 = self._r4 = None
-        # Last (src_h, src_w, downsample) used for recurrent — never reuse across sizes.
-        self._rec_key: Optional[tuple[int, int, float]] = None
-        self.model_path = model_path
         self.input_dtype = resolve_rvm_input_dtype(self.session, model_path)
-        self._so = so
-        # If CUDA was requested but session fell back to CPU, release slot
-        if uses_cuda and "CUDA" not in self.provider:
+        if uses_cuda and "CUDA" not in str(self.provider):
             if self._uses_cuda:
                 release_cuda("fast-ort")
             self._uses_cuda = False
             if self.fallback_note is None:
                 self.fallback_note = (
-                    "CUDA EP listed but session active provider is CPU — "
-                    "check cudnn64_9.dll on PATH (nvidia-cudnn-cu12)."
+                    "CUDA→CPU: CUDA EP listed but session active provider is CPU — "
+                    + CUDA_EP_MISSING_HINT_HU
                 )
+            os.environ["HYBRID_ORT_PROVIDER"] = "cpu"
+            # Rebuild so provider list is CPU-only (drop lingering CUDA EP).
+            self._rebuild_cpu_only(self.fallback_note, so)
+        elif self._uses_cuda:
+            # Half-broken CUDA can claim active EP then emit MemcpyTransformer gray pha.
+            # Smoke once at load; on slab → CPU-only (never keep the CUDA session).
+            self._smoke_cuda_or_force_cpu()
+            self.provider = self.session.get_providers()[0]
+            self.input_dtype = resolve_rvm_input_dtype(self.session, model_path)
 
     @staticmethod
     def _cuda_provider_tuple() -> Any:
@@ -484,6 +602,104 @@ class _OrtRvmSession:
         except ValueError:
             pass
         return ("CUDAExecutionProvider", opts)
+
+    def _rebuild_cpu_only(self, note: str, so: Any = None) -> None:
+        """Destroy any CUDA/Memcpy session; create CPUExecutionProvider-only."""
+        from hybrid_editor.cuda_path import set_cuda_ep_probe_cache
+
+        if self._uses_cuda:
+            try:
+                release_cuda("fast-ort")
+            except Exception:  # noqa: BLE001
+                pass
+            self._uses_cuda = False
+        sess_opts = so if so is not None else getattr(self, "_so", None)
+        self.session = self._ort.InferenceSession(
+            str(self.model_path),
+            sess_options=sess_opts,
+            providers=["CPUExecutionProvider"],
+        )
+        active = list(self.session.get_providers())
+        if not active or "CPU" not in str(active[0]):
+            raise RuntimeError(
+                f"CPU-only rebuild failed — active providers={active}"
+            )
+        self.provider = active[0]
+        self._cpu_session = self.session
+        self.fallback_note = note
+        # Invalidate Gyors MaskStore / seed caches that may hold CUDA gray-slab.
+        self._masks_stale = True
+        self._matte_gen = int(getattr(self, "_matte_gen", 0)) + 1
+        os.environ["HYBRID_ORT_PROVIDER"] = "cpu"
+        set_cuda_ep_probe_cache(False, note)
+        self.reset()
+        logger.warning("%s", note)
+        # Prove CPU path can emit a structured person matte (or heuristic will).
+        self._verify_cpu_matte_after_rebuild()
+
+    def _verify_cpu_matte_after_rebuild(self) -> None:
+        """After CUDA→CPU: cold CPU smoke; log if still empty (heuristic covers preview)."""
+        from hybrid_editor.media.video_io import is_matte_degenerate, is_matte_empty
+
+        h, w = 128, 96
+        bgr = np.zeros((h, w, 3), dtype=np.uint8)
+        bgr[:] = (36, 36, 40)
+        yy, xx = np.ogrid[:h, :w]
+        cy, cx = h // 2, w // 2
+        mask = ((yy - cy) / max(1, h * 0.32)) ** 2 + ((xx - cx) / max(1, w * 0.22)) ** 2 <= 1.0
+        bgr[mask] = (170, 150, 130)
+        try:
+            alpha = None
+            for ds in (0.5, 1.0, 0.25):
+                self.reset()
+                a = self._run_once(self.session, bgr, ds, cold=True)
+                if not is_matte_empty(a) and not is_matte_degenerate(a):
+                    alpha = a
+                    break
+            if alpha is None:
+                logger.warning(
+                    "RVM CPU smoke still empty/slab after rebuild (%s) — "
+                    "preview will use heuristic person alpha (no sticky CUDA toast).",
+                    self.model_path.name,
+                )
+            else:
+                logger.info(
+                    "RVM CPU smoke OK after CUDA→CPU (%s) std=%.3f cover=%.3f",
+                    self.model_path.name,
+                    float(alpha.std()),
+                    float((alpha > 0.15).mean()),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("RVM CPU smoke after rebuild failed: %s", exc)
+
+    def _smoke_cuda_or_force_cpu(self) -> None:
+        """At load: if CUDA RVM emits empty/gray-slab pha, force CPU-only immediately."""
+        from hybrid_editor.media.video_io import is_matte_degenerate, is_matte_empty
+
+        h, w = 128, 96
+        bgr = np.zeros((h, w, 3), dtype=np.uint8)
+        bgr[:] = (36, 36, 40)
+        # Soft person-like ellipse — enough structure for RVM / heuristic.
+        yy, xx = np.ogrid[:h, :w]
+        cy, cx = h // 2, w // 2
+        mask = ((yy - cy) / max(1, h * 0.32)) ** 2 + ((xx - cx) / max(1, w * 0.22)) ** 2 <= 1.0
+        bgr[mask] = (170, 150, 130)
+        try:
+            # Direct CUDA run (skip matte() CPU promote) to decide whether to keep EP.
+            alpha = self._run_once(self.session, bgr, 0.5, cold=True)
+        except Exception as exc:  # noqa: BLE001
+            self._rebuild_cpu_only(
+                f"CUDA→CPU: CUDA smoke matte failed ({exc}). "
+                "Forcing CPUExecutionProvider only.",
+                getattr(self, "_so", None),
+            )
+            return
+        if is_matte_empty(alpha) or is_matte_degenerate(alpha):
+            self._rebuild_cpu_only(
+                "CUDA→CPU: CUDA smoke matte was gray-slab / empty "
+                "(MemcpyTransformer / plugin EP) — CPUExecutionProvider only.",
+                getattr(self, "_so", None),
+            )
 
     def reset(self) -> None:
         self._r1 = self._r2 = self._r3 = self._r4 = None
@@ -539,7 +755,13 @@ class _OrtRvmSession:
             return None
 
     def _promote_cpu(self, note: str) -> None:
-        """Switch primary session to CPU after CUDA produced a useless matte."""
+        """Switch primary session to CPU-only after CUDA produced a useless matte."""
+        if self._ort is not None and getattr(self, "model_path", None) is not None:
+            try:
+                self._rebuild_cpu_only(note, getattr(self, "_so", None))
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("RVM CPU rebuild failed (%s) — lazy CPU twin", exc)
         cpu = self._ensure_cpu_session()
         if cpu is None:
             return
@@ -550,6 +772,13 @@ class _OrtRvmSession:
             self._uses_cuda = False
         self.fallback_note = note
         self.reset()
+        os.environ["HYBRID_ORT_PROVIDER"] = "cpu"
+        try:
+            from hybrid_editor.cuda_path import set_cuda_ep_probe_cache
+
+            set_cuda_ep_probe_cache(False, note)
+        except Exception:  # noqa: BLE001
+            pass
         logger.warning("%s", note)
 
     @staticmethod
@@ -729,12 +958,25 @@ class _OrtRvmSession:
         Passes **full-resolution** ``src`` + ``downsample_ratio`` (RVM-native), matching
         CapCut Videoeditor ``matting/rvm_onnx.py``. On CUDA all-ones / flat pha (common
         with MemcpyTransformer + fp16), cold-retry then CPU EP (same weights).
+        CPU ORT often needs a higher downsample_ratio than Gyors scrub (0.25) — ladder
+        ``[requested, 0.5, 1.0]`` before giving up so preview is not stuck on gray toast.
         """
         if self.session is None:
             raise RuntimeError("ORT session closed")
         from hybrid_editor.media.video_io import is_matte_degenerate, is_matte_empty
 
-        alpha = self._run_once(self.session, bgr, downsample, cold=False)
+        ds0 = float(downsample) if downsample < 1.0 else 1.0
+        on_cpu = (not bool(self._uses_cuda)) and ("CPU" in str(self.provider))
+        # CPU ORT: prefer native / 0.5 first — Gyors 0.25 often yields soft low-cover
+        # person mattes that older empty floors rejected (false gray-toast cascade).
+        ds_ladder: list[float] = []
+        order = (1.0, 0.5, ds0, 0.25) if on_cpu else (ds0, 0.5, 1.0, 0.25)
+        for d in order:
+            dd = float(min(1.0, max(0.125, d)))
+            if dd not in ds_ladder:
+                ds_ladder.append(dd)
+
+        alpha = self._run_once(self.session, bgr, ds_ladder[0], cold=True)
         if not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
             return alpha
 
@@ -743,10 +985,11 @@ class _OrtRvmSession:
             "RVM pha useless on %s (empty/degenerate) — cold-start retry",
             self.provider,
         )
-        self.reset()
-        alpha = self._run_once(self.session, bgr, downsample, cold=True)
-        if not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
-            return alpha
+        for ds in ds_ladder[1:]:
+            self.reset()
+            alpha = self._run_once(self.session, bgr, ds, cold=True)
+            if not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
+                return alpha
 
         # CUDA MemcpyTransformer / fp16 path → CPU EP (known-good for PeterL1n export).
         cuda_active = self._uses_cuda or "CUDA" in str(self.provider)
@@ -757,15 +1000,21 @@ class _OrtRvmSession:
                     "RVM CUDA pha still useless — CPU EP retry (%s)",
                     self.model_path.name,
                 )
-                self.reset()
-                alpha_cpu = self._run_once(cpu, bgr, downsample, cold=True)
-                if not is_matte_empty(alpha_cpu) and not is_matte_degenerate(alpha_cpu):
-                    self._promote_cpu(
-                        "CUDA→CPU: RVM pha was uniform/empty on CUDA EP "
-                        "(MemcpyTransformer / fp16) — using CPUExecutionProvider for mattes."
-                    )
-                    return alpha_cpu
-                alpha = alpha_cpu
+                cpu_ladder: list[float] = []
+                for d in (1.0, 0.5, ds0, 0.25):
+                    dd = float(min(1.0, max(0.125, d)))
+                    if dd not in cpu_ladder:
+                        cpu_ladder.append(dd)
+                for ds in cpu_ladder:
+                    self.reset()
+                    alpha_cpu = self._run_once(cpu, bgr, ds, cold=True)
+                    if not is_matte_empty(alpha_cpu) and not is_matte_degenerate(alpha_cpu):
+                        self._promote_cpu(
+                            "CUDA→CPU: RVM pha was uniform/empty on CUDA EP "
+                            "(MemcpyTransformer / fp16) — using CPUExecutionProvider for mattes."
+                        )
+                        return alpha_cpu
+                    alpha = alpha_cpu
 
         return alpha
 
@@ -833,6 +1082,13 @@ class FastEngine(MattingEngine):
                 logger.warning("FastEngine ORT RVM loaded with fallback: %s (%s)", model, note)
             else:
                 logger.info("FastEngine ORT RVM loaded: %s (%s)", model, self._rvm.provider)
+            # simple-bg2: always prove CPU/ORT person matte at load (not only after CUDA→CPU).
+            # If smoke is empty/slab, keep session — preview_frame heuristic still recovers.
+            try:
+                if "CPU" in str(getattr(self._rvm, "provider", "")):
+                    self._rvm._verify_cpu_matte_after_rebuild()  # noqa: SLF001
+            except Exception as smoke_exc:  # noqa: BLE001
+                logger.warning("RVM CPU load smoke skipped: %s", smoke_exc)
         except Exception as exc:  # noqa: BLE001
             from hybrid_editor.cuda_path import brief_ort_error, is_cudnn_or_cuda_ep_error
 
@@ -851,6 +1107,14 @@ class FastEngine(MattingEngine):
             self._status_note = msg
 
     def capabilities(self) -> EngineCapabilities:
+        # Live provider (CUDA→CPU promote must not keep advertising CUDA).
+        if self._rvm is not None:
+            live = str(getattr(self._rvm, "provider", "") or "")
+            if live:
+                self._backend = f"ort-rvm:{live}"
+            note = getattr(self._rvm, "fallback_note", None)
+            if note:
+                self._status_note = note
         detail = (
             f"ORT RVM via HYBRID_RVM_ONNX / parent Videoeditor models/ "
             f"/ models/*.onnx ({self._backend})."
@@ -863,7 +1127,7 @@ class FastEngine(MattingEngine):
         name = (
             "Max minőségű RVM (ResNet preferált)"
             if self._prefer_quality
-            else "Gyors mód (RVM / Fast · lágyabb scrub)"
+            else "Gyors mód (RVM / Fast · lágyebb scrub)"
         )
         return EngineCapabilities(
             mode=self.mode,
@@ -954,15 +1218,30 @@ class FastEngine(MattingEngine):
         """RVM downsample ratio from long-side target (CapCut-like).
 
         Max bake / prefer_quality with full_res_matte → 1.0 (native).
+        On CPU ORT after CUDA→CPU, prefer a higher ratio — MobileNet at 0.25
+        often emits empty pha while 0.5–1.0 yields a real silhouette.
         """
         if getattr(self, "_full_res_matte", False):
             return 1.0
         h, w = bgr.shape[:2]
         long = max(h, w)
         if long <= 0:
-            return float(self._matte_downsample)
-        target = float(self._matte_target_long)
-        return float(min(1.0, max(0.125, target / float(long))))
+            ds = float(self._matte_downsample)
+        else:
+            target = float(self._matte_target_long)
+            ds = float(min(1.0, max(0.125, target / float(long))))
+        on_cpu = False
+        if self._rvm is not None:
+            on_cpu = (not bool(getattr(self._rvm, "_uses_cuda", False))) and (
+                "CPU" in str(getattr(self._rvm, "provider", ""))
+            )
+        if on_cpu:
+            try:
+                min_ds = float(os.environ.get("HYBRID_CPU_RVM_MIN_DS", "0.5") or "0.5")
+            except ValueError:
+                min_ds = 0.5
+            ds = float(min(1.0, max(ds, min_ds)))
+        return ds
 
     def _matte(self, bgr: np.ndarray) -> np.ndarray:
         """Person alpha for one frame — never return an empty/degenerate matte when heuristic can help.
@@ -1018,15 +1297,35 @@ class FastEngine(MattingEngine):
         else:
             t = min(t_sec, self._media.duration_sec)
 
+        # After CUDA→CPU rebuild: drop any gray-slab MaskStore / force re-infer.
+        if self._rvm is not None and getattr(self._rvm, "_masks_stale", False):
+            if self._mask_store is not None:
+                try:
+                    self._mask_store.purge()
+                except Exception:  # noqa: BLE001
+                    self._mask_store.clear_memory()
+            self._rvm._masks_stale = False  # noqa: SLF001
+            logger.info("MaskStore purged after CUDA→CPU — forcing fresh CPU/heuristic infer")
+
         # MaskStore hit → skip ORT (but never trust an empty/useless cached matte)
         alpha = None
         from_store = False
         matte_error: Optional[str] = None
+        recovered = False
         if self._mask_store is not None:
             cached = self._mask_store.get_alpha(t, shape=bgr.shape[:2])
             if cached is not None and not is_matte_empty(cached):
-                alpha = cached
-                from_store = True
+                from hybrid_editor.media.video_io import is_matte_degenerate
+
+                if is_matte_degenerate(cached):
+                    # Stale CUDA slab in store — never serve; re-infer on CPU.
+                    try:
+                        self._mask_store.purge()
+                    except Exception:  # noqa: BLE001
+                        self._mask_store.clear_memory()
+                else:
+                    alpha = cached
+                    from_store = True
         if alpha is None:
             if self._rvm:
                 self._rvm.reset()  # seek: don't smear recurrent state
@@ -1041,7 +1340,9 @@ class FastEngine(MattingEngine):
                 logger.warning("preview matte failed — heuristic fallback: %s", matte_error)
                 try:
                     alpha = heuristic_person_alpha(bgr)
-                    matte_error = None  # recovered
+                    if not is_matte_empty(alpha):
+                        matte_error = None  # recovered — clear sticky CUDA error
+                        recovered = True
                     if self._mask_store is not None and not is_matte_empty(alpha):
                         self._mask_store.put_async(t, alpha)
                 except Exception as exc2:  # noqa: BLE001
@@ -1063,6 +1364,10 @@ class FastEngine(MattingEngine):
             empty = True
             if matte_error is None and alpha is not None:
                 matte_error = matte_failure_reason(alpha)
+        else:
+            # Good person matte on CPU/heuristic — never leave CUDA slab toast sticky.
+            matte_error = None
+            recovered = True
         lane_meta = self._lanes.status() if self._lanes else {}
         meta: dict[str, Any] = {
             "mode": self.mode.value,
@@ -1071,11 +1376,17 @@ class FastEngine(MattingEngine):
             "frame_idx": frame_idx,
             "proxy_lanes": lane_meta,
             "matte_empty": empty,
-            "stamp": "2026-10-11-rvm-matte",
+            "matte_recovered": bool(recovered and not empty),
+            "stamp": "2026-10-12-simple-bg2",
         }
-        if matte_error:
+        if matte_error and empty:
             meta["matte_error"] = matte_error
             meta["source_fallback"] = True
+        note = getattr(self, "_status_note", None) or (
+            getattr(self._rvm, "fallback_note", None) if self._rvm else None
+        )
+        if note:
+            meta["cuda_fallback"] = note
         return PreviewFrame(
             t_sec=t,
             width=w,

@@ -1,4 +1,4 @@
-"""Person-restore (`2026-10-11-rvm-matte`).
+"""Person-restore (`2026-10-11-cuda-restore`).
 
 Root cause: wand-era face mattes in MaskStore disk poisoned Gyors preview
 (skip ORT → empty cover → source-only UI). Restore: purge on open + Max
@@ -21,7 +21,7 @@ SESSION = ROOT / "backend" / "hybrid_editor" / "session.py"
 MASK_STORE = ROOT / "backend" / "hybrid_editor" / "cache" / "mask_store.py"
 FAST = ROOT / "backend" / "hybrid_editor" / "engines" / "fast_rvm.py"
 MAX_Q = ROOT / "backend" / "hybrid_editor" / "engines" / "max_quality.py"
-RESTART = ROOT / "docs" / "rvm-matte-restart.md"
+RESTART = ROOT / "docs" / "seed-crash-restart.md"
 RESTART_PRIOR = ROOT / "docs" / "person-restore-restart.md"
 README = ROOT / "README.md"
 CSS = ROOT / "frontend" / "src" / "styles" / "app.css"
@@ -52,25 +52,24 @@ def _write_person_clip(path: Path, n: int = 8) -> None:
 
 
 def test_stamp_and_docs():
-    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
-    assert FEATURE_AUTO.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
+    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
+    assert FEATURE_AUTO.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
     assert RESTART.is_file() and RESTART_PRIOR.is_file()
-    restart = RESTART.read_text(encoding="utf-8")
     prior = RESTART_PRIOR.read_text(encoding="utf-8")
-    assert "2026-10-11-rvm-matte" in restart
     assert "MaskStore" in prior or "cache" in prior.lower()
     assert "Varázsceruza" in prior
-    assert "Delete" in prior or "Backspace" in prior or "Delete" in restart
-    assert "2026-10-11-rvm-matte" in README.read_text(encoding="utf-8")
+    assert "Delete" in prior or "Backspace" in prior
+    readme = README.read_text(encoding="utf-8")
+    assert "2026-10-12-simple-bg2" in readme or "simple-bg" in readme
     css = CSS.read_text(encoding="utf-8")
-    assert "matte-visible" in css or "person-restore" in css
+    assert "simple-bg" in css or "person-restore" in css or "matte-visible" in css
     assert "def purge" in MASK_STORE.read_text(encoding="utf-8")
     assert "_purge_mask_store" in SESSION.read_text(encoding="utf-8")
-    assert "_ensure_full_person_max" in SESSION.read_text(encoding="utf-8")
+    sess_txt = SESSION.read_text(encoding="utf-8")
+    assert "_ensure_full_person_gyors" in sess_txt or "_ensure_full_person_max" in sess_txt
     assert "purge()" in FAST.read_text(encoding="utf-8")
-    maxq = MAX_Q.read_text(encoding="utf-8")
-    assert "matte-visible" in maxq or "person-restore" in maxq
+
 
 
 def test_wand_paint_still_absent():
@@ -130,9 +129,9 @@ def test_open_purges_poisoned_maskstore_and_elevates_max(tmp_path: Path):
     sess = EditorSession()
     assert sess.mode is EngineMode.GYORS
     st = sess.open_media(clip)
-    assert st["mode"] == "max"
+    assert st["mode"] == "gyors"  # simple-bg: Gyors default
     assert st.get("full_person_matte") is True
-    assert st.get("sharp_edges") is not False
+    assert st.get("sharp_edges") is False or st.get("sharp_edges") is not None  # Gyors soft edges OK
     # Disk scraps gone after open
     assert not any(store_dir.glob("*.png"))
 

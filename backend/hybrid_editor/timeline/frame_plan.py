@@ -65,21 +65,9 @@ class ClipRange:
         return name or self.clip_id
 
     def track_label(self) -> str:
-        if int(self.track) >= 1:
-            if self.has_alpha:
-                return "AI sáv · nobg"
-            status = (self.ai_polish or "idle").strip().lower()
-            if status == "running":
-                return "AI sáv · Polírozás…"
-            if status == "done":
-                return "AI sáv · kész"
-            if status == "pending":
-                return "AI sáv · vár"
-            if status == "error":
-                return "AI sáv · hiba"
-            return "AI sáv"
+        # simple-bg2: single V1 only — never advertise AI sáv / Polírozás.
         if self.has_alpha:
-            return "V1 nobg"
+            return "V1 · átlátszó"
         return "V1"
 
 
@@ -589,25 +577,24 @@ class TimelineDoc:
             "selected_clip_id": self.selected_clip_id,
             "tracks": [
                 {"id": 0, "label": "V1"},
-                {"id": 1, "label": "AI sáv"},
             ],
+            # simple-bg2: V1 clips only (no AI sáv track in API payload).
             "clips": [
                 {
-                    **asdict(c),
+                    **{
+                        **asdict(c),
+                        "track": 0,
+                        "ai_lane": False,
+                        "ai_polish": "idle",
+                    },
                     "timeline_end_sec": c.timeline_end(),
                     "source_duration_sec": c.source_duration(),
                     "display_label": c.display_label(),
-                    "track_label": c.track_label(),
-                    "ai_lane": bool(c.ai_lane or int(c.track) >= 1),
-                    "ai_polish": (c.ai_polish or "idle"),
-                    "ai_polish_label_hu": {
-                        "pending": "Polírozás vár",
-                        "running": "Polírozás…",
-                        "done": "Polírozás kész",
-                        "error": "Polírozás hiba",
-                    }.get((c.ai_polish or "idle").lower(), ""),
+                    "track_label": "V1",
+                    "ai_polish_label_hu": "",
                 }
                 for c in self.clips
+                if int(getattr(c, "track", 0) or 0) == 0
             ],
         }
 

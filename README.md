@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-11-rvm-matte` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-12-simple-bg2` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,10 +44,13 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-11-rvm-matte
+# expect: 2026-10-12-simple-bg2
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
-# CUDA PATH (no remount pip): .\hybrid_cut\start_hybrid_cuda.ps1
+# Default: CPU ORT (real person matte). Optional CUDA after hard probe:
+#   .\hybrid_cut\start_hybrid_cuda.ps1   (from Videoeditor)
+#   .\start_hybrid_cuda.ps1              (from hybrid_cut)
+# Pin: onnxruntime-gpu==1.30.0  (backend\requirements-gpu.txt)
 # Compare edges with original Videoeditor: .\run_gpu.ps1 (Tk cutout)
 ```
 
@@ -56,6 +59,8 @@ One-click from Agent Store:
 ```powershell
 & "$env:LOCALAPPDATA\Cursor\AgentStores\cursor_agent_stores\bc-41930eab-1501-4c19-acf3-0c9d63afbf4d\files\docs\capcut-features\sync_hybrid.ps1"
 cd $env:USERPROFILE\Documents\Videoeditor
+Get-Content .\hybrid_cut\SYNC_VERSION.txt   # 2026-10-12-simple-bg2
+cd hybrid_cut
 .\run_hybrid.ps1
 ```
 
@@ -66,11 +71,67 @@ cd $env:USERPROFILE\Documents
 git clone https://github.com/hevesitr/HybridCut.git
 cd HybridCut
 .\install_to_videoeditor.ps1
-cd $env:USERPROFILE\Documents\Videoeditor
+cd $env:USERPROFILE\Documents\Videoeditor\hybrid_cut
 .\run_hybrid.ps1
 ```
 
 ---
+
+
+## Stamp - simple-bg (`2026-10-12-simple-bg2`)
+
+Tip restart: [`docs/simple-bg-restart.md`](docs/simple-bg-restart.md).
+
+**Radical simplify for Róbert:** one V1 clip only (second drop rejected); focus **háttéreltávolítás**; Gyors/MobileNet default (no Max-on-open); strip AI sáv / Polírozás / B-roll / nobg Mozgatás from default flow. CPU-first ORT + gray-slab guards kept from rvm-back. Delete on the one clip; no Varázsceruza.
+
+## Prior - run-ps1 (superseded)
+
+## Stamp - run-ps1 (historical) (`2026-10-12-simple-bg2`)
+
+Tip restart: [`docs/run-ps1-restart.md`](docs/run-ps1-restart.md).
+
+**Why server never started after rvm-back:** `run_hybrid.ps1` still had a UTF-8 em-dash in a double-quoted Write-Host; PS 5.1 mojibake injected a stray `"` → Missing `}` / Unexpected `)`. Fix: ASCII-only HybridCut `.ps1` messages; single-quoted paren lines; `scripts/ort_present.py` instead of fragile `python -c`. Keeps CPU-first + hard probe from rvm-back.
+
+## Prior - rvm-back (superseded) (`2026-10-11-rvm-back`)
+
+Tip restart: [`docs/rvm-back-restart.md`](docs/rvm-back-restart.md).
+
+**Why toast survived cpu-matte/matte-cpu2:** launch still defaulted CUDA → broken plugin EP / Conv Fallback gray-slab `pha`; soft CPU RVM person mattes were false-empty (cover/mean floors). Fix: **CPU-first** everywhere; CUDA only after hard probe OK; accept structured soft person alpha; clear sticky gray toast on recover.
+
+## Prior - matte-cpu2 (superseded) (`2026-10-11-matte-cpu2`)
+
+Tip restart: [`docs/matte-cpu2-restart.md`](docs/matte-cpu2-restart.md).
+
+## Stamp - cpu-matte (superseded) (`2026-10-11-matte-cpu2`)
+
+After cuda-ps1 + ORT 1.30.0, Maszk was still a gray slab: ORT logged `No registered plugin EP` + `MemcpyTransformer` while the UI showed **RTX 3060**. Probe **soft-OK** (cuDNN present) allowed a half-broken CUDA session. Fix: **no soft-OK**; on plugin EP miss / smoke slab → **CPUExecutionProvider only**; UI chip **CPU ORT**; auto Max when CUDA unusable. P0 = working person matte on CPU.
+
+Restart: [`docs/cpu-matte-restart.md`](docs/cpu-matte-restart.md) · store [`../hybrid-cpu-matte-restart.md`](../hybrid-cpu-matte-restart.md)
+
+## Prior - cuda-ps1 (`2026-10-11-matte-cpu2`)
+
+Windows PowerShell 5.1 failed to parse `start_hybrid_cuda.ps1` after cuda-restore: UTF-8 em-dash `—` became mojibake `â€"` (stray `"`), so `Unexpected token 'reinstall'`. Fix: ASCII-only Write-Host strings, precomputed labels, single-quoted paren messages. Keeps ORT **1.30.0** pin + file probe.
+
+Restart: [`docs/cuda-ps1-restart.md`](docs/cuda-ps1-restart.md) · store [`../hybrid-cuda-ps1-restart.md`](../hybrid-cuda-ps1-restart.md)
+
+## Prior - cuda-restore (`2026-10-11-cuda-restore`)
+
+
+Morning cutout worked on **`onnxruntime-gpu==1.30.0`**. After wand/paint/matte/cuda-ep stamps, unpinned reinstall pulled **1.31.0** and plugin EP stayed missing (`No registered plugin EP…`). Also: multiline `python -c` probe crashed under PowerShell quoting. Fix: pin **1.30.0** (`requirements-gpu.txt`), file probe `scripts/probe_cuda_ep.py` with clear **OK=1 / RESULT: OK|FAIL**, CPU fallback if still FAIL.
+
+Restart: [`docs/cuda-restore-restart.md`](docs/cuda-restore-restart.md) · store [`../hybrid-cuda-restore-restart.md`](../hybrid-cuda-restore-restart.md)
+
+## Prior — cuda-ep (`2026-10-11-cuda-ep`)
+
+ORT log `No registered plugin EP device found for 'CUDAExecutionProvider'` means CUDA was **listed** but the **plugin EP was not registered**. Broken CUDA path produced uniform gray Maszk + toast. Fix: `probe_cuda_ep_usable` + force **CPU ORT** before RVM inference. Superseded by **cuda-restore** for morning pin + file probe.
+
+Restart (historical): [`docs/cuda-ep-restart.md`](docs/cuda-ep-restart.md)
+
+## Stamp — seed-crash (`2026-10-11-seed-crash`)
+
+After SeedPaint removal, **`onNewProject` still called `setShowLargeSeed(false)`** → ReferenceError caught into the status line next to Assist/Ollama (`setShowLargeSeed is not defined`). That aborted the rest of the Új-projekt UI reset and made Előnézet look broken. Fix: drop all dead seed-modal refs; Max polish must not replace a good RVM matte with a gray slab. Keeps **rvm-matte** fp32-first + CUDA→CPU recovery.
+
+Restart: [`docs/seed-crash-restart.md`](docs/seed-crash-restart.md) · store [`../hybrid-seed-crash-restart.md`](../hybrid-seed-crash-restart.md)
 
 ## Stamp — rvm-matte (`2026-10-11-rvm-matte`)
 

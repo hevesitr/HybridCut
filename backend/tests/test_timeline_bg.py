@@ -29,7 +29,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_timeline_bg():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
 
 
 def test_remove_extra_v1_and_v2():
@@ -190,8 +190,8 @@ def test_ui_timeline_drag_trim_wand():
     assert "onTrimEdge" in tl
     assert "onSetTrack" in tl
     assert "tl-handle" in tl
-    assert "V1" in tl and ("AI sáv" in tl or "V2" in tl)
-    assert "onPolish" in tl or "Polírozás" in tl
+    assert "V1" in tl  # simple-bg: AI sáv lane removed from UI
+    assert "AI sáv" not in tl or "simple-bg" in tl  # polish gone
     app = APP.read_text(encoding="utf-8")
     assert "trim_edge" in app
     assert "set_track" in app
@@ -218,7 +218,7 @@ def test_ui_timeline_drag_trim_wand():
     assert "trim_edge" in api
     assert "set_track" in api
     css = CSS.read_text(encoding="utf-8")
-    assert "person-restore" in css or "auto-person" in css or "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
+    assert "simple-bg" in css or "person-restore" in css or "look-peak" in css
     assert ".clip-bin-del" in css
     assert ".tl-handle" in css
     assert ".tl-chrome-bar" in css
@@ -229,7 +229,7 @@ def test_ui_timeline_drag_trim_wand():
 
 def test_readme_and_dist():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-11-rvm-matte" in readme or "2026-10-11-paint-face" in readme
+    assert "2026-10-11-cuda-restore" in readme or "2026-10-11-paint-face" in readme
     assert "2026-10-11-concat-look" in readme
     assert "concat-look" in readme
     assets = list(DIST_ASSETS.glob("index-*.js")) + list(DIST_ASSETS.glob("index-*.css"))

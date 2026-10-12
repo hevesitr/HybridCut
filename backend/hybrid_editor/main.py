@@ -5,9 +5,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# Prefer CUDA (RTX 3060). Force CPU: $env:HYBRID_ORT_PROVIDER = "cpu"
+# CPU-first: broken CUDA plugin EP / Conv Fallback emits gray-slab pha.
+# Optional CUDA only after start_hybrid_cuda.ps1 hard probe OK sets the env.
+# Force CUDA: $env:HYBRID_ORT_PROVIDER = "cuda"  (after probe RESULT: OK)
 if "HYBRID_ORT_PROVIDER" not in os.environ:
-    os.environ["HYBRID_ORT_PROVIDER"] = "cuda"
+    os.environ["HYBRID_ORT_PROVIDER"] = "cpu"
 
 # PATH inject before any engine/ORT import (hybrid_editor package also injects).
 try:

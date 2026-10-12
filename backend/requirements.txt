@@ -6,15 +6,19 @@ pydantic>=2.0
 python-multipart>=0.0.9
 aiofiles>=23.0
 # Optional — real FastEngine ORT RVM (Windows CUDA / RTX 3060):
-#   Prefer parent CapCut venv that already has onnxruntime-gpu + cuDNN:
+#   Pin morning-working wheel (1.31+ plugin EP often broken on Win):
+#     pip install -r backend\requirements-gpu.txt
+#     → onnxruntime-gpu==1.30.0 + nvidia-cudnn-cu12 …
+#   Prefer parent CapCut venv that already has onnxruntime-gpu==1.30.0 + cuDNN:
 #     Documents\Videoeditor\.venv  (after setup_gpu.ps1 / remount_ort_gpu.ps1)
-#   Or HybridCut CUDA launcher (auto PATH + pip nvidia-cudnn-cu12):
-#     .\start_hybrid_cuda.ps1
+#   Or HybridCut CUDA launcher (auto PATH + pin + probe):
+#     From Documents\Videoeditor:  .\hybrid_cut\start_hybrid_cuda.ps1
+#     From Documents\Videoeditor\hybrid_cut:  .\start_hybrid_cuda.ps1
 #   Or in hybrid / parent python:
-#     python -m pip install onnxruntime-gpu nvidia-cudnn-cu12 nvidia-cublas-cu12 --trusted-host pypi.org --trusted-host files.pythonhosted.org --no-cache-dir
+#     python -m pip install "onnxruntime-gpu==1.30.0" nvidia-cudnn-cu12 nvidia-cublas-cu12 --trusted-host pypi.org --trusted-host files.pythonhosted.org --no-cache-dir
 #   run_hybrid.ps1 auto-installs nvidia-cudnn-cu12 when cudnn64_*.dll is missing.
 #   Python injects PATH + os.add_dll_directory before ORT session (hybrid_editor.cuda_path).
-#   Soft fallback: CUDA/cuDNN LoadLibrary failure → CPU EP with clear UI status.
+#   Soft fallback: CUDA/cuDNN / plugin-EP failure → CPU EP with clear UI status.
 #   Weights (not redistributed): parent Documents\Videoeditor\models\rvm_*.onnx
 #     prefer fp32: rvm_mobilenetv3_fp32.onnx  or HYBRID_RVM_ONNX / scripts\download_rvm.ps1
 #   Workaround B: $env:HYBRID_REUSE_PARENT_VENV='1'  (use CapCut .venv)

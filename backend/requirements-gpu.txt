@@ -1,0 +1,11 @@
+# HybridCut GPU ORT pin — morning-working CUDA EP on Windows / RTX 3060.
+# 1.31.x often lists CUDAExecutionProvider but fails plugin EP registration:
+#   No registered plugin EP device found for 'CUDAExecutionProvider'
+# Install into the active hybrid or parent CapCut venv:
+#   pip uninstall onnxruntime onnxruntime-gpu -y
+#   pip install -r backend\requirements-gpu.txt --trusted-host pypi.org --trusted-host files.pythonhosted.org --no-cache-dir
+onnxruntime-gpu==1.30.0
+nvidia-cudnn-cu12>=9.0.0
+nvidia-cublas-cu12>=12.0.0
+nvidia-cuda-runtime-cu12>=12.0.0
+nvidia-cuda-nvrtc-cu12>=12.0.0

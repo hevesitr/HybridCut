@@ -27,7 +27,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_concat_flow():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
 
 
 def test_session_defines_new_project():
@@ -72,12 +72,12 @@ def test_app_uj_projekt_and_v1_klip():
     text = APP.read_text(encoding="utf-8")
     assert "Új projekt" in text
     assert "onNewProject" in text
-    assert "+ V1 klip" in text
-    assert "Új klip alá" in text
+    assert "+ V1 klip" not in text  # simple-bg: single clip
+    assert "háttéreltávolítás" in text or "Egy klip" in text or "elutasítva" in text
     assert "onFilePicked" in text
     assert "statusRef" in text
     assert "dropUpload" in text
-    assert "append = !!(st?.media || (st?.timeline?.clips?.length ?? 0) > 0)" in text
+    assert "elutasítva" in text or "Egy klip" in text  # simple-bg reject second drop
     assert "api.newProject" in text or "newProject()" in text
 
 
@@ -91,7 +91,7 @@ def test_api_new_project_wired():
 
 def test_css_preview_fills_stage():
     css = CSS.read_text(encoding="utf-8")
-    assert "person-restore" in css or "auto-person" in css or "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
+    assert "simple-bg" in css or "person-restore" in css
     block = css.split(".preview-stage img")[1].split(".preview-empty")[0]
     assert "width: 100%" in block
     assert "height: 100%" in block
@@ -109,7 +109,7 @@ def test_css_preview_fills_stage():
 
 def test_readme_mentions_concat_flow():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-11-rvm-matte" in readme or "2026-10-11-paint-face" in readme
+    assert "2026-10-11-cuda-restore" in readme or "2026-10-11-paint-face" in readme
     assert "2026-10-11-concat-look" in readme
 
 

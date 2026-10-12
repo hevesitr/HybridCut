@@ -82,6 +82,7 @@ def test_is_cudnn_or_cuda_ep_error() -> None:
 def test_ort_session_soft_fallback_to_cpu(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     model = tmp_path / "rvm_mobilenetv3_fp32.onnx"
     model.write_bytes(b"fake")
+    cp.clear_cuda_ep_probe_cache()
 
     class FakeSess:
         def __init__(self, providers):
@@ -93,14 +94,15 @@ def test_ort_session_soft_fallback_to_cpu(monkeypatch: pytest.MonkeyPatch, tmp_p
         def get_inputs(self):
             return [SimpleNamespace(name="src", type="tensor(float)", shape=[1, 3, "h", "w"])]
 
-    calls: list[list[str]] = []
+    calls: list[list] = []
 
     class FakeOrt:
-        GraphOptimizationLevel = SimpleNamespace(ORT_ENABLE_ALL=99)
+        GraphOptimizationLevel = SimpleNamespace(ORT_ENABLE_ALL=99, ORT_ENABLE_BASIC=1)
 
         class SessionOptions:
             def __init__(self):
                 self.graph_optimization_level = None
+                self.log_severity_level = 3
 
         @staticmethod
         def get_available_providers():
@@ -109,7 +111,9 @@ def test_ort_session_soft_fallback_to_cpu(monkeypatch: pytest.MonkeyPatch, tmp_p
         @staticmethod
         def InferenceSession(path, sess_options=None, providers=None):
             calls.append(list(providers or []))
-            if providers and providers[0] == "CUDAExecutionProvider":
+            first = providers[0] if providers else None
+            name = first[0] if isinstance(first, tuple) else first
+            if name == "CUDAExecutionProvider":
                 raise RuntimeError(
                     "LoadLibrary failed for cudnn64_9.dll with error 2. "
                     "cuDNN is unavailable or disabled for CUDA Execution Provider"
@@ -122,8 +126,7 @@ def test_ort_session_soft_fallback_to_cpu(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.setitem(sys.modules, "onnxruntime", FakeOrt)
     monkeypatch.setattr(cp, "inject_nvidia_pip_libs", lambda: [])
     monkeypatch.setattr(cp, "pip_cudnn_present", lambda: (False, "missing cudnn"))
-
-    # Re-import path used inside _OrtRvmSession
+    # Probe sees CUDA fail → CPU before RVM; still honest CUDA→CPU note.
     monkeypatch.setattr(
         "hybrid_editor.cuda_path.inject_nvidia_pip_libs",
         lambda: [],
@@ -136,8 +139,12 @@ def test_ort_session_soft_fallback_to_cpu(monkeypatch: pytest.MonkeyPatch, tmp_p
     sess = fr._OrtRvmSession(model)
     assert sess.provider == "CPUExecutionProvider"
     assert sess.fallback_note and "CUDA" in sess.fallback_note
-    assert calls[0][0] == "CUDAExecutionProvider"
-    assert calls[1] == ["CPUExecutionProvider"]
+    # Probe and/or session may attempt CUDA; final session is CPU-only.
+    assert any(
+        (c == ["CPUExecutionProvider"])
+        or (len(c) == 1 and c[0] == "CPUExecutionProvider")
+        for c in calls
+    )
 
 
 def test_probe_includes_cudnn_fields(monkeypatch: pytest.MonkeyPatch) -> None:

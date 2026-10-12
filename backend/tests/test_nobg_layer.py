@@ -35,7 +35,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_nobg_layer():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
 
 
 def test_looks_like_alpha_media():
@@ -147,7 +147,7 @@ def test_ui_pozicio_nobg_timeline():
     assert "onNobgToTimeline" in app
     assert "set_transform" in app
     assert "reset_transform" in app
-    assert "Mozgatás" in app
+    assert "Mozgatás" not in app  # simple-bg stripped
     assert "Visszaállítás" in app
     assert "transform-drag-layer" in app
     api = API_TS.read_text(encoding="utf-8")
@@ -162,7 +162,7 @@ def test_ui_pozicio_nobg_timeline():
 
 def test_readme_restart_dist():
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-11-rvm-matte" in readme or "2026-10-11-paint-face" in readme
+    assert "2026-10-11-cuda-restore" in readme or "2026-10-11-paint-face" in readme
     assert RESTART.is_file()
     restart = RESTART.read_text(encoding="utf-8")
     assert "2026-10-11-paint-face" in restart or "nobg-layer" in restart or "auto-person" in restart

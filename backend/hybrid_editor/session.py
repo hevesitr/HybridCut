@@ -1,4 +1,4 @@
-"""In-memory editor session — multi-clip timeline + engines + analyse + seed mask."""
+"""In-memory editor session — single V1 clip + BG remove (simple-bg)."""
 
 from __future__ import annotations
 
@@ -114,29 +114,36 @@ class EditorSession:
             if d.is_dir():
                 shutil.rmtree(d, ignore_errors=True)
 
-    def _ensure_full_person_max(self, media_path: Optional[str] = None) -> None:
-        """Megnyitás auto-person: Max + Éles szélek (pre-wand recognition path)."""
+    def _ensure_full_person_gyors(self, media_path: Optional[str] = None) -> None:
+        """Megnyitás auto-person: stay Gyors (MobileNet scrub) + purge seeds.
+
+        simple-bg: Max only on explicit user choice / export bake — not on open.
+        """
         path = media_path or (self.media.path if self.media else None)
-        if self.mode is not EngineMode.MAX:
+        if self.mode is not EngineMode.GYORS:
             old = self.engine
             try:
                 old.close()
             except Exception:  # noqa: BLE001
                 pass
-            self.mode = EngineMode.MAX
-            self.engine = create_engine(EngineMode.MAX)
-            self.sharp_edges = True
+            self.mode = EngineMode.GYORS
+            self.engine = create_engine(EngineMode.GYORS)
+            self.sharp_edges = False
             self._sync_sharp_to_engine()
             if path:
                 self.media = self.engine.open_media(Path(path))
                 self._open_path = path
         else:
-            self.sharp_edges = True
+            self.sharp_edges = False
             self._sync_sharp_to_engine()
             if path and self._open_path != path:
                 self.media = self.engine.open_media(Path(path))
                 self._open_path = path
         self._apply_seed_to_engine(None)
+
+    # Compat alias — older tests / callers
+    def _ensure_full_person_max(self, media_path: Optional[str] = None) -> None:
+        self._ensure_full_person_gyors(media_path)
 
     def _load_seed_for_selection(self) -> None:
         """Auto-person only: purge any leftover seed PNG and never re-arm paint/wand.
@@ -187,8 +194,9 @@ class EditorSession:
                 "seed_paint": self.mode is EngineMode.MAX or self._seed_alpha is not None,
                 "quality_pipeline": self.mode is EngineMode.MAX,
                 "sharp_edges": self.sharp_edges,
-                "timeline_multiclip": bool(self.timeline and len(self.timeline.clips) > 1),
-                "broll_track": has_broll,
+                "timeline_multiclip": False,
+                "broll_track": False,
+                "simple_bg": True,
                 "export_audio": True,
                 "open_output_folder": True,
                 "bake_queue": True,
@@ -207,6 +215,23 @@ class EditorSession:
                 live_note = getattr(rvm_sess, "fallback_note", None) if rvm_sess else None
             if live_note:
                 rvm["cuda_fallback"] = live_note
+            # Honest UI: live CPU session must not keep RVM CUDA / RTX badges.
+            live_backend = str(caps.backend or "").lower()
+            live_note_s = str(live_note or "")
+            if "cpuexecutionprovider" in live_backend or live_backend.endswith(":cpu"):
+                rvm["cuda_ep"] = False
+                rvm["cuda_ep_registered"] = False
+                rvm["ort_label_hu"] = "CPU ORT"
+                rvm["prefer"] = "cpu"
+            elif live_note_s and (
+                "CUDA→CPU" in live_note_s
+                or "plugin EP" in live_note_s
+                or "CPU ORT" in live_note_s
+            ):
+                rvm["cuda_ep"] = False
+                rvm["cuda_ep_registered"] = False
+                rvm["ort_label_hu"] = "CPU ORT"
+                rvm["prefer"] = "cpu"
             person_info: dict[str, Any] = {}
             if isinstance(self.engine, MaxQualityEngine) and hasattr(self.engine, "person_matte_info"):
                 person_info = self.engine.person_matte_info()
@@ -288,7 +313,7 @@ class EditorSession:
                 return seed
 
             if new_mode is self.mode and self.engine.mode is new_mode:
-                # Already on target mode (Megnyitás now opens Max) — still sanitize
+                # Already on target mode (Megnyitás stays Gyors) — still sanitize
                 # near-empty paint leftovers and recommend Előnézet.
                 seed = _drop_near_empty_seed(self._seed_alpha)
                 if seed is None:
@@ -442,6 +467,7 @@ class EditorSession:
         as_broll: bool = False,
         as_nobg: bool = False,
     ) -> dict[str, Any]:
+        """simple-bg: one V1 clip only. Ignore append / B-roll / nobg stack flags."""
         from hybrid_editor.media.video_io import looks_like_alpha_media
 
         with self._lock:
@@ -450,76 +476,32 @@ class EditorSession:
             path = Path(path)
             info = probe_video(path)
             is_nobg = bool(as_nobg) or looks_like_alpha_media(path)
-            has_clips = self.timeline is not None and bool(self.timeline.clips)
-            # CapCut-like: cutout/nobg lands on V2 when the timeline already has clips
-            if (as_nobg or is_nobg) and has_clips and (as_nobg or as_broll or append):
-                append = True
-                use_track = 1
-            elif as_broll:
-                append = True if has_clips else append
-                use_track = 1 if has_clips else max(0, int(track))
-            else:
-                use_track = max(0, int(track))
-            if append and has_clips:
-                if use_track >= 1:
-                    self.timeline.add_broll(
-                        media_path=info.path,
-                        duration_sec=info.duration_sec,
-                        fps=info.fps,
-                        width=info.width,
-                        height=info.height,
-                        label="nobg" if is_nobg else Path(info.path).name,
-                        has_alpha=is_nobg,
-                        opacity=1.0 if is_nobg else 0.85,
-                    )
-                else:
-                    self.timeline.add_clip(
-                        media_path=info.path,
-                        duration_sec=info.duration_sec,
-                        fps=info.fps,
-                        width=info.width,
-                        height=info.height,
-                        has_alpha=is_nobg,
-                        label="nobg" if is_nobg else "",
-                    )
-                # Keep engine on newly added media for preview convenience
-                self.media = self.engine.open_media(path)
-                self._open_path = info.path
-                # Do not wipe V1 seed when adding B-roll / nobg overlay
-                if use_track == 0:
-                    self._seed_alpha = None
-                    self._purge_seed_disk()
-                    self._purge_mask_store(info.path)
-                    if not is_nobg:
-                        self._ensure_full_person_max(info.path)
-                    elif isinstance(self.engine, MaxQualityEngine):
-                        self.engine.set_user_seed(None)
-            else:
-                self.last_bake = None
-                self.bake_progress = 0.0
-                self.bake_status = ""
-                self._seed_alpha = None
-                self._seed_mode = "union"
-                self._seed_part = None
-                # Auto-person restore: Max + Éles before first open so MaskStore
-                # binds to ResNet quality model_id and wand face scraps are purged.
-                if not is_nobg:
-                    self._purge_seed_disk()
-                    if self.mode is not EngineMode.MAX:
-                        try:
-                            self.engine.close()
-                        except Exception:  # noqa: BLE001
-                            pass
-                        self.mode = EngineMode.MAX
-                        self.engine = create_engine(EngineMode.MAX)
-                    self.sharp_edges = True
-                    self._sync_sharp_to_engine()
-                self.media = self.engine.open_media(path)
-                self._open_path = info.path
-                self._ensure_timeline(reset=True, has_alpha=is_nobg)
-                if isinstance(self.engine, MaxQualityEngine):
-                    self.engine.set_user_seed(None)
-                self._apply_seed_to_engine(None)
+            # Reject multi-clip / multi-track stacking — always replace single V1.
+            _ = (append, track, as_broll)  # ignored (compat API)
+            self.last_bake = None
+            self.bake_progress = 0.0
+            self.bake_status = ""
+            self._seed_alpha = None
+            self._seed_mode = "union"
+            self._seed_part = None
+            # Gyors-first auto person: MobileNet scrub + MaskStore purge (no Max-on-open).
+            self._purge_seed_disk()
+            self._purge_mask_store(info.path)
+            if self.mode is not EngineMode.GYORS:
+                try:
+                    self.engine.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                self.mode = EngineMode.GYORS
+                self.engine = create_engine(EngineMode.GYORS)
+            self.sharp_edges = False
+            self._sync_sharp_to_engine()
+            self.media = self.engine.open_media(path)
+            self._open_path = info.path
+            self._ensure_timeline(reset=True, has_alpha=is_nobg)
+            if isinstance(self.engine, MaxQualityEngine):
+                self.engine.set_user_seed(None)
+            self._apply_seed_to_engine(None)
             return self.status()
 
     def update_timeline(
@@ -926,7 +908,7 @@ class EditorSession:
                     meta_extra: dict[str, Any] = {
                         "matte_empty": empty,
                         "has_alpha_clip": bool(getattr(matte_layer, "has_alpha", False)),
-                        "stamp": "2026-10-11-rvm-matte",
+                        "stamp": "2026-10-12-simple-bg2",
                         **overlay_meta,
                     }
                     if empty:
@@ -936,6 +918,10 @@ class EditorSession:
                         if why:
                             meta_extra["matte_error"] = why
                             meta_extra["source_fallback"] = True
+                    else:
+                        meta_extra.pop("matte_error", None)
+                        meta_extra.pop("source_fallback", None)
+                        meta_extra["matte_recovered"] = True
                     frame = PreviewFrame(
                         t_sec=t,
                         width=w,

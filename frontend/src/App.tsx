@@ -26,7 +26,7 @@ type ClipRow = {
   track?: number;
 };
 
-/** Any selected timeline clip (V1 / AI sáv) can be deleted — including last V1. */
+/** simple-bg: the one V1 clip can be deleted (Delete / Backspace). */
 function canRemoveClip(clips: ClipRow[], clipId: string | null | undefined): boolean {
   if (!clipId) return false;
   return clips.some((c) => c.clip_id === clipId);
@@ -46,31 +46,40 @@ function isTypingTarget(el: EventTarget | null): boolean {
 function rvmChip(status: EditorStatus | null) {
   const rvm = status?.rvm;
   const backend = (status?.backend || rvm?.engine_backend || "").toLowerCase();
-  const liveCuda = backend.includes("cuda");
+  const epRegistered = rvm?.cuda_ep_registered === true || rvm?.cuda_ep === true;
+  const liveCuda =
+    epRegistered &&
+    backend.includes("cuda") &&
+    !backend.includes("cpuexecutionprovider") &&
+    !rvm?.cuda_fallback;
   const liveCpu =
     backend.includes("cpuexecutionprovider") ||
     backend.endsWith(":cpu") ||
-    backend.includes("ort-rvm:cpu");
+    backend.includes("ort-rvm:cpu") ||
+    rvm?.ort_label_hu === "CPU ORT" ||
+    (!!rvm?.cuda_fallback && /CUDA→CPU|plugin EP|CPU ORT/i.test(String(rvm.cuda_fallback)));
   const onnx = !!rvm?.onnx_found || backend.includes("ort-rvm") || backend.includes("quality-pipeline");
-  // Prefer live session provider — do not show CUDA when EP is actually CPU.
+  // Prefer live session provider — never claim RTX/CUDA when plugin EP missing.
   if (liveCuda) {
     return {
       key: "rvm",
       label: "RVM CUDA",
       on: true,
       warn: false,
-      title: "Háttéreltávolító GPU-n fut (CUDA).",
+      title: "Háttéreltávolító GPU-n fut (CUDA EP regisztrálva).",
     };
   }
   if (liveCpu || (onnx && rvm?.ort_available)) {
+    const hint =
+      rvm?.cuda_fallback ||
+      rvm?.cuda_ep_detail ||
+      "CPU ORT — ember-maszk készül CPU-n. CUDA EP-hez: pip install onnxruntime-gpu==1.30.0 + nvidia-cudnn-cu12 + start_hybrid_cuda.ps1";
     return {
       key: "rvm",
-      label: "RVM CPU",
+      label: "CPU ORT",
       on: true,
       warn: true,
-      title: rvm?.cuda_fallback
-        ? String(rvm.cuda_fallback)
-        : "RVM CPU-n fut — ember-maszk így is készül (lassabb, mint CUDA).",
+      title: String(hint),
     };
   }
   if (onnx) {
@@ -89,6 +98,49 @@ function rvmChip(status: EditorStatus | null) {
     warn: false,
     title: "Nincs betöltött RVM modell — heurisztikus ember-maszk.",
   };
+}
+
+/** Topbar GPU chip: never show RTX 3060 when CUDA EP plugin is missing. */
+function gpuOrtChip(status: EditorStatus | null): { label: string; title: string; warn: boolean } {
+  const rvm = status?.rvm;
+  const backend = (status?.backend || rvm?.engine_backend || "").toLowerCase();
+  const epRegistered = rvm?.cuda_ep_registered === true || rvm?.cuda_ep === true;
+  const fallback = String(rvm?.cuda_fallback || "");
+  const forcedCpu =
+    rvm?.ort_label_hu === "CPU ORT" ||
+    backend.includes("cpuexecutionprovider") ||
+    backend.includes("ort-rvm:cpu") ||
+    /CUDA→CPU|plugin EP|CPU ORT/i.test(fallback) ||
+    (rvm?.prefer === "cpu" && !epRegistered);
+  if (epRegistered && !forcedCpu && !fallback) {
+    return {
+      label: "RTX 3060",
+      title: "CUDA EP regisztrálva — RVM GPU-n (onnxruntime-gpu).",
+      warn: false,
+    };
+  }
+  return {
+    label: "CPU ORT",
+    title:
+      fallback ||
+      rvm?.cuda_ep_detail ||
+      "CUDA EP nincs regisztrálva — RVM CPU-n fut (ember-maszk készül, lassabb). Javítás: pip install onnxruntime-gpu==1.30.0 + nvidia-cudnn-cu12 + start_hybrid_cuda.ps1",
+    warn: true,
+  };
+}
+
+function cudaEpUnusable(status: EditorStatus | null): boolean {
+  const rvm = status?.rvm;
+  if (!rvm) return false;
+  if (rvm.cuda_ep_registered === true || rvm.cuda_ep === true) {
+    return !!rvm.cuda_fallback;
+  }
+  return (
+    rvm.ort_label_hu === "CPU ORT" ||
+    !!rvm.cuda_fallback ||
+    rvm.prefer === "cpu" ||
+    rvm.cuda_ep_listed === true
+  );
 }
 
 function personMatteChip(status: EditorStatus | null, preview: PreviewResult | null) {
@@ -212,9 +264,14 @@ function smartStatusLine(
     return "Nincs ember-maszk — futtasd az Előnézetet";
   }
   const fallback = status?.rvm?.cuda_fallback || status?.detail || "";
-  if (fallback && /CUDA|cuDNN|cudnn/i.test(fallback)) {
+  if (fallback && /CUDA|cuDNN|cudnn|plugin EP|CPU ORT/i.test(fallback)) {
     const short = fallback.length > 180 ? `${fallback.slice(0, 180)}…` : fallback;
     return person ? `${person} · ${short}` : short;
+  }
+  if (status?.rvm?.cuda_ep === false && status?.rvm?.cuda_ep_listed && status.rvm.cuda_ep_detail) {
+    const d = String(status.rvm.cuda_ep_detail);
+    const short = d.length > 160 ? `${d.slice(0, 160)}…` : d;
+    return person ? `${person} · CPU ORT · ${short}` : `CPU ORT · ${short}`;
   }
   if (status?.rvm?.cudnn_ok === false && status.rvm.cudnn_detail) {
     return status.rvm.cudnn_detail;
@@ -223,7 +280,7 @@ function smartStatusLine(
   const seed = status?.seed_mask ? " · kézi finomítás ✓" : "";
   const clips = status?.timeline?.clips?.length ?? 0;
   const broll = status?.timeline?.clips?.filter((c) => (c.track ?? 0) >= 1).length ?? 0;
-  const tl = clips ? ` · ${clips} klip${broll ? ` (${broll} B-roll)` : ""}` : "";
+  const tl = clips ? ` · ${Math.min(clips, 1)} klip` : "";
   const personBit = person ? ` · ${person}` : "";
   const base = note || `${mode}${personBit}${seed}${tl}`;
   return base;
@@ -256,8 +313,6 @@ export default function App() {
   const [detailsTab, setDetailsTab] = useState<"project" | "timeline" | "contents">("project");
   const [pending, startTransition] = useTransition();
   const fileRef = useRef<HTMLInputElement>(null);
-  const appendRef = useRef<HTMLInputElement>(null);
-  const brollRef = useRef<HTMLInputElement>(null);
   /** Fresh status for drop/append — avoid stale closure blocking second clip. */
   const statusRef = useRef<EditorStatus | null>(null);
   statusRef.current = status;
@@ -464,10 +519,20 @@ export default function App() {
             : `Cutout kész${seedHit}${ovHit} · t=${frame.t_sec.toFixed(2)}s`),
       );
       // Always surface RVM/ORT/CUDA matte failures (never silent gray slab + Cutout ✓).
-      if (empty && (matteErr || frame.meta?.source_fallback)) {
+      // Drop sticky CUDA gray-slab toast whenever preview recovers a person matte.
+      const recovered = Boolean(frame.meta?.matte_recovered) || !empty;
+      if (recovered) {
+        if (toastTimer.current) window.clearTimeout(toastTimer.current);
+        setToast((prev) =>
+          prev && /Hibás maszk|egyenletes|szürke lap|Ember-maszk/i.test(prev)
+            ? null
+            : prev,
+        );
+      } else if (empty && (matteErr || frame.meta?.source_fallback)) {
+        // Only toast true failures — never re-poison after matte_recovered.
         showToast(
           degenerate
-            ? "Hibás maszk (egyenletes szürke lap) — RVM/ONNX újra, vagy Max mód"
+            ? "Hibás maszk (egyenletes szürke lap) — CPU ORT / Max mód"
             : matteErr
               ? `Ember-maszk sikertelen — ${matteErr.slice(0, 140)}`
               : "Ember-maszk sikertelen — RVM/heuristic nem adott maszkot",
@@ -546,7 +611,7 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const st = await api.loadSample();
+      let st = await api.loadSample();
       setStatus(st);
       setTSec(0);
       setViewMode("source");
@@ -561,31 +626,25 @@ export default function App() {
 
   const onUpload = async (file: File | null, append = false, asBroll = false) => {
     if (!file) return;
+    // simple-bg: one clip only — reject second drops / B-roll / append stack
+    const cur = statusRef.current;
+    const hasClip = !!(cur?.media || (cur?.timeline?.clips?.length ?? 0) > 0);
+    if (hasClip && (append || asBroll)) {
+      showToast("Egy klip — töröld a V1-et, vagy Új projekt (második videó elutasítva)");
+      setNote("Egy idővonal · egy klip · háttéreltávolítás");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      // asBroll always appends on V2; append=true stacks V1 after existing clips.
-      const useAppend = asBroll ? true : append;
-      const st = await api.upload(file, useAppend, asBroll);
+      // Always replace (single V1). append/asBroll ignored by backend too.
+      let st = await api.upload(file, false, false);
       setStatus(st);
-      if (!useAppend && !asBroll) {
-        setTSec(0);
-        setViewMode("source");
-      }
+      setTSec(0);
+      setViewMode("source");
       syncTrimFromStatus(st);
-      await runPreview(
-        useAppend || asBroll ? (st.timeline?.playhead_sec ?? 0) : 0,
-        st,
-        undefined,
-        { preferCutout: !useAppend && !asBroll },
-      );
-      setNote(
-        asBroll
-          ? "B-roll a V2 sávon"
-          : useAppend
-            ? "Új klip az idővonalon (V1)"
-            : "Videó betöltve — Max teljes-ember RVM (auto)",
-      );
+      await runPreview(0, st, undefined, { preferCutout: true });
+      setNote("Videó betöltve — Gyors auto ember-maszk (háttéreltávolítás)");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -618,11 +677,11 @@ export default function App() {
       setTSec(0);
       setInSec(0);
       setOutSec(0);
-      setShowLargeSeed(false);
       setViewMode("source");
       setWipe(50);
       setBakePreviewKey(0);
       setToast(null);
+      setError(null);
       setNote("Új projekt — húzd ide a videót, vagy nyisd meg.");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -641,11 +700,15 @@ export default function App() {
     void onUpload(file, append, asBroll);
   };
 
-  /** Latest onUpload + status for window drop (append when media already open). */
+  /** simple-bg: window drop replaces only when empty; reject second video. */
   const dropUpload = useEffectEvent((file: File) => {
     const st = statusRef.current;
-    const append = !!(st?.media || (st?.timeline?.clips?.length ?? 0) > 0);
-    void onUpload(file, append, false);
+    const hasClip = !!(st?.media || (st?.timeline?.clips?.length ?? 0) > 0);
+    if (hasClip) {
+      showToast("Egy klip — töröld a V1-et, vagy Új projekt (második videó elutasítva)");
+      return;
+    }
+    void onUpload(file, false, false);
   });
 
   useEffect(() => {
@@ -716,29 +779,6 @@ export default function App() {
     }
   };
 
-  const runAiPolish = async (clipId: string) => {
-    setBusy(true);
-    setError(null);
-    setNote("Polírozás… (AI sáv · apex él)");
-    try {
-      const st = await api.timelineAction({ action: "ai_polish", clip_id: clipId });
-      setStatus(st);
-      syncTrimFromStatus(st);
-      const t = st.timeline?.playhead_sec ?? tSec;
-      setTSec(t);
-      const polishHu = st.ai_polish?.label_hu || "Polírozás kész";
-      setNote(polishHu);
-      setViewMode("cutout");
-      if (st.timeline?.clips?.length) {
-        await runPreview(t, st, undefined, { preferCutout: true });
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setNote("Polírozás hiba");
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const runAction = async (
     action:
@@ -784,26 +824,17 @@ export default function App() {
         cut: "Klip felvágva",
         move: "Klip áthelyezve",
         select: "Klip kiválasztva — Delete / Backspace = törlés",
-        to_broll: "Áthelyezve AI sávra",
+        to_broll: "Csak egy V1 sáv (simple-bg2)",
         to_v1: "Áthelyezve V1-re",
-        set_track: "Sáv váltva (V1 / AI sáv)",
-        ai_polish: "Polírozás kész",
+        set_track: "Egy sáv (V1)",
+        ai_polish: "Csak háttéreltávolítás — nincs polírozás",
         place: "Klip áthelyezve az idővonalon",
         trim_edge: "Be/Ki trim frissítve",
         set_transform: "Pozíció / méret frissítve",
         reset_transform: "Pozíció visszaállítva (közép · 100%)",
       };
       if (!opts?.quiet) setNote(labels[action] || `Timeline: ${action}`);
-      // Stack onto AI sáv → auto-run person cutout / edge polish (existing RVM/APEX)
-      const polishId =
-        action !== "ai_polish" && typeof st.ai_polish_recommended === "string"
-          ? st.ai_polish_recommended
-          : null;
-      if (polishId) {
-        if (!opts?.quiet) setBusy(false);
-        await runAiPolish(polishId);
-        return;
-      }
+      // simple-bg2: one V1 track only — no second lane / polish
       if (st.timeline?.clips?.length) await runPreview(t, st);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -888,30 +919,25 @@ export default function App() {
   };
 
   const onNobgToTimeline = async () => {
+    // simple-bg: load nobg as the single V1 clip (replace), no overlay chrome
     const mov = statusRef.current?.last_bake?.prores_mov;
     if (!mov) {
-      setError("Nincs *_full_nobg.mov a timeline-ra");
+      setError("Nincs *_full_nobg.mov");
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      const hasClips = (statusRef.current?.timeline?.clips?.length ?? 0) > 0;
-      const st = await api.openPath(mov, hasClips, hasClips, true);
+      const st = await api.openPath(mov, false, false, false);
       setStatus(st);
       syncTrimFromStatus(st);
-      const t = st.timeline?.playhead_sec ?? tSec;
-      setTSec(t);
-      setNote(
-        hasClips
-          ? "Nobg a V2 sávon — húzd az előnézeten, vagy állítsd a Pozíciót"
-          : "Nobg betöltve V1-re (átlátszó klip)",
-      );
+      setTSec(0);
+      setNote("Nobg betöltve V1-re (egy klip)");
       setViewMode("cutout");
-      setMoveMode(true);
-      setDetailsTab("timeline");
-      showToast("Nobg a timeline-ra — mozgasd / méretezd");
-      if (st.timeline?.clips?.length) await runPreview(t, st, undefined, { preferCutout: true });
+      setMoveMode(false);
+      setDetailsTab("project");
+      showToast("Nobg a V1-en — egy klip");
+      if (st.timeline?.clips?.length) await runPreview(0, st, undefined, { preferCutout: true });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -919,7 +945,7 @@ export default function App() {
     }
   };
 
-  /** Delete / Backspace — remove selected clip (V1 / AI sáv). */
+  /** Delete / Backspace — remove the one V1 clip. */
   const deleteSelectedClip = useEffectEvent(() => {
     const st = statusRef.current;
     if (busy || st?.bake_running || st?.analyse_running) return;
@@ -1142,8 +1168,11 @@ export default function App() {
             <div className="brand">
               <div className="brand-mark">HybridCut</div>
             </div>
-            <span className="gpu-chip" title="Cél GPU — helyi, ingyenes">
-              RTX 3060
+            <span
+              className={`gpu-chip${gpuOrtChip(status).warn ? " warn" : ""}`}
+              title={gpuOrtChip(status).title}
+            >
+              {gpuOrtChip(status).label}
             </span>
             <p className="empty-tagline">Helyi cutout · CapCut-szintű szerkesztő</p>
           </div>
@@ -1247,8 +1276,11 @@ export default function App() {
           <div className="brand">
             <div className="brand-mark">HybridCut</div>
           </div>
-          <span className="gpu-chip" title="Cél GPU — helyi, ingyenes">
-            RTX 3060
+          <span
+            className={`gpu-chip${gpuOrtChip(status).warn ? " warn" : ""}`}
+            title={gpuOrtChip(status).title}
+          >
+            {gpuOrtChip(status).label}
           </span>
           <div className="intel-strip" aria-label="Állapotjelzők">
             {chips.map((c) => (
@@ -1407,17 +1439,6 @@ export default function App() {
                         }
                       />
                     ) : null}
-                    {moveMode && selected && viewMode !== "compare" ? (
-                      <div
-                        ref={previewDragRef}
-                        className="transform-drag-layer"
-                        title="Húzd oldalra / fel-le — Pozíció X/Y"
-                        onPointerDown={onTransformPointerDown}
-                        onPointerMove={onTransformPointerMove}
-                        onPointerUp={onTransformPointerUp}
-                        onPointerCancel={onTransformPointerUp}
-                      />
-                    ) : null}
                   </div>
                 ) : (
                   <div className="preview-empty">
@@ -1462,17 +1483,7 @@ export default function App() {
                   timeline_start_sec: start,
                 });
               }}
-              onSetTrack={(clipId, track, start) => {
-                void runAction("set_track", {
-                  clip_id: clipId,
-                  track,
-                  timeline_start_sec: start,
-                });
-              }}
-              onPolish={(clipId) => {
-                void runAiPolish(clipId);
-              }}
-              onAddClip={() => appendRef.current?.click()}
+              onAddClip={undefined}
               onDelete={() => void runAction("remove", { clip_id: selected ?? undefined })}
               onCut={() => void runAction("cut", { t_sec: tSec })}
               canDelete={canRemoveClip(clips, selected)}
@@ -1535,7 +1546,7 @@ export default function App() {
               </li>
             </ol>
             <h2>Cutout</h2>
-            <p className="lead">Gyors / Max · ETA a gombokon · Be/Ki tartomány.</p>
+            <p className="lead">Háttéreltávolítás · Gyors alap · egy V1 klip · Export nobg.</p>
             <ModeSwitcher
               mode={mode}
               disabled={locked || pending}
@@ -1596,26 +1607,6 @@ export default function App() {
               >
                 {status?.bake_running ? "Export…" : `3 · Exportálás · ${selectedEta}`}
               </button>
-              <div className="clip-add-row" role="group" aria-label="Több klip">
-                <button
-                  type="button"
-                  className="btn accent"
-                  disabled={locked || !hasMedia}
-                  onClick={() => appendRef.current?.click()}
-                  title="Új klip alá — további videó az V1 sávra, a meglévő után."
-                >
-                  + V1 klip
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={locked || !hasMedia}
-                  onClick={() => brollRef.current?.click()}
-                  title="B-roll videó a V2 sávra (playheadnél)."
-                >
-                  + B-roll
-                </button>
-              </div>
               <input
                 ref={fileRef}
                 type="file"
@@ -1623,28 +1614,11 @@ export default function App() {
                 hidden
                 onChange={(e) => onFilePicked(e, false, false)}
               />
-              <input
-                ref={appendRef}
-                type="file"
-                accept="video/*"
-                hidden
-                onChange={(e) => onFilePicked(e, true, false)}
-              />
-              <input
-                ref={brollRef}
-                type="file"
-                accept="video/*"
-                hidden
-                onChange={(e) => onFilePicked(e, true, true)}
-              />
             </div>
             <p className="action-help">
-              Megnyitás → auto Cutout → Exportálás ·{" "}
+              Megnyitás → Előnézet Cutout → Export nobg ·{" "}
               <code>{"C:\\bgcut\\*_full_nobg.mov"}</code>
-              {" · "}
-              <span title="Második videó: + V1 klip vagy ejtsd a fájlt (append=true).">
-                Új klip alá
-              </span>
+              {" · egy klip · háttéreltávolítás"}
             </p>
           </div>
 
@@ -1667,7 +1641,7 @@ export default function App() {
                       title="Klip kiválasztása az idővonalon."
                     >
                       <span>
-                        {(c.track ?? 0) >= 1 ? "V2" : "V1"} #{i + 1}{" "}
+                        V1 #{i + 1}{" "}
                         {c.display_label || c.clip_id}
                       </span>
                       <span>
@@ -1737,24 +1711,7 @@ export default function App() {
               >
                 →
               </button>
-              <button
-                type="button"
-                className="btn accent"
-                disabled={locked || !selected}
-                onClick={() => runAction("to_broll", { clip_id: selected ?? undefined })}
-                title="Kijelölt klip áthelyezése a V2 B-roll sávra."
-              >
-                → B-roll
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || !selected}
-                onClick={() => runAction("to_v1", { clip_id: selected ?? undefined })}
-                title="Kijelölt klip visszarakása az V1 sávra."
-              >
-                → V1
-              </button>
+
             </div>
             <div className="trim-row">
               <label title="Klip kezdőpontja másodpercben.">
@@ -1791,79 +1748,6 @@ export default function App() {
             </div>
           </div>
 
-          <div className="trim-block transform-block">
-            <h3>Pozíció / Méret</h3>
-            <p className="transform-hint">
-              {selectedClip?.has_alpha
-                ? "Átlátszó nobg — húzd az előnézeten (Mozgatás), vagy írd be az értékeket."
-                : "CapCut-szerű eltolás / méret a kijelölt klipen (V1 vagy V2)."}
-            </p>
-            <div className="trim-row transform-row">
-              <label title="Vízszintes eltolás a vászon közepétől (%).">
-                Pozíció X
-                <input
-                  type="number"
-                  step={1}
-                  value={posXPct}
-                  disabled={!selected || locked}
-                  onChange={(e) => setPosXPct(Number(e.target.value))}
-                />
-              </label>
-              <label title="Függőleges eltolás a vászon közepétől (%).">
-                Pozíció Y
-                <input
-                  type="number"
-                  step={1}
-                  value={posYPct}
-                  disabled={!selected || locked}
-                  onChange={(e) => setPosYPct(Number(e.target.value))}
-                />
-              </label>
-              <label title="Méret százalékban (100 = tartalmazva a vászonra).">
-                Méretérték
-                <input
-                  type="number"
-                  min={5}
-                  max={400}
-                  step={1}
-                  value={scalePct}
-                  disabled={!selected || locked}
-                  onChange={(e) => setScalePct(Number(e.target.value))}
-                />
-              </label>
-            </div>
-            <div className="actions tight clip-tools">
-              <button
-                type="button"
-                className={`btn ${moveMode ? "primary" : ""}`}
-                disabled={!selected || locked}
-                onClick={() => setMoveMode((v) => !v)}
-                title="Előnézeten húzással mozgatás (overlay a festés felett)."
-              >
-                Mozgatás
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={!selected || locked}
-                onClick={() => void applyTransform()}
-                title="Pozíció / méret alkalmazása."
-              >
-                Alkalmaz
-              </button>
-              <button
-                type="button"
-                className="btn ghost"
-                disabled={!selected || locked}
-                onClick={() =>
-                  void runAction("reset_transform", { clip_id: selected ?? undefined })
-                }
-                title="Közép + 100% méret."
-              >
-                Visszaállítás
-              </button>
-            </div>
-          </div>
           </div>
 
           {status?.analyse_running ? (
@@ -1925,7 +1809,7 @@ export default function App() {
                       className="btn primary"
                       disabled={locked}
                       onClick={() => void onNobgToTimeline()}
-                      title="Betölti a *_full_nobg.mov-ot a timeline-ra (V2 ha van már klip) — átlátszó, mozgatható."
+                      title="Betölti a *_full_nobg.mov-ot a V1-re (csere — egy klip)."
                     >
                       Nobg a timeline-ra
                     </button>
@@ -1988,24 +1872,6 @@ export default function App() {
                 title="Beépített minta videó betöltése."
               >
                 Minta
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || !hasMedia}
-                onClick={() => appendRef.current?.click()}
-                title="Új klip alá — V1 sáv, meglévő után."
-              >
-                + V1 klip
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={locked || !hasMedia}
-                onClick={() => brollRef.current?.click()}
-                title="B-roll videó a V2 sávra."
-              >
-                + B-roll
               </button>
               <button
                 type="button"
@@ -2073,7 +1939,8 @@ export default function App() {
               <div>
                 ETA kalibráció:{" "}
                 <code>
-                  Gyors {etas.gyors.labelHu} · Max {etas.max.labelHu} · RTX 3060
+                  Gyors {etas.gyors.labelHu} · Max {etas.max.labelHu} ·{" "}
+                  {gpuOrtChip(status).label}
                 </code>
               </div>
               {plan && !plan.empty ? (

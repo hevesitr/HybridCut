@@ -1,4 +1,4 @@
-"""Paint-face removed under ``2026-10-11-rvm-matte``.
+"""Paint-face removed under ``2026-10-11-cuda-restore``.
 
 Contracts assert Varázsceruza / Ecset / Radír / face_pick are gone;
 nobg-layer transform + auto person remain.
@@ -18,11 +18,11 @@ FACE = ROOT / "backend" / "hybrid_editor" / "cache" / "face_pick.py"
 ROUTES = ROOT / "backend" / "hybrid_editor" / "api" / "routes.py"
 SESSION = ROOT / "backend" / "hybrid_editor" / "session.py"
 MAX_Q = ROOT / "backend" / "hybrid_editor" / "engines" / "max_quality.py"
-RESTART = ROOT / "docs" / "rvm-matte-restart.md"
+RESTART = ROOT / "docs" / "seed-crash-restart.md"
 
 
 def test_sync_stamp_auto_person():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-11-rvm-matte"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
 
 
 def test_face_pick_and_seedpaint_gone():
@@ -60,7 +60,7 @@ def test_seed_replace_mode_no_longer_gates():
 def test_nobg_layer_transform_still_present():
     app = APP.read_text(encoding="utf-8")
     assert "set_transform" in app
-    assert "Mozgatás" in app or "moveMode" in app
+    assert "Mozgatás" not in app  # simple-bg stripped or "moveMode" in app
     assert "transform-drag-layer" in app
     assert "onNobgToTimeline" in app or "Nobg a timeline" in app
     assert RESTART.is_file()
