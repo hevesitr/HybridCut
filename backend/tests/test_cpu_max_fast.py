@@ -1,4 +1,4 @@
-"""simple-bg5 — CPU Max bake uses MobileNet@~720 so ETA ~43s is real."""
+"""simple-bg6 — CPU Max bake uses MobileNet@~720 so ETA ~43s is real."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
-STAMP = "2026-10-12-simple-bg5"
+STAMP = "2026-10-12-simple-bg6"
 
 
 def test_stamp_simple_bg5():

@@ -588,9 +588,9 @@ export default function App() {
             st.rvm?.ort_label_hu === "CPU ORT" || st.rvm?.prefer === "cpu";
           setNote(
             mode === "gyors"
-              ? "Gyors = gyors/lágyabb · MobileNet scrub"
+              ? "Gyors mód rögzítve — nem ugrik Maxra (CPU MobileNet / chroma)"
               : cpuNow
-                ? "Max · CPU gyors bake (MobileNet~720) — ETA ~CUDA; full-reshez CUDA EP"
+                ? "Max · CPU gyors bake (MobileNet~720) — kevesebb árnyék-halo"
                 : personHint
                   ? `Max · ${personHint} · Éles szélek alapból be`
                   : "Max = élesebb export · ResNet50 ha van · Éles szélek alapból be",

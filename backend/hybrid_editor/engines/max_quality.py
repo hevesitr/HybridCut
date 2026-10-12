@@ -33,6 +33,7 @@ from hybrid_editor.engines.quality_pipeline import (
 )
 from hybrid_editor.engines.videoeditor_polish import (
     APEX_SPEC,
+    RECOMMENDED_SPEC,
     apply_color_polish,
     polish_videoeditor,
 )
@@ -258,7 +259,51 @@ class MaxQualityEngine(MattingEngine):
         del bgr
         return np.clip(np.asarray(auto, dtype=np.float32), 0.0, 1.0)
 
-    def _polish(self, bgr: np.ndarray, *, warmup: bool = False) -> np.ndarray:
+    @staticmethod
+    def _crush_soft_shadow_alpha(alpha: np.ndarray) -> np.ndarray:
+        """Kill soft gray fringe that looks like a shadow after 720→native upscale.
+
+        MobileNet@~720 + INTER_LINEAR leaves a mid-gray band / detached soft plate
+        around the person; when composited it reads as a dark halo or foot shadow.
+        Keep solid FG + a thin near-edge hair band; zero soft pixels far from FG.
+        """
+        a = np.clip(np.asarray(alpha, dtype=np.float32), 0.0, 1.0)
+        if a.ndim == 3:
+            a = a[..., 0]
+        hard = (a >= 0.55).astype(np.uint8)
+        try:
+            near = cv2.dilate(hard, np.ones((7, 7), np.uint8), iterations=2)
+        except Exception:  # noqa: BLE001
+            near = hard
+        out = np.zeros_like(a)
+        out[a >= 0.55] = a[a >= 0.55]
+        # Hair / soft edge only within a few px of solid FG.
+        band = (a > 0.12) & (a < 0.55) & (near > 0)
+        out[band] = np.power(np.clip((a[band] - 0.12) / 0.43, 0.0, 1.0), 1.55)
+        # Detached soft plate (shadow under feet, gray slab islands) → kill.
+        detached = (a > 0.05) & (a < 0.55) & (near == 0)
+        out[detached] = 0.0
+        try:
+            u8 = (np.clip(out, 0, 1) * 255).astype(np.uint8)
+            n, labels, stats, _ = cv2.connectedComponentsWithStats(
+                (u8 > 20).astype(np.uint8), connectivity=8
+            )
+            if n > 2:
+                areas = stats[1:, cv2.CC_STAT_AREA]
+                keep = 1 + int(np.argmax(areas))
+                min_keep = max(48, int(0.0008 * a.size))
+                for i in range(1, n):
+                    if i == keep:
+                        continue
+                    if int(stats[i, cv2.CC_STAT_AREA]) < min_keep:
+                        out[labels == i] = 0.0
+        except Exception:  # noqa: BLE001
+            pass
+        return np.clip(out, 0.0, 1.0)
+
+    def _polish(
+        self, bgr: np.ndarray, *, warmup: bool = False, soft_cpu: bool = False
+    ) -> np.ndarray:
         if warmup:
             a = warmup_alpha(self._base_alpha, bgr, n_warmup=DEFAULT_WARMUP)
         else:
@@ -270,8 +315,11 @@ class MaxQualityEngine(MattingEngine):
             a = self._seed_for(bgr, a)
         # Éles szélek (default): CapCut APEX polish — NO wide trimap fuse
         # (trimap erode/dilate was the thick halo / hair-hole source on the right side).
+        # CPU Max fast-path: lighter RECOMMENDED polish — APEX residual halo on
+        # upscaled MobileNet mattes reads as a thick shadow.
         if self.sharp_edges:
-            polished = polish_videoeditor(a, bgr, spec=APEX_SPEC, seed=self._seed)
+            spec = RECOMMENDED_SPEC if soft_cpu else APEX_SPEC
+            polished = polish_videoeditor(a, bgr, spec=spec, seed=self._seed)
             out = self._stabilizer.update(polished)
         else:
             out = apply_quality_pass(
@@ -417,7 +465,7 @@ class MaxQualityEngine(MattingEngine):
             "source_height": int(self._media.height) if self._media else int(bgr.shape[0]),
             "infer_width": int(bgr.shape[1]),
             "infer_height": int(bgr.shape[0]),
-            "stamp": "2026-10-12-simple-bg5",
+            "stamp": "2026-10-12-simple-bg6",
         }
         if empty and matte_error is None and alpha is not None:
             from hybrid_editor.media.video_io import matte_failure_reason
@@ -569,11 +617,13 @@ class MaxQualityEngine(MattingEngine):
                     break
                 # CPU fast: matte/polish at bake_long, alpha upscaled to native for MOV.
                 bgr_m = downscale_long_side(bgr, bake_long) if cpu_fast else bgr
-                alpha = self._polish(bgr_m, warmup=(idx == 0))
+                alpha = self._polish(bgr_m, warmup=(idx == 0), soft_cpu=cpu_fast)
                 if alpha.shape[:2] != bgr.shape[:2]:
                     alpha = cv2.resize(
                         alpha, (bgr.shape[1], bgr.shape[0]), interpolation=cv2.INTER_LINEAR
                     )
+                    if cpu_fast:
+                        alpha = self._crush_soft_shadow_alpha(alpha)
                 # Mid-clip re-warmup on strong drift vs seed (rarer on CPU fast-path).
                 rewarm_every = 96 if cpu_fast else 48
                 if idx > 0 and idx % rewarm_every == 0 and self._seed is not None:
@@ -590,24 +640,37 @@ class MaxQualityEngine(MattingEngine):
                                 f"Max re-warmup… {written}/{total_est} frame",
                             )
                         self._fast.reset()
-                        alpha = self._polish(bgr_m, warmup=True)
+                        alpha = self._polish(bgr_m, warmup=True, soft_cpu=cpu_fast)
                         if alpha.shape[:2] != bgr.shape[:2]:
                             alpha = cv2.resize(
                                 alpha,
                                 (bgr.shape[1], bgr.shape[0]),
                                 interpolation=cv2.INTER_LINEAR,
                             )
+                            if cpu_fast:
+                                alpha = self._crush_soft_shadow_alpha(alpha)
                 # CapCut RGB fringe / cyan + bright spill before writing BGRA
                 cut_bgr = bgr
                 if self.sharp_edges:
-                    cut_bgr = apply_color_polish(
-                        bgr,
-                        alpha,
-                        decontaminate=float(APEX_SPEC.decontaminate),
-                        despill=float(APEX_SPEC.despill),
-                        bright_fringe=float(APEX_SPEC.bright_fringe),
-                        micro_despill=float(APEX_SPEC.micro_despill),
-                    )
+                    if cpu_fast:
+                        # Light color polish — heavy APEX despill on soft edges = dark shadow.
+                        cut_bgr = apply_color_polish(
+                            bgr,
+                            alpha,
+                            decontaminate=float(RECOMMENDED_SPEC.decontaminate),
+                            despill=float(RECOMMENDED_SPEC.despill),
+                            bright_fringe=0.12,
+                            micro_despill=0.0,
+                        )
+                    else:
+                        cut_bgr = apply_color_polish(
+                            bgr,
+                            alpha,
+                            decontaminate=float(APEX_SPEC.decontaminate),
+                            despill=float(APEX_SPEC.despill),
+                            bright_fringe=float(APEX_SPEC.bright_fringe),
+                            micro_despill=float(APEX_SPEC.micro_despill),
+                        )
                 a8 = (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
                 if alpha_dir is not None:
                     cv2.imwrite(str(alpha_dir / f"{idx:06d}.png"), a8)
@@ -781,7 +844,7 @@ class MaxQualityEngine(MattingEngine):
                 "frames_total_est": total_est,
                 "max_frames_cap": max_frames,
                 "mov_path": prores,
-                "stamp": "2026-10-12-simple-bg5",
+                "stamp": "2026-10-12-simple-bg6",
             },
         )
         _restore_fast()

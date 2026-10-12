@@ -53,6 +53,10 @@ class EditorSession:
         self._open_path: Optional[str] = None
         # Default ON for Max/export — CapCut-like needle-sharp person edges.
         self.sharp_edges: bool = True
+        # simple-bg6: auto Max on empty Gyors runs at most once per open.
+        # Explicit Gyors click sets _suppress_auto_max so UI mode sticks.
+        self._auto_max_done: bool = False
+        self._suppress_auto_max: bool = False
         self._sync_sharp_to_engine()
 
     def _sync_sharp_to_engine(self) -> None:
@@ -315,6 +319,9 @@ class EditorSession:
             if new_mode is self.mode and self.engine.mode is new_mode:
                 # Already on target mode (Megnyitás stays Gyors) — still sanitize
                 # near-empty paint leftovers and recommend Előnézet.
+                # User re-clicked Gyors: keep mode locked (no preview auto-Max).
+                if new_mode is EngineMode.GYORS:
+                    self._suppress_auto_max = True
                 seed = _drop_near_empty_seed(self._seed_alpha)
                 if seed is None:
                     self._apply_seed_to_engine(None)
@@ -332,6 +339,11 @@ class EditorSession:
             media_path = self.media.path if self.media else None
             # Near-empty kézi seed must not travel into Max (old wipe path / stale UI).
             seed = _drop_near_empty_seed(self._seed_alpha)
+            # Explicit mode click: Gyors must stick; Max allows future auto once reset.
+            if new_mode is EngineMode.GYORS:
+                self._suppress_auto_max = True
+            else:
+                self._suppress_auto_max = False
             old = self.engine
             old.close()
             self.mode = new_mode
@@ -384,6 +396,8 @@ class EditorSession:
             self.media = None
             self.timeline = None
             self._open_path = None
+            self._auto_max_done = False
+            self._suppress_auto_max = False
             try:
                 self.engine.reset()
             except Exception:  # noqa: BLE001
@@ -487,6 +501,8 @@ class EditorSession:
             # Gyors-first auto person: MobileNet scrub + MaskStore purge (no Max-on-open).
             self._purge_seed_disk()
             self._purge_mask_store(info.path)
+            self._auto_max_done = False
+            self._suppress_auto_max = False
             if self.mode is not EngineMode.GYORS:
                 try:
                     self.engine.close()
@@ -909,7 +925,7 @@ class EditorSession:
                     meta_extra: dict[str, Any] = {
                         "matte_empty": empty,
                         "has_alpha_clip": bool(getattr(matte_layer, "has_alpha", False)),
-                        "stamp": "2026-10-12-simple-bg5",
+                        "stamp": "2026-10-12-simple-bg6",
                         **overlay_meta,
                     }
                     if empty:
@@ -985,19 +1001,24 @@ class EditorSession:
                     )
                 if overlay_meta:
                     frame.meta = {**(frame.meta or {}), **overlay_meta}
-            # simple-bg4: Gyors empty/slab → one-shot auto Max (ResNet + polish) retry.
+            # simple-bg6: Gyors empty/slab → auto Max at most once per open.
+            # Never fight an explicit Gyors click (_suppress_auto_max).
             meta0 = frame.meta or {}
             gyros_empty = bool(meta0.get("matte_empty") or meta0.get("source_fallback"))
             if (
                 gyros_empty
                 and self.mode is EngineMode.GYORS
+                and not getattr(self, "_suppress_auto_max", False)
+                and not getattr(self, "_auto_max_done", False)
                 and not getattr(self, "_preview_auto_max_guard", False)
             ):
                 self._preview_auto_max_guard = True
+                self._auto_max_done = True
                 try:
                     logger = __import__("logging").getLogger(__name__)
                     logger.warning(
-                        "Gyors matte empty/slab — auto-switching to Max (ResNet/polish) once"
+                        "Gyors matte empty/slab — auto-switching to Max once "
+                        "(re-click Gyors to stay on Gyors)"
                     )
                     self.set_mode("max")
                     frame = self.engine.preview_frame(source_t)
@@ -1016,6 +1037,16 @@ class EditorSession:
                     }
                 finally:
                     self._preview_auto_max_guard = False
+            elif (
+                gyros_empty
+                and self.mode is EngineMode.GYORS
+                and getattr(self, "_suppress_auto_max", False)
+            ):
+                frame.meta = {
+                    **(frame.meta or {}),
+                    "auto_max_skipped": True,
+                    "auto_max_skip_reason": "user_locked_gyors",
+                }
             if self._seed_alpha is not None:
                 frame.meta = {
                     **(frame.meta or {}),

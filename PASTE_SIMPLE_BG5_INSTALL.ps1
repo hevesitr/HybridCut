@@ -1,13 +1,13 @@
-# HybridCut simple-bg5 one-shot (Windows)
+# HybridCut simple-bg6 one-shot (Windows)
 # Prefer Agent Store copy (no PAT). Fallback: git pull GitHub tip.
 # Copies -> Documents\Videoeditor\hybrid_cut, purges stale dist, downloads ResNet if missing.
 # ASCII-only (no em-dash / accented chars) so Windows PowerShell parsers do not break.
 
 $ErrorActionPreference = "Stop"
-$TipStamp = "2026-10-12-simple-bg5"
+$TipStamp = "2026-10-12-simple-bg6"
 $StoreId = "bc-41930eab-1501-4c19-acf3-0c9d63afbf4d"
 
-Write-Host "=== HybridCut simple-bg5 install ==="
+Write-Host "=== HybridCut simple-bg6 install ==="
 
 Get-NetTCPConnection -LocalPort 3847 -ErrorAction SilentlyContinue |
   ForEach-Object {
@@ -116,6 +116,6 @@ Set-Location -LiteralPath $ve
 $env:HYBRID_ORT_PROVIDER = "cpu"
 Write-Host "Starting run_hybrid.ps1 ..."
 Write-Host "Open http://127.0.0.1:3847 then Ctrl+F5"
-Write-Host "Expect: SYNC 2026-10-12-simple-bg5 - only V1 - Cutout person silhouette"
+Write-Host "Expect: SYNC 2026-10-12-simple-bg6 - only V1 - Cutout person silhouette"
 Write-Host "Gyors auto-retries Max on gray-slab - no need to click Max first."
 .\run_hybrid.ps1
