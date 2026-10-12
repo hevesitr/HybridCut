@@ -497,6 +497,7 @@ export default function App() {
       const empty = Boolean(frame.meta?.matte_empty || frame.meta?.source_fallback);
       const personLabel = String(frame.meta?.person_matte_label_hu || "");
       const matteErr = String(frame.meta?.matte_error || "");
+      const autoMax = Boolean(frame.meta?.auto_max_retry);
       const degenerate =
         /egyenletes|teljes-keret|0–255|0-255|hibás RVM|hibas maszk/i.test(matteErr);
       const seedHit = frame.meta?.user_seed ? " · kézi finomítás ✓" : "";
@@ -539,9 +540,11 @@ export default function App() {
         if (!empty) {
           setViewMode("cutout");
           showToast(
-            personLabel
-              ? `${personLabel} — Exportálás a következő lépés`
-              : "Cutout kész — Exportálás a következő lépés",
+            autoMax
+              ? "Gyors üres volt — Max auto-retry OK · Cutout kész"
+              : personLabel
+                ? `${personLabel} — Exportálás a következő lépés`
+                : "Cutout kész — Exportálás a következő lépés",
           );
         } else if (!(matteErr || frame.meta?.source_fallback)) {
           showToast("Nincs ember-maszk — futtasd az Előnézetet újra");
@@ -994,8 +997,8 @@ export default function App() {
       const etaNow = bothModeEtas(
         clipDurationSec(inSec, outSec, dur),
         status?.timeline?.fps || status?.media?.fps || 25,
-        status?.media?.width ?? 1920,
-        status?.media?.height ?? 1080,
+        status?.media?.width || 1280,
+        status?.media?.height || 720,
       )[mode]?.labelHu;
       setNote(
         res.queued
@@ -1043,16 +1046,22 @@ export default function App() {
   const selectedClip = clips.find((c) => c.clip_id === selected) ?? null;
   const locked = busy || !!status?.bake_running || !!status?.analyse_running;
   const hasMedia = !!status?.media || clips.length > 0;
-  const mediaW = status?.media?.width ?? 1920;
-  const mediaH = status?.media?.height ?? 1080;
+  // True source size from probe — never invent 1920×1080 when media is missing.
+  const mediaW = status?.media?.width ?? 0;
+  const mediaH = status?.media?.height ?? 0;
   const mediaFps = status?.timeline?.fps || status?.media?.fps || 25;
+  const mediaResLabel =
+    mediaW > 0 && mediaH > 0 ? `${mediaW}×${mediaH}` : "—×—";
   const bakeSpanSec = clipDurationSec(inSec, outSec, duration);
   const fullClipSec = Math.max(
     0,
     Number(status?.media?.duration_sec) || Number(duration) || 0,
   );
-  const etas = bothModeEtas(bakeSpanSec, mediaFps, mediaW, mediaH);
-  const fullEtas = bothModeEtas(fullClipSec, mediaFps, mediaW, mediaH);
+  // ETA only: if probe missing, assume 720p — never inflate to fake 1080p.
+  const etaW = mediaW > 0 ? mediaW : 1280;
+  const etaH = mediaH > 0 ? mediaH : 720;
+  const etas = bothModeEtas(bakeSpanSec, mediaFps, etaW, etaH);
+  const fullEtas = bothModeEtas(fullClipSec, mediaFps, etaW, etaH);
   const selectedEta = etas[mode]?.labelHu ?? "Kb. —";
   const rangeLabel = `${Math.max(0, inSec).toFixed(1)}–${Math.max(inSec, outSec).toFixed(1)}s`;
   const rangeIsPartial =
@@ -1290,8 +1299,8 @@ export default function App() {
             ))}
           </div>
           {status?.media ? (
-            <span className="media-meta-chip" title="Projekt felbontás / fps">
-              {mediaW}×{mediaH} · {mediaFps.toFixed(0)} fps
+            <span className="media-meta-chip" title="Forrás felbontás / fps (probe — nem upscale)">
+              {mediaResLabel} · {mediaFps.toFixed(0)} fps
             </span>
           ) : null}
         </div>
@@ -1440,7 +1449,7 @@ export default function App() {
                   <div className="preview-empty">
                     <h3>Nincs tartalom a lejátszási fej alatt</h3>
                     <p>
-                      {mediaW}×{mediaH} · {mediaFps.toFixed(0)} fps ·{" "}
+                      {mediaResLabel} · {mediaFps.toFixed(0)} fps ·{" "}
                       {formatTimecode(tSec, mediaFps)}
                     </p>
                     <p className="preview-empty-hint">
@@ -1561,7 +1570,7 @@ export default function App() {
               </strong>
               {bakeSpanSec > 0 ? (
                 <span className="eta-range">
-                  {bakeSpanSec.toFixed(1)}s · {mediaW}×{mediaH} · {mediaFps.toFixed(0)} fps
+                  {bakeSpanSec.toFixed(1)}s · {mediaResLabel} · {mediaFps.toFixed(0)} fps
                   {rangeIsPartial && fullClipSec > 0
                     ? ` · teljes klip Max ${fullEtas.max.labelHu}`
                     : ""}

@@ -24,8 +24,9 @@ export function frameCount(durationSec: number, fps: number): number {
 }
 
 export function resolutionFactor(width: number, height: number, mode: BakeMode): number {
-  const w = Math.max(1, width || 1920);
-  const h = Math.max(1, height || 1080);
+  // Missing probe → assume 720p (not fake 1080p) so ETA does not overstate work.
+  const w = Math.max(1, width || 1280);
+  const h = Math.max(1, height || 720);
   const mp = (w * h) / REF_PIXELS;
   if (mode === "gyors") {
     return 0.42 + 0.58 * Math.min(1.4, Math.max(0.35, mp ** 0.62));

@@ -326,6 +326,61 @@ def probe_ort_runtime() -> dict[str, Any]:
     return info
 
 
+def solid_bg_person_alpha(bgr: np.ndarray) -> np.ndarray:
+    """Key a dominant uniform background via corner samples (blue/green screen).
+
+    classic RVM-friendly scenes (solid blue behind a close-up) must not leave the
+    user on gray-slab toast when MobileNet/ResNet fail on CPU. Corners avoid the
+    hair/shoulder rim that poisons full-border stats on talking-head close-ups.
+    """
+    h, w = bgr.shape[:2]
+    if h < 16 or w < 16:
+        return np.zeros((h, w), dtype=np.float32)
+    cs = max(4, min(h, w) // 10)
+    corners = np.concatenate(
+        [
+            bgr[:cs, :cs].reshape(-1, 3),
+            bgr[:cs, -cs:].reshape(-1, 3),
+            bgr[-cs:, :cs].reshape(-1, 3),
+            bgr[-cs:, -cs:].reshape(-1, 3),
+        ],
+        axis=0,
+    )
+    cf = corners.astype(np.float32)
+    bg = np.median(cf, axis=0)
+    corner_std = float(cf.std(axis=0).mean())
+    # Busy / textured corners → not a solid plate; skip chroma path.
+    if corner_std > 28.0:
+        return np.zeros((h, w), dtype=np.float32)
+    dist = np.sqrt(((bgr.astype(np.float32) - bg) ** 2).sum(axis=2))
+    corner_dist = np.concatenate(
+        [
+            dist[:cs, :cs].ravel(),
+            dist[:cs, -cs:].ravel(),
+            dist[-cs:, :cs].ravel(),
+            dist[-cs:, -cs:].ravel(),
+        ]
+    )
+    # Absolute threshold from clean corner noise — not full-border percentiles
+    # (close-up hair on the rim inflated thr above person distance).
+    thr_lo = max(22.0, float(np.percentile(corner_dist, 90)) * 2.2 + corner_std)
+    thr_hi = max(thr_lo + 18.0, thr_lo * 2.0)
+    alpha = np.clip((dist - thr_lo) / (thr_hi - thr_lo), 0.0, 1.0).astype(np.float32)
+    soft = (alpha > 0.35).astype(np.uint8) * 255
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    soft = cv2.morphologyEx(soft, cv2.MORPH_OPEN, k, iterations=1)
+    soft = cv2.morphologyEx(soft, cv2.MORPH_CLOSE, k, iterations=2)
+    alpha = np.maximum(
+        alpha * 0.35, cv2.GaussianBlur(soft.astype(np.float32) / 255.0, (0, 0), 1.6)
+    )
+    rim = max(2, min(h, w) // 80)
+    alpha[:rim, :] *= 0.12
+    alpha[-rim:, :] *= 0.12
+    alpha[:, :rim] *= 0.12
+    alpha[:, -rim:] *= 0.12
+    return np.clip(alpha, 0.0, 1.0).astype(np.float32)
+
+
 def heuristic_person_alpha(bgr: np.ndarray) -> np.ndarray:
     """Soft person-ish matte without ML — scaffold / CI / CPU-RVM failure fallback.
 
@@ -974,25 +1029,42 @@ class _OrtRvmSession:
             self._r1 = self._r2 = self._r3 = self._r4 = None
         return alpha
 
-    def matte(self, bgr: np.ndarray, downsample: float = 0.25) -> np.ndarray:
+    def matte(
+        self,
+        bgr: np.ndarray,
+        downsample: float = 0.25,
+        *,
+        prefer_native: bool = False,
+    ) -> np.ndarray:
         """Run RVM on one frame.
 
         Passes **full-resolution** ``src`` + ``downsample_ratio`` (RVM-native), matching
         CapCut Videoeditor ``matting/rvm_onnx.py``. On CUDA all-ones / flat pha (common
         with MemcpyTransformer + fp16), cold-retry then CPU EP (same weights).
-        CPU ORT often needs a higher downsample_ratio than Gyors scrub (0.25) — ladder
-        ``[requested, 0.5, 1.0]`` before giving up so preview is not stuck on gray toast.
+
+        simple-bg4 CPU Gyors: ladder starts at 0.5 (not native 1.0) so we do not burn
+        multiple full-res ORT passes on every failed MobileNet frame. Uniform all-ones
+        slabs skip the rest of the ds ladder (same garbage at every ratio).
+        Never upsamples the src tensor — caller must pass native or downscaled BGR.
         """
         if self.session is None:
             raise RuntimeError("ORT session closed")
-        from hybrid_editor.media.video_io import is_matte_degenerate, is_matte_empty
+        from hybrid_editor.media.video_io import (
+            is_matte_degenerate,
+            is_matte_empty,
+            is_uniform_slab,
+        )
 
         ds0 = float(downsample) if downsample < 1.0 else 1.0
         on_cpu = (not bool(self._uses_cuda)) and ("CPU" in str(self.provider))
-        # CPU ORT: prefer native / 0.5 first — Gyors 0.25 often yields soft low-cover
-        # person mattes that older empty floors rejected (false gray-toast cascade).
         ds_ladder: list[float] = []
-        order = (1.0, 0.5, ds0, 0.25) if on_cpu else (ds0, 0.5, 1.0, 0.25)
+        if on_cpu and prefer_native:
+            order = (1.0, 0.5, ds0, 0.25)
+        elif on_cpu:
+            # Gyors/CPU: cheap ratios first — native last (only if needed).
+            order = (0.5, ds0, 0.25, 1.0)
+        else:
+            order = (ds0, 0.5, 1.0, 0.25)
         for d in order:
             dd = float(min(1.0, max(0.125, d)))
             if dd not in ds_ladder:
@@ -1000,6 +1072,13 @@ class _OrtRvmSession:
 
         alpha = self._run_once(self.session, bgr, ds_ladder[0], cold=True)
         if not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
+            return alpha
+        # Uniform gray slab is independent of downsample — don't burn CPU on retries.
+        if is_uniform_slab(alpha):
+            logger.warning(
+                "RVM pha uniform slab on %s — skip ds ladder (alternate/chroma next)",
+                self.provider,
+            )
             return alpha
 
         # Cold recurrent retry on the active provider (stale r1–r4 → slab / empty).
@@ -1012,6 +1091,8 @@ class _OrtRvmSession:
             alpha = self._run_once(self.session, bgr, ds, cold=True)
             if not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
                 return alpha
+            if is_uniform_slab(alpha):
+                return alpha
 
         # CUDA MemcpyTransformer / fp16 path → CPU EP (known-good for PeterL1n export).
         cuda_active = self._uses_cuda or "CUDA" in str(self.provider)
@@ -1023,7 +1104,7 @@ class _OrtRvmSession:
                     self.model_path.name,
                 )
                 cpu_ladder: list[float] = []
-                for d in (1.0, 0.5, ds0, 0.25):
+                for d in (0.5, ds0, 0.25, 1.0):
                     dd = float(min(1.0, max(0.125, d)))
                     if dd not in cpu_ladder:
                         cpu_ladder.append(dd)
@@ -1037,6 +1118,8 @@ class _OrtRvmSession:
                         )
                         return alpha_cpu
                     alpha = alpha_cpu
+                    if is_uniform_slab(alpha_cpu):
+                        break
 
         return alpha
 
@@ -1326,9 +1409,12 @@ class FastEngine(MattingEngine):
 
     def _try_alternate_rvm(self, bgr: np.ndarray) -> Optional[np.ndarray]:
         """Load next RVM ONNX on CPU; promote it if it yields a real person matte."""
-        from hybrid_editor.media.video_io import is_matte_degenerate, is_matte_empty
+        from hybrid_editor.media.video_io import is_matte_good_enough
 
         ds = self._downsample_for(bgr)
+        prefer_native = bool(
+            getattr(self, "_full_res_matte", False) or getattr(self, "_prefer_quality", False)
+        )
         for alt in self._iter_alternate_rvm_paths():
             sess: Optional[_OrtRvmSession] = None
             try:
@@ -1340,10 +1426,12 @@ class FastEngine(MattingEngine):
                 finally:
                     if prev is not None:
                         os.environ["HYBRID_ORT_PROVIDER"] = prev
-                alpha = sess.matte(bgr, downsample=ds)
-                if is_matte_empty(alpha) or is_matte_degenerate(alpha):
+                    else:
+                        os.environ.pop("HYBRID_ORT_PROVIDER", None)
+                alpha = sess.matte(bgr, downsample=ds, prefer_native=prefer_native)
+                if not is_matte_good_enough(alpha):
                     logger.warning(
-                        "Alternate RVM %s still empty/slab — trying next",
+                        "Alternate RVM %s still empty/slab/speck — trying next",
                         alt.name,
                     )
                     sess.close()
@@ -1376,41 +1464,60 @@ class FastEngine(MattingEngine):
         return None
 
     def _matte(self, bgr: np.ndarray) -> np.ndarray:
-        """Person alpha for one frame — never return an empty/degenerate matte when heuristic can help.
+        """Person alpha for one frame — never return an empty/degenerate matte when fallback can help.
 
         Max quality polish calls this directly (not preview_frame). Empty ORT / soft-fail
         used to skip the heuristic retry that only lived in preview_frame → Max looked
         like it found no person mask. Degenerate all-ones slabs (solid gray Maszk) are
         also rejected so Cutout never claims success with an opaque full frame.
 
-        simple-bg3: if MobileNet slabs/empties on the live frame, auto-try ResNet fp32
-        (and other local rvm_*.onnx) before heuristic.
+        simple-bg4 ladder: primary RVM → alternate ResNet/MobileNet → solid-BG chroma
+        → GrabCut heuristic → zeros. Speck mattes no longer short-circuit the ladder.
         """
-        from hybrid_editor.media.video_io import is_matte_degenerate, matte_failure_reason
+        from hybrid_editor.media.video_io import (
+            is_matte_degenerate,
+            is_matte_good_enough,
+            matte_failure_reason,
+        )
 
+        prefer_native = bool(
+            getattr(self, "_full_res_matte", False) or getattr(self, "_prefer_quality", False)
+        )
         alpha: Optional[np.ndarray] = None
         if self._rvm is not None:
             try:
-                alpha = self._rvm.matte(bgr, downsample=self._downsample_for(bgr))
+                alpha = self._rvm.matte(
+                    bgr,
+                    downsample=self._downsample_for(bgr),
+                    prefer_native=prefer_native,
+                )
             except Exception as exc:  # noqa: BLE001
-                logger.warning("RVM matte failed — trying alternate / heuristic: %s", exc)
+                logger.warning("RVM matte failed — trying alternate / chroma / heuristic: %s", exc)
                 alpha = None
-        if alpha is not None and not is_matte_empty(alpha):
+        if alpha is not None and is_matte_good_enough(alpha):
             return alpha
-        if alpha is not None and is_matte_empty(alpha):
-            why = matte_failure_reason(alpha) or "empty"
-            kind = "degenerate slab" if is_matte_degenerate(alpha) else "empty"
+        if alpha is not None:
+            why = matte_failure_reason(alpha) or "weak/speck"
+            kind = "degenerate slab" if is_matte_degenerate(alpha) else "empty/weak"
             logger.warning(
-                "RVM returned %s matte on %s (%s) — alternate model / heuristic",
+                "RVM returned %s matte on %s (%s) — alternate / chroma / heuristic",
                 kind,
                 self._backend,
                 why,
             )
         alt = self._try_alternate_rvm(bgr)
-        if alt is not None and not is_matte_empty(alt):
+        if alt is not None and is_matte_good_enough(alt):
             return alt
+        chroma = solid_bg_person_alpha(bgr)
+        if is_matte_good_enough(chroma):
+            self._status_note = (
+                (self._status_note + " · " if self._status_note else "")
+                + "solid-BG chroma fallback (blue/green screen)"
+            )
+            logger.warning("RVM empty/slab — solid-BG chroma person matte recovered")
+            return chroma
         heur = heuristic_person_alpha(bgr)
-        if not is_matte_empty(heur):
+        if is_matte_good_enough(heur) or not is_matte_empty(heur):
             return heur
         # Last resort: do not ship a flat gray / opaque full-frame as "success".
         return np.zeros(bgr.shape[:2], dtype=np.float32)
@@ -1450,38 +1557,40 @@ class FastEngine(MattingEngine):
         from_store = False
         matte_error: Optional[str] = None
         recovered = False
+        from hybrid_editor.media.video_io import is_matte_degenerate, is_matte_good_enough
+
         if self._mask_store is not None:
             cached = self._mask_store.get_alpha(t, shape=bgr.shape[:2])
-            if cached is not None and not is_matte_empty(cached):
-                from hybrid_editor.media.video_io import is_matte_degenerate
-
-                if is_matte_degenerate(cached):
-                    # Stale CUDA slab in store — never serve; re-infer on CPU.
+            if cached is not None and is_matte_good_enough(cached):
+                alpha = cached
+                from_store = True
+            elif cached is not None:
+                # Stale CUDA slab / speck in store — never serve; re-infer.
+                if is_matte_degenerate(cached) or is_matte_empty(cached):
                     try:
                         self._mask_store.purge()
                     except Exception:  # noqa: BLE001
                         self._mask_store.clear_memory()
-                else:
-                    alpha = cached
-                    from_store = True
         if alpha is None:
             if self._rvm:
                 self._rvm.reset()  # seek: don't smear recurrent state
             try:
-                # _matte already retries heuristic on empty/soft-fail ORT.
+                # _matte already retries alternate / chroma / heuristic.
                 alpha = self._matte(bgr)
-                if self._mask_store is not None and not is_matte_empty(alpha):
+                if self._mask_store is not None and is_matte_good_enough(alpha):
                     self._mask_store.put_async(t, alpha)
             except Exception as exc:  # noqa: BLE001
                 # Soft-fail: keep source RGB visible even if RVM/ORT blows up.
                 matte_error = str(exc)[:240]
-                logger.warning("preview matte failed — heuristic fallback: %s", matte_error)
+                logger.warning("preview matte failed — chroma/heuristic fallback: %s", matte_error)
                 try:
-                    alpha = heuristic_person_alpha(bgr)
-                    if not is_matte_empty(alpha):
+                    alpha = solid_bg_person_alpha(bgr)
+                    if not is_matte_good_enough(alpha):
+                        alpha = heuristic_person_alpha(bgr)
+                    if is_matte_good_enough(alpha) or not is_matte_empty(alpha):
                         matte_error = None  # recovered — clear sticky CUDA error
                         recovered = True
-                    if self._mask_store is not None and not is_matte_empty(alpha):
+                    if self._mask_store is not None and is_matte_good_enough(alpha):
                         self._mask_store.put_async(t, alpha)
                 except Exception as exc2:  # noqa: BLE001
                     matte_error = f"{matte_error}; heuristic: {str(exc2)[:120]}"
@@ -1491,6 +1600,8 @@ class FastEngine(MattingEngine):
 
         if alpha is not None and is_matte_empty(alpha) and matte_error is None:
             matte_error = matte_failure_reason(alpha)
+        # Annotate inference size — never claim 1080p when src was smaller.
+        infer_h, infer_w = int(bgr.shape[0]), int(bgr.shape[1])
         try:
             jpg, png, w, h, src, empty = encode_preview_pair(bgr, alpha)
         except Exception as exc:  # noqa: BLE001
@@ -1507,6 +1618,8 @@ class FastEngine(MattingEngine):
             matte_error = None
             recovered = True
         lane_meta = self._lanes.status() if self._lanes else {}
+        src_w = int(self._media.width) if self._media else infer_w
+        src_h = int(self._media.height) if self._media else infer_h
         meta: dict[str, Any] = {
             "mode": self.mode.value,
             "mask_store": from_store,
@@ -1515,7 +1628,11 @@ class FastEngine(MattingEngine):
             "proxy_lanes": lane_meta,
             "matte_empty": empty,
             "matte_recovered": bool(recovered and not empty),
-            "stamp": "2026-10-12-simple-bg3",
+            "source_width": src_w,
+            "source_height": src_h,
+            "infer_width": infer_w,
+            "infer_height": infer_h,
+            "stamp": "2026-10-12-simple-bg4",
         }
         if matte_error and empty:
             meta["matte_error"] = matte_error

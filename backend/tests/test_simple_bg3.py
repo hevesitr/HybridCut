@@ -16,7 +16,7 @@ ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
 SYNC = ROOT / "SYNC_VERSION.txt"
-STAMP = "2026-10-12-simple-bg3"
+STAMP = "2026-10-12-simple-bg4"
 
 
 def _closeup_bgr(h: int = 540, w: int = 960) -> np.ndarray:
@@ -84,7 +84,8 @@ def test_matte_auto_switches_when_primary_slabs(monkeypatch: pytest.MonkeyPatch,
             self.fallback_note = None
             self.session = object()
 
-        def matte(self, bgr, downsample=0.25):
+        def matte(self, bgr, downsample=0.25, prefer_native=False):
+            del prefer_native
             h, w = bgr.shape[:2]
             if "mobilenet" in self.model_path.name.lower():
                 return np.ones((h, w), np.float32)  # gray slab

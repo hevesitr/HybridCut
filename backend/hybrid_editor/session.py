@@ -909,7 +909,7 @@ class EditorSession:
                     meta_extra: dict[str, Any] = {
                         "matte_empty": empty,
                         "has_alpha_clip": bool(getattr(matte_layer, "has_alpha", False)),
-                        "stamp": "2026-10-12-simple-bg3",
+                        "stamp": "2026-10-12-simple-bg4",
                         **overlay_meta,
                     }
                     if empty:
@@ -985,12 +985,51 @@ class EditorSession:
                     )
                 if overlay_meta:
                     frame.meta = {**(frame.meta or {}), **overlay_meta}
+            # simple-bg4: Gyors empty/slab → one-shot auto Max (ResNet + polish) retry.
+            meta0 = frame.meta or {}
+            gyros_empty = bool(meta0.get("matte_empty") or meta0.get("source_fallback"))
+            if (
+                gyros_empty
+                and self.mode is EngineMode.GYORS
+                and not getattr(self, "_preview_auto_max_guard", False)
+            ):
+                self._preview_auto_max_guard = True
+                try:
+                    logger = __import__("logging").getLogger(__name__)
+                    logger.warning(
+                        "Gyors matte empty/slab — auto-switching to Max (ResNet/polish) once"
+                    )
+                    self.set_mode("max")
+                    frame = self.engine.preview_frame(source_t)
+                    frame.meta = {
+                        **(frame.meta or {}),
+                        "auto_max_retry": True,
+                        "auto_max_from": "gyors",
+                    }
+                    if overlay_meta:
+                        frame.meta = {**(frame.meta or {}), **overlay_meta}
+                except Exception as auto_exc:  # noqa: BLE001
+                    frame.meta = {
+                        **(frame.meta or {}),
+                        "auto_max_retry": False,
+                        "auto_max_error": str(auto_exc)[:160],
+                    }
+                finally:
+                    self._preview_auto_max_guard = False
             if self._seed_alpha is not None:
                 frame.meta = {
                     **(frame.meta or {}),
                     "user_seed": True,
                     "seed_bound": True,
                     "seed_clip_id": self.timeline.selected_clip_id if self.timeline else None,
+                }
+            # Surface true source resolution (never invent 1920×1080).
+            if self.media is not None:
+                frame.meta = {
+                    **(frame.meta or {}),
+                    "source_width": int(self.media.width),
+                    "source_height": int(self.media.height),
+                    "source_fps": float(self.media.fps),
                 }
             return frame
 

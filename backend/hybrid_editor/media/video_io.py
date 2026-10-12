@@ -33,6 +33,9 @@ DEGENERATE_COVER = 0.90  # fraction a > 0.15
 DEGENERATE_STD = 0.05  # spatial std below this + high cover ⇒ flat slab
 DEGENERATE_MEAN = 0.85  # mean alpha with low std also useless
 DEGENERATE_OPAQUE = 0.90  # fraction a >= 0.99
+# Dust / tiny speck can pass structured floors — still retry ResNet / chroma / heuristic.
+GOOD_ENOUGH_COVER = 0.025
+GOOD_ENOUGH_BLOB_FRAC = 0.015
 # Weak-but-not-empty: still prefer source underlay over checker domination.
 WEAK_ALPHA_COVER = 0.08
 # When matte is empty, keep source nearly full brightness (optional slight dim).
@@ -357,6 +360,40 @@ def is_matte_empty(alpha: np.ndarray) -> bool:
     if float(a.mean()) < EMPTY_ALPHA_MEAN:
         return True
     return False
+
+
+def is_matte_good_enough(alpha: np.ndarray) -> bool:
+    """True when alpha is usable for Cutout — not empty, not slab, not dust speck.
+
+    simple-bg4: MobileNet on CPU can emit a tiny structured speck that passed
+    ``is_matte_empty`` / structured floors; that skipped ResNet + chroma and left
+    the user with a useless (or later gray-slab) preview. Specks must retry.
+    """
+    if alpha is None or is_matte_empty(alpha) or is_matte_degenerate(alpha):
+        return False
+    a = normalize_alpha(alpha)
+    cover = float((a > 0.15).mean())
+    if cover >= GOOD_ENOUGH_COVER:
+        return True
+    # Low cover: require a real connected person blob (not ORT dust).
+    mask = (a > 0.35).astype(np.uint8)
+    if int(mask.max()) < 1:
+        return False
+    n, _labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if n <= 1:
+        return False
+    largest = int(stats[1:, cv2.CC_STAT_AREA].max())
+    return largest >= int(a.size * GOOD_ENOUGH_BLOB_FRAC)
+
+
+def is_uniform_slab(alpha: np.ndarray) -> bool:
+    """True for near-constant pha (all-ones / flat) — skip ds ladder retries."""
+    if alpha is None:
+        return False
+    a = normalize_alpha(alpha)
+    if a.size == 0:
+        return False
+    return float(a.std()) < 0.012 and float(a.mean()) >= 0.85
 
 
 def source_visible_bgr(bgr: np.ndarray, *, dim: float = EMPTY_SOURCE_DIM) -> np.ndarray:

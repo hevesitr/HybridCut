@@ -40,8 +40,9 @@ def frame_count(duration_sec: float, fps: float) -> int:
 
 def resolution_factor(width: int, height: int, mode: Mode) -> float:
     """Scale sec/frame by megapixels vs 1080p. Gyors softens (proxy path)."""
-    w = max(1, int(width or 1920))
-    h = max(1, int(height or 1080))
+    # Missing probe → assume 720p (not fake 1080p) so ETA does not overstate work.
+    w = max(1, int(width or 1280))
+    h = max(1, int(height or 720))
     mp = (w * h) / REF_PIXELS
     if mode == "gyors":
         # Proxy long-side ~720 → resolution impact is muted.

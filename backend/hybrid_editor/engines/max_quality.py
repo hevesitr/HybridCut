@@ -201,31 +201,37 @@ class MaxQualityEngine(MattingEngine):
 
     def _base_alpha(self, bgr: np.ndarray) -> np.ndarray:
         """Always run Fast RVM / heuristic — never leave an empty matte for missing MatAnyone2."""
-        from hybrid_editor.engines.fast_rvm import heuristic_person_alpha
+        from hybrid_editor.engines.fast_rvm import heuristic_person_alpha, solid_bg_person_alpha
 
         try:
             a = self._fast._matte(bgr)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Max base matte failed — heuristic: %s", exc)
-            a = heuristic_person_alpha(bgr)
-        if is_matte_empty(a):
+            logger.warning("Max base matte failed — chroma/heuristic: %s", exc)
+            a = solid_bg_person_alpha(bgr)
+            if is_matte_empty(a):
+                a = heuristic_person_alpha(bgr)
+        if is_matte_empty(a) or is_matte_degenerate(a):
             # Belt-and-suspenders: FastEngine._matte already retries, but keep Max safe
-            # if a stub/backbone returns zeros without going through that path.
-            a = heuristic_person_alpha(bgr)
+            # if a stub/backbone returns zeros/slab without going through that path.
+            chroma = solid_bg_person_alpha(bgr)
+            a = chroma if not is_matte_empty(chroma) else heuristic_person_alpha(bgr)
         return a
 
     def _ensure_nonempty_alpha(self, bgr: np.ndarray, alpha: Optional[np.ndarray]) -> np.ndarray:
         """Last-resort person alpha so Max Előnézet never ships an empty mask."""
-        from hybrid_editor.engines.fast_rvm import heuristic_person_alpha
+        from hybrid_editor.engines.fast_rvm import heuristic_person_alpha, solid_bg_person_alpha
 
-        if alpha is not None and not is_matte_empty(alpha):
+        if alpha is not None and not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
             return alpha
         try:
             a = self._base_alpha(bgr)
-            if not is_matte_empty(a):
+            if not is_matte_empty(a) and not is_matte_degenerate(a):
                 return a
         except Exception:  # noqa: BLE001
             pass
+        chroma = solid_bg_person_alpha(bgr)
+        if not is_matte_empty(chroma) and not is_matte_degenerate(chroma):
+            return chroma
         return heuristic_person_alpha(bgr)
 
     def _seed_for(self, bgr: np.ndarray, auto: np.ndarray) -> np.ndarray:
@@ -262,11 +268,14 @@ class MaxQualityEngine(MattingEngine):
             self._stabilizer.reset()
             return np.clip(np.asarray(a, dtype=np.float32), 0.0, 1.0)
         if is_matte_empty(out) or is_matte_degenerate(out):
-            # simple-bg3: MobileNet/ResNet slab after polish — recover before UI toast.
+            # simple-bg4: MobileNet/ResNet slab after polish — recover before UI toast.
             recovered = self._ensure_nonempty_alpha(bgr, a if not is_matte_empty(a) else out)
             if not is_matte_empty(recovered) and not is_matte_degenerate(recovered):
                 self._stabilizer.reset()
                 return recovered
+            # Never ship gray-slab as success — zeros → UI empty path (not opaque Cutout).
+            self._stabilizer.reset()
+            return np.zeros(bgr.shape[:2], dtype=np.float32)
         return out
 
     def preview_frame(self, t_sec: float) -> PreviewFrame:
@@ -280,10 +289,12 @@ class MaxQualityEngine(MattingEngine):
         frame = self._fast.preview_frame(t_sec)
         # Re-polish with Videoeditor path at near-source resolution (match left-side quality).
         bgr, t = read_frame_at(Path(self._media.path), t_sec)
-        # Sharp: keep up to 1440 long-side for Cutout preview (full bake stays native).
+        # Cap at source long-side — never upsample a 720p clip to 1440 for CPU matte.
+        src_long = max(int(bgr.shape[0]), int(bgr.shape[1]))
         preview_long = int(os.environ.get("HYBRID_MAX_PREVIEW_LONG", "1440") or "1440")
         if not self.sharp_edges:
             preview_long = 720
+        preview_long = max(64, min(preview_long, src_long))
         bgr = downscale_long_side(bgr, preview_long)
         self._stabilizer.reset()
         self._seed = None
@@ -383,7 +394,11 @@ class MaxQualityEngine(MattingEngine):
             "rvm_full_res": bool(getattr(self._fast, "_full_res_matte", False)),
             "rvm_weights": Path(weights).name if weights else None,
             "preview_long_side": preview_long,
-            "stamp": "2026-10-12-simple-bg3",
+            "source_width": int(self._media.width) if self._media else int(bgr.shape[1]),
+            "source_height": int(self._media.height) if self._media else int(bgr.shape[0]),
+            "infer_width": int(bgr.shape[1]),
+            "infer_height": int(bgr.shape[0]),
+            "stamp": "2026-10-12-simple-bg4",
         }
         if empty and matte_error is None and alpha is not None:
             from hybrid_editor.media.video_io import matte_failure_reason

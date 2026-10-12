@@ -1,5 +1,5 @@
 # HybridCut one-click launcher (API + built UI on port 3847)
-# Stamp: 2026-10-12-simple-bg3 (CPU-first ORT; single V1 BG remove)
+# Stamp: 2026-10-12-simple-bg4 (CPU-first ORT; single V1 BG remove)
 # ASCII-only. Resolves root via Documents sync target or this script's folder.
 # Safe from ANY cwd - never assumes System32 or a prior cd.
 # Phase 5: skip pip upgrade; trusted-host; parent Videoeditor .venv reuse;
