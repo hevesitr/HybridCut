@@ -20,9 +20,9 @@ export type ClipInfo = {
   scale?: number;
   /** *_full_nobg.mov / alpha WebM — preserve transparency. */
   has_alpha?: boolean;
-  /** Track 1 = AI sáv (person cutout / edge polish lane). */
+  /** Legacy multi-track fields — unused in simple-bg3 (V1 only). */
   ai_lane?: boolean;
-  /** idle | pending | running | done | error */
+  /** idle | pending | running | done | error — unused in simple-bg3. */
   ai_polish?: string;
   ai_polish_label_hu?: string;
 };
@@ -125,7 +125,7 @@ export type EditorStatus = {
   intelligence?: Record<string, unknown>;
   /** CapCut-like sharp person edges (default on for Max/export). */
   sharp_edges?: boolean;
-  /** After stack onto AI sáv — UI should auto-run Polírozás. */
+  /** Legacy — unused in simple-bg3 (single V1, no polish lane). */
   ai_polish_recommended?: string | null;
   ai_polish?: {
     clip_id?: string | null;

@@ -1,48 +1,55 @@
-# HybridCut restart — simple-bg2 (`2026-10-12-simple-bg2`)
+# HybridCut restart — simple-bg3 (`2026-10-12-simple-bg3`)
 
-Feature stamp: **`2026-10-12-simple-bg2`**.
+Feature stamp: **`2026-10-12-simple-bg3`**.
 
-Includes prior: simple-bg · run-ps1 · rvm-back · matte-cpu2 · cpu-matte · cuda-ps1 · cuda-restore · cuda-ep · seed-crash · rvm-matte · matte-visible · person-restore · auto-person · look-peak.
+Includes prior: simple-bg2 · simple-bg · run-ps1 · rvm-back · matte-cpu2 · cpu-matte · cuda-ps1 · cuda-restore · cuda-ep · seed-crash · rvm-matte · matte-visible · person-restore · auto-person · look-peak.
 
-## Why you still saw AI SÁV + gray toast
+## Why you still saw AI SÁV / + V1 / + B-roll on simple-bg2
 
 | Symptom | Cause |
 |---------|--------|
-| AI SÁV lane + Polírozás footer | Local Agent Store / `Documents\Videoeditor\hybrid_cut` still had **`2026-10-11-run-ps1`** (`index-BGJ2h0CY.js`) — synced **before** simple-bg mirror landed |
-| `SYNC_VERSION=run-ps1` after sync | `sync_hybrid.ps1` picked the first tree with UI; stale AgentStores copy won |
-| „Hibás egyenletes maszk…” toast | Broken CUDA / old tip path; CPU ORT person matte not reached |
+| Badge `simple-bg2` but timeline shows **AI SÁV** or **+ V1 klip / + B-roll** | Backend SYNC updated, but **stale hashed JS** from look-peak / run-ps1 still served (`index-BGJ2h0CY.js` etc.). `install_to_videoeditor.ps1` used robocopy `/E` **without** purging `frontend/dist` |
+| „Hibás maszk (egyenletes szürke lap) — CPU ORT / Max mód” | CPU MobileNet empty/slab on real 1080p close-up; no auto ResNet twin; close-up high-cover falsely treated like all-ones; sticky toast |
+| Many `/api/preview` 200, still no silhouette | Preview returned `matte_empty` + egyenletes error — UI toast path |
 
-## What simple-bg2 does
+## What simple-bg3 does
 
 | Area | Behaviour |
 |------|-----------|
-| **One timeline** | Single **V1** lane only. API `tracks` = `[V1]`. No AI sáv label anywhere in UI. |
-| **Focus** | **Háttéreltávolítás** only: Megnyitás → Előnézet Cutout → Export `*_full_nobg.mov` |
-| **Gyors default** | Megnyitás stays **Gyors** (MobileNet). Max only when user picks it / bake. |
-| **CPU person matte** | `HYBRID_ORT_PROVIDER=cpu` · MobileNet/ResNet ORT · load smoke + heuristic recovery · no sticky gray-slab toast when matte recovers |
-| **Sync harden** | `sync_hybrid.ps1` **refuses** stale stamps (`run-ps1`, `rvm-back`, even `simple-bg`) — installs only **`2026-10-12-simple-bg2`**, purges old `frontend/dist`, rewrites SYNC |
-| **Removed** | AI sáv · Polírozás · B-roll · multi-track · nobg Mozgatás · + V1 klip stack · Varázsceruza |
+| **One timeline** | Single **V1** only. Dist must contain **zero** `AI sáv` / `AI SÁV` / `+ V1 klip` / `+ B-roll` / `tl-polish-btn` |
+| **Install purge** | `install_to_videoeditor.ps1` **deletes** destination `frontend/dist` before copy, then **refuses** install if banned strings remain |
+| **CPU person matte** | MobileNet empty/slab → **auto ResNet fp32** (local `models/`) → close-up-aware heuristic. High-cover face/hair no longer false-slab |
+| **Max Előnézet** | Polish cannot leave gray-slab; sticky toast clears when matte OK. Auto preview on Megnyitás |
+| **Focus** | Háttéreltávolítás: Megnyitás → Előnézet Cutout → Export `*_full_nobg.mov` |
 
-## Sync + run (Windows)
+## Sync + run (Windows) — one-shot
 
 ```powershell
-& "$env:LOCALAPPDATA\Cursor\AgentStores\cursor_agent_stores\bc-41930eab-1501-4c19-acf3-0c9d63afbf4d\files\docs\capcut-features\sync_hybrid.ps1"
+# Stop old server (port 3847), pull GitHub tip, install, verify
+Get-NetTCPConnection -LocalPort 3847 -ErrorAction SilentlyContinue |
+  ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+cd $env:USERPROFILE\Documents\HybridCut
+git fetch origin
+git checkout main
+git pull origin main
+Get-Content .\SYNC_VERSION.txt   # MUST be: 2026-10-12-simple-bg3
+.\install_to_videoeditor.ps1
 cd $env:USERPROFILE\Documents\Videoeditor
-Get-Content .\hybrid_cut\SYNC_VERSION.txt   # MUST be: 2026-10-12-simple-bg2
-cd hybrid_cut
-.\run_hybrid.ps1
-# http://127.0.0.1:3847 — Ctrl+F5
-# Dist JS hash must NOT be index-BGJ2h0CY.js
+Get-Content .\hybrid_cut\SYNC_VERSION.txt   # MUST be: 2026-10-12-simple-bg3
+# Optional ResNet (sharper Max on CPU close-ups):
+#   .\hybrid_cut\scripts\download_rvm.ps1 rvm_resnet50_fp32.onnx
+#   copy into Documents\Videoeditor\models\ as well if CapCut tree holds weights
+.\hybrid_cut\run_hybrid.ps1
+# Browser: http://127.0.0.1:3847 — hard refresh Ctrl+F5
+# Confirm dist asset name changed (not index-BGJ2h0CY.js / not index-fyrBYl2A.js)
 ```
-
-If sync errors with „Tip stamp missing” / „Refuse stale SRC”: **re-open Cursor** so Agent Store refreshes, then run sync again. Do **not** keep using Documents\hybrid_cut from run-ps1.
 
 ## UI — Róbert checklist (HU)
 
-1. **SYNC** = `2026-10-12-simple-bg2` (not run-ps1 / not simple-bg).
-2. **Idővonal** — csak **V1** (nincs üres AI SÁV).
-3. **Megnyitás** — egy videó; második ejtés elutasítva.
-4. **Előnézet Cutout / Maszk** — személy sziluett, háttér sakktábla (nem szürke lap).
+1. **SYNC** = `2026-10-12-simple-bg3`.
+2. **Idővonal** — csak **V1** (nincs AI SÁV, nincs + V1 / + B-roll).
+3. **Megnyitás** — egy videó; auto Előnézet Cutout.
+4. **Maszk / Cutout** — személy sziluett (close-up OK), nem szürke lap.
 5. **Export** → `C:\bgcut\*_full_nobg.mov`.
 
 ## Smoke
@@ -51,9 +58,9 @@ If sync errors with „Tip stamp missing” / „Refuse stale SRC”: **re-open 
 cd hybrid_cut
 $env:PYTHONPATH="$PWD\backend"
 $env:HYBRID_ORT_PROVIDER="cpu"
-python -m pytest backend/tests/test_simple_bg.py backend/tests/test_ai_tracks.py backend/tests/test_cpu_matte.py backend/tests/test_matte_visible.py -q
+python -m pytest backend/tests/test_simple_bg3.py backend/tests/test_simple_bg.py backend/tests/test_ai_tracks.py backend/tests/test_cpu_matte.py backend/tests/test_matte_visible.py -q
 ```
 
 ## Dist
 
-`frontend/dist`: `index-fyrBYl2A.js` / `index-DgGXKx1Y.css` (not `index-BGJ2h0CY.js` / not `index-DY2_6z5E.js`). Hard-refresh **Ctrl+F5**.
+New hashed `frontend/dist/assets/index-*.js` / `index-*.css` after build. Hard-refresh **Ctrl+F5**. Grep dist for `AI SÁV` / `+ B-roll` must be **zero**.

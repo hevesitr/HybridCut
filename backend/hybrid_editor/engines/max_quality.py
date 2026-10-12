@@ -261,6 +261,12 @@ class MaxQualityEngine(MattingEngine):
             logger.warning("Max polish produced degenerate slab — keeping base RVM/heuristic alpha")
             self._stabilizer.reset()
             return np.clip(np.asarray(a, dtype=np.float32), 0.0, 1.0)
+        if is_matte_empty(out) or is_matte_degenerate(out):
+            # simple-bg3: MobileNet/ResNet slab after polish — recover before UI toast.
+            recovered = self._ensure_nonempty_alpha(bgr, a if not is_matte_empty(a) else out)
+            if not is_matte_empty(recovered) and not is_matte_degenerate(recovered):
+                self._stabilizer.reset()
+                return recovered
         return out
 
     def preview_frame(self, t_sec: float) -> PreviewFrame:
@@ -377,7 +383,7 @@ class MaxQualityEngine(MattingEngine):
             "rvm_full_res": bool(getattr(self._fast, "_full_res_matte", False)),
             "rvm_weights": Path(weights).name if weights else None,
             "preview_long_side": preview_long,
-            "stamp": "2026-10-12-simple-bg2",
+            "stamp": "2026-10-12-simple-bg3",
         }
         if empty and matte_error is None and alpha is not None:
             from hybrid_editor.media.video_io import matte_failure_reason

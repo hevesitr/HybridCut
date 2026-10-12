@@ -327,10 +327,11 @@ def probe_ort_runtime() -> dict[str, Any]:
 
 
 def heuristic_person_alpha(bgr: np.ndarray) -> np.ndarray:
-    """Soft person-ish matte without ML — scaffold / CI fallback only.
+    """Soft person-ish matte without ML — scaffold / CI / CPU-RVM failure fallback.
 
     Prefers **all** skin/body blobs (multi-person), not a single center oval, so
-    secondary subjects survive when RVM weights are missing.
+    secondary subjects survive when RVM weights are missing. Close-up face/hair
+    frames (high skin cover) use a tighter center prior so the rim stays punched.
     """
     h, w = bgr.shape[:2]
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
@@ -342,21 +343,28 @@ def heuristic_person_alpha(bgr: np.ndarray) -> np.ndarray:
     body2 = cv2.inRange(hsv, (140, 15, 35), (180, 200, 245))
     body = cv2.bitwise_or(body, body2)
     lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    skin_frac = float((skin > 0).mean())
+    closeup = skin_frac >= 0.12  # talking-head / face-fill often lands here
     # Multi-lobed prior: left / center / right thirds (group shots)
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
     priors = []
-    for cx_frac in (0.28, 0.50, 0.72):
-        cx, cy = w * cx_frac, h * 0.52
-        dist = np.sqrt(((xx - cx) / (w * 0.28)) ** 2 + ((yy - cy) / (h * 0.48)) ** 2)
+    fracs = (0.50,) if closeup else (0.28, 0.50, 0.72)
+    rx = 0.42 if closeup else 0.28
+    ry = 0.55 if closeup else 0.48
+    cy0 = 0.48 if closeup else 0.52
+    for cx_frac in fracs:
+        cx, cy = w * cx_frac, h * cy0
+        dist = np.sqrt(((xx - cx) / (w * rx)) ** 2 + ((yy - cy) / (h * ry)) ** 2)
         priors.append(np.clip(1.0 - dist, 0.0, 1.0))
     center = np.maximum.reduce(priors)
     edges = cv2.Canny(cv2.GaussianBlur(lab[:, :, 0], (5, 5), 0), 40, 120)
     edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
     mask = np.full((h, w), cv2.GC_PR_BGD, np.uint8)
-    mask[center > 0.50] = cv2.GC_PR_FGD
+    mask[center > (0.35 if closeup else 0.50)] = cv2.GC_PR_FGD
     mask[body > 0] = cv2.GC_PR_FGD
     mask[skin > 0] = cv2.GC_FGD
-    border = max(4, min(h, w) // 40)
+    # Narrower hard-BGD rim on close-ups so hair near edges is not erased.
+    border = max(2, min(h, w) // (55 if closeup else 40))
     mask[:border, :] = cv2.GC_BGD
     mask[-border:, :] = cv2.GC_BGD
     mask[:, :border] = cv2.GC_BGD
@@ -380,13 +388,21 @@ def heuristic_person_alpha(bgr: np.ndarray) -> np.ndarray:
         gc = center * 0.55 + (skin.astype(np.float32) / 255.0) * 0.25 + (
             body.astype(np.float32) / 255.0
         ) * 0.20
-    alpha = (
-        0.70 * gc
-        + 0.12 * center
-        + 0.10 * (skin.astype(np.float32) / 255.0)
-        + 0.08 * (edges.astype(np.float32) / 255.0)
-    )
-    alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=1.6)
+    if closeup:
+        alpha = (
+            0.55 * gc
+            + 0.22 * center
+            + 0.16 * (skin.astype(np.float32) / 255.0)
+            + 0.07 * (edges.astype(np.float32) / 255.0)
+        )
+    else:
+        alpha = (
+            0.70 * gc
+            + 0.12 * center
+            + 0.10 * (skin.astype(np.float32) / 255.0)
+            + 0.08 * (edges.astype(np.float32) / 255.0)
+        )
+    alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=1.6 if not closeup else 2.2)
     # Keep every person-sized blob from the soft prior (not only the largest)
     try:
         from hybrid_editor.engines.videoeditor_polish import keep_person_instances_soft
@@ -394,6 +410,12 @@ def heuristic_person_alpha(bgr: np.ndarray) -> np.ndarray:
         alpha = keep_person_instances_soft(alpha, min_area_frac=0.004, relative_frac=0.10)
     except Exception:
         pass
+    # Guarantee punched rim so close-up never collapses to an all-ones gray slab.
+    rim = max(2, min(h, w) // 80)
+    alpha[:rim, :] *= 0.15
+    alpha[-rim:, :] *= 0.15
+    alpha[:, :rim] *= 0.15
+    alpha[:, -rim:] *= 0.15
     return np.clip(alpha, 0.0, 1.0).astype(np.float32)
 
 
@@ -1243,6 +1265,116 @@ class FastEngine(MattingEngine):
             ds = float(min(1.0, max(ds, min_ds)))
         return ds
 
+    def _iter_alternate_rvm_paths(self) -> list[Path]:
+        """Other RVM ONNX weights to try when the active model slabs/empties.
+
+        simple-bg3: MobileNet on some 1080p close-ups emits empty/flat pha on CPU;
+        ResNet fp32 often recovers (and vice versa). Prefer ResNet fp32 next.
+        """
+        current: Optional[Path] = None
+        if self._rvm is not None and getattr(self._rvm, "model_path", None):
+            current = Path(self._rvm.model_path)
+        cur_key = str(current.resolve()) if current and current.is_file() else ""
+        # Prefer quality (ResNet) when primary was MobileNet / empty.
+        prefer = "quality"
+        if current is not None and "resnet" in current.name.lower():
+            prefer = "fast"
+        found: list[Path] = []
+        seen: set[str] = set()
+        # Explicit twin names first (fp32 before fp16).
+        twin_names = (
+            (
+                "rvm_resnet50_fp32.onnx",
+                "rvm_resnet50.onnx",
+                "rvm_resnet50_fp16.onnx",
+                "rvm_mobilenetv3_fp32.onnx",
+                "rvm_mobilenetv3.onnx",
+                "rvm_mobilenetv3_fp16.onnx",
+            )
+            if prefer == "quality"
+            else (
+                "rvm_mobilenetv3_fp32.onnx",
+                "rvm_mobilenetv3.onnx",
+                "rvm_mobilenetv3_fp16.onnx",
+                "rvm_resnet50_fp32.onnx",
+                "rvm_resnet50.onnx",
+                "rvm_resnet50_fp16.onnx",
+            )
+        )
+        search_dirs: list[Path] = [ROOT / "models"]
+        for r in parent_videoeditor_roots():
+            search_dirs.append(r / "models")
+        for d in search_dirs:
+            if not d.is_dir():
+                continue
+            for name in twin_names:
+                cand = d / name
+                if not cand.is_file():
+                    continue
+                key = str(cand.resolve())
+                if key == cur_key or key in seen:
+                    continue
+                seen.add(key)
+                found.append(cand)
+            for cand in sorted(d.glob("rvm_*.onnx")):
+                key = str(cand.resolve())
+                if key == cur_key or key in seen:
+                    continue
+                seen.add(key)
+                found.append(cand)
+        return found
+
+    def _try_alternate_rvm(self, bgr: np.ndarray) -> Optional[np.ndarray]:
+        """Load next RVM ONNX on CPU; promote it if it yields a real person matte."""
+        from hybrid_editor.media.video_io import is_matte_degenerate, is_matte_empty
+
+        ds = self._downsample_for(bgr)
+        for alt in self._iter_alternate_rvm_paths():
+            sess: Optional[_OrtRvmSession] = None
+            try:
+                # Force CPU for alternate — user already on CPU when primary failed.
+                prev = os.environ.get("HYBRID_ORT_PROVIDER")
+                os.environ["HYBRID_ORT_PROVIDER"] = "cpu"
+                try:
+                    sess = _OrtRvmSession(alt)
+                finally:
+                    if prev is not None:
+                        os.environ["HYBRID_ORT_PROVIDER"] = prev
+                alpha = sess.matte(bgr, downsample=ds)
+                if is_matte_empty(alpha) or is_matte_degenerate(alpha):
+                    logger.warning(
+                        "Alternate RVM %s still empty/slab — trying next",
+                        alt.name,
+                    )
+                    sess.close()
+                    continue
+                # Promote successful alternate (esp. ResNet fp32 after MobileNet slab).
+                old = self._rvm
+                self._rvm = sess
+                self._backend = f"ort-rvm:{sess.provider}"
+                self._status_note = (
+                    f"RVM auto-switch → {alt.name} (CPU) — prior model empty/slab"
+                )
+                logger.warning(
+                    "RVM auto-switch: %s → %s (usable person matte on CPU)",
+                    Path(old.model_path).name if old else "none",
+                    alt.name,
+                )
+                if old is not None:
+                    try:
+                        old.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                return alpha
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Alternate RVM %s failed: %s", alt.name, exc)
+                if sess is not None:
+                    try:
+                        sess.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+        return None
+
     def _matte(self, bgr: np.ndarray) -> np.ndarray:
         """Person alpha for one frame — never return an empty/degenerate matte when heuristic can help.
 
@@ -1250,6 +1382,9 @@ class FastEngine(MattingEngine):
         used to skip the heuristic retry that only lived in preview_frame → Max looked
         like it found no person mask. Degenerate all-ones slabs (solid gray Maszk) are
         also rejected so Cutout never claims success with an opaque full frame.
+
+        simple-bg3: if MobileNet slabs/empties on the live frame, auto-try ResNet fp32
+        (and other local rvm_*.onnx) before heuristic.
         """
         from hybrid_editor.media.video_io import is_matte_degenerate, matte_failure_reason
 
@@ -1258,7 +1393,7 @@ class FastEngine(MattingEngine):
             try:
                 alpha = self._rvm.matte(bgr, downsample=self._downsample_for(bgr))
             except Exception as exc:  # noqa: BLE001
-                logger.warning("RVM matte failed — heuristic person alpha: %s", exc)
+                logger.warning("RVM matte failed — trying alternate / heuristic: %s", exc)
                 alpha = None
         if alpha is not None and not is_matte_empty(alpha):
             return alpha
@@ -1266,11 +1401,14 @@ class FastEngine(MattingEngine):
             why = matte_failure_reason(alpha) or "empty"
             kind = "degenerate slab" if is_matte_degenerate(alpha) else "empty"
             logger.warning(
-                "RVM returned %s matte on %s (%s) — heuristic person alpha",
+                "RVM returned %s matte on %s (%s) — alternate model / heuristic",
                 kind,
                 self._backend,
                 why,
             )
+        alt = self._try_alternate_rvm(bgr)
+        if alt is not None and not is_matte_empty(alt):
+            return alt
         heur = heuristic_person_alpha(bgr)
         if not is_matte_empty(heur):
             return heur
@@ -1377,7 +1515,7 @@ class FastEngine(MattingEngine):
             "proxy_lanes": lane_meta,
             "matte_empty": empty,
             "matte_recovered": bool(recovered and not empty),
-            "stamp": "2026-10-12-simple-bg2",
+            "stamp": "2026-10-12-simple-bg3",
         }
         if matte_error and empty:
             meta["matte_error"] = matte_error

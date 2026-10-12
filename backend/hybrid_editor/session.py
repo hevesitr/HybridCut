@@ -644,18 +644,19 @@ class EditorSession:
         if self.timeline is not None and clip_id:
             clip = self.timeline._find(clip_id)
         status = (clip.ai_polish if clip is not None else "idle") or "idle"
+        # simple-bg3: polish lane removed — never advertise AI sáv in status payload.
         label_map = {
-            "pending": "Polírozás vár — AI sáv",
-            "running": "Polírozás…",
-            "done": "Polírozás kész",
-            "error": "Polírozás hiba",
+            "pending": "",
+            "running": "",
+            "done": "",
+            "error": "",
             "idle": "",
         }
         st["ai_polish"] = {
             "clip_id": clip_id,
-            "status": status,
-            "label_hu": label_map.get(status.lower(), ""),
-            "lane_label_hu": "AI sáv",
+            "status": "idle",
+            "label_hu": "",
+            "lane_label_hu": "",
         }
         if recommend and clip_id and status in {"pending", "idle", "error"}:
             st["ai_polish_recommended"] = clip_id
@@ -908,7 +909,7 @@ class EditorSession:
                     meta_extra: dict[str, Any] = {
                         "matte_empty": empty,
                         "has_alpha_clip": bool(getattr(matte_layer, "has_alpha", False)),
-                        "stamp": "2026-10-12-simple-bg2",
+                        "stamp": "2026-10-12-simple-bg3",
                         **overlay_meta,
                     }
                     if empty:

@@ -82,6 +82,17 @@ New-Item -ItemType Directory -Force -Path $dst | Out-Null
 Write-Host ("SRC: " + $src)
 Write-Host ("DST: " + $dst)
 
+# simple-bg3: purge stale frontend/dist so old hashed JS (AI SÁV / + V1 / + B-roll) cannot linger.
+$dstDist = Join-Path $dst "frontend\dist"
+if (Test-Path -LiteralPath $dstDist) {
+    Write-Host ("PURGE stale dist: " + $dstDist)
+    try {
+        Remove-Item -LiteralPath $dstDist -Recurse -Force -ErrorAction Stop
+    } catch {
+        Write-Host ("WARN: could not fully purge dist (will overwrite): " + $_.Exception.Message)
+    }
+}
+
 $excludeDirs = @("__pycache__", ".venv", "venv", "node_modules", ".git", "bake", ".pytest_cache")
 $robolog = New-AsciiTempPath -Suffix ".log"
 $xdArgs = @()
@@ -94,6 +105,17 @@ if ($rc -ge 8) {
     Write-Host ("robocopy log: " + $robolog)
     Remove-TempQuiet -Path $robolog
     Write-Error ("robocopy failed with exit code " + $rc)
+}
+
+# Refuse install if built UI still contains removed multi-track chrome.
+$distJs = Get-ChildItem -LiteralPath (Join-Path $dst "frontend\dist\assets") -Filter "*.js" -ErrorAction SilentlyContinue
+foreach ($js in $distJs) {
+    $txt = Get-Content -LiteralPath $js.FullName -Raw -ErrorAction SilentlyContinue
+    if (-not $txt) { continue }
+    if ($txt -match "AI sáv|AI SÁV|\+ V1 klip|\+ B-roll|tl-polish-btn") {
+        Remove-TempQuiet -Path $robolog
+        Write-Error ("Install refused: dist still contains AI SÁV / + V1 / + B-roll: " + $js.Name)
+    }
 }
 
 # Ensure sample media if present in clone
@@ -141,13 +163,10 @@ Write-Host ""
 Write-Host "Kovetkezo / Next:"
 Write-Host '  cd $env:USERPROFILE\Documents\Videoeditor'
 Write-Host "  Get-Content .\hybrid_cut\SYNC_VERSION.txt"
-Write-Host "  # expect: 2026-10-11-concat-look"
-Write-Host '  $env:HYBRID_RVM_ONNX = "$PWD\models\rvm_resnet50_fp32.onnx"'
-Write-Host "  # start_hybrid_cuda: PATH inject only (no CapCut remount pip upgrade)"
-Write-Host "  .\hybrid_cut\start_hybrid_cuda.ps1"
-Write-Host "  # immediate bypass if remount pip AV: .\run_hybrid.ps1"
-Write-Host "  # opt-in path-only remount: `$env:HYBRID_CALL_REMOUNT='1'; .\hybrid_cut\start_hybrid_cuda.ps1"
-Write-Host "  # Workaround B: `$env:HYBRID_REUSE_PARENT_VENV='1'; .\run_hybrid.ps1"
+Write-Host "  # expect: 2026-10-12-simple-bg3"
+Write-Host "  # Hard-refresh browser: Ctrl+F5 (clear old hashed JS)"
+Write-Host "  .\hybrid_cut\run_hybrid.ps1"
+Write-Host "  # or CUDA path-inject: .\hybrid_cut\start_hybrid_cuda.ps1"
 Write-Host "Open: http://127.0.0.1:3847"
 Write-Host ""
 Write-Host "Megjegyzes: CapCut gyoker = Documents\Videoeditor ; HybridCut = ...\hybrid_cut"

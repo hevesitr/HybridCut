@@ -396,8 +396,8 @@ export default function App() {
         if (st?.media || st?.timeline?.clips?.length) {
           const t = st.timeline?.playhead_sec ?? 0;
           setTSec(t);
-          setViewMode("source");
-          void runPreview(t, st);
+          // simple-bg3: auto Cutout on open so user never sits on „Nincs ember-maszk”.
+          void runPreview(t, st, undefined, { preferCutout: true });
         }
       })
       .catch(() => {
@@ -502,11 +502,7 @@ export default function App() {
       const seedHit = frame.meta?.user_seed ? " · kézi finomítás ✓" : "";
       const ov = (frame.meta?.overlay_layers as unknown[] | undefined)?.length ?? 0;
       const composite = Boolean(frame.meta?.timeline_composite);
-      const ovHit = ov
-        ? composite
-          ? ` · idővonal kompozit V1+V2×${ov}`
-          : ` · B-roll ×${ov}`
-        : "";
+      const ovHit = ov ? (composite ? ` · kompozit ×${ov}` : "") : "";
       // Apex: short human status — tech detail stays under Részletek.
       setNote(
         noteOverride ??
@@ -824,17 +820,17 @@ export default function App() {
         cut: "Klip felvágva",
         move: "Klip áthelyezve",
         select: "Klip kiválasztva — Delete / Backspace = törlés",
-        to_broll: "Csak egy V1 sáv (simple-bg2)",
+        to_broll: "Csak egy V1 sáv",
         to_v1: "Áthelyezve V1-re",
         set_track: "Egy sáv (V1)",
-        ai_polish: "Csak háttéreltávolítás — nincs polírozás",
+        ai_polish: "Csak háttéreltávolítás",
         place: "Klip áthelyezve az idővonalon",
         trim_edge: "Be/Ki trim frissítve",
         set_transform: "Pozíció / méret frissítve",
         reset_transform: "Pozíció visszaállítva (közép · 100%)",
       };
       if (!opts?.quiet) setNote(labels[action] || `Timeline: ${action}`);
-      // simple-bg2: one V1 track only — no second lane / polish
+      // simple-bg3: one V1 track only — no second lane / polish
       if (st.timeline?.clips?.length) await runPreview(t, st);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1546,7 +1542,7 @@ export default function App() {
               </li>
             </ol>
             <h2>Cutout</h2>
-            <p className="lead">Háttéreltávolítás · Gyors alap · egy V1 klip · Export nobg.</p>
+            <p className="lead">Háttéreltávolítás · Gyors/Max · egy klip · Export nobg.</p>
             <ModeSwitcher
               mode={mode}
               disabled={locked || pending}

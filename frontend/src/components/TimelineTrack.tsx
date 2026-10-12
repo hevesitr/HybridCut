@@ -20,9 +20,9 @@ type Props = {
   onTrimEdge?: (clipId: string, edge: "in" | "out", timelineT: number) => void;
   /** Horizontal place / reorder. */
   onPlace?: (clipId: string, timelineStartSec: number) => void;
-  /** Unused in simple-bg (V1 only) — kept for API compat. */
+  /** Unused in simple-bg3 (V1 only) — kept for API compat. */
   onSetTrack?: (clipId: string, track: number, timelineStartSec?: number) => void;
-  /** Unused in simple-bg — AI Polírozás removed from default flow. */
+  /** Unused in simple-bg3 — polish lane removed. */
   onPolish?: (clipId: string) => void;
   onAddClip?: () => void;
   onDelete?: () => void;
@@ -95,7 +95,7 @@ export function TimelineTrack({
     0: { lock: false, hide: false, mute: false },
   });
 
-  // simple-bg2: one V1 lane — ignore any legacy track>=1 clips from old tips
+  // simple-bg3: one V1 lane — ignore any legacy track>=1 clips from old tips
   const v1 = clips.filter((c) => (c.track ?? 0) === 0);
 
   const trackWidth = () => {
@@ -430,7 +430,7 @@ export function TimelineTrack({
       </div>
       {renderLane(v1, "V1", V1_COLORS, "v1", v1TrackRef, 0)}
       <p className="tl-hint">
-        Egy klip · V1 · Delete = törlés · szélek = Be/Ki · háttéreltávolítás · simple-bg2
+        Egy klip · V1 · Delete = törlés · szélek = Be/Ki · háttéreltávolítás
       </p>
     </div>
   );

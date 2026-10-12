@@ -1,5 +1,5 @@
 # start_hybrid_cuda.ps1 - HybridCut CUDA prep + launch (ASCII-only)
-# Stamp: 2026-10-12-simple-bg2 (CPU-first ORT; single V1 BG remove)
+# Stamp: 2026-10-12-simple-bg3 (CPU-first ORT; single V1 BG remove)
 # Default: do NOT call CapCut remount_ort_gpu.ps1 (its pip upgrade can hit Windows
 # OSError access violation). Inject nvidia cudnn/cublas PATH from hybrid + parent
 # site-packages, pin onnxruntime-gpu==1.30.0 (morning-working), probe plugin EP,

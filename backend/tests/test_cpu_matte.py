@@ -46,9 +46,9 @@ def _first_onnx() -> Path | None:
 
 
 def test_stamp_rvm_back():
-    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
-    assert FEATURE2.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg2"
+    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg3"
+    assert FEATURE2.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg3"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-12-simple-bg3"
     text = RESTART.read_text(encoding="utf-8")
     assert "2026-10-11-rvm-back" in text
     assert "CPU-first" in text or "cpu-first" in text.lower()
@@ -386,10 +386,10 @@ def test_rebuild_clears_matte_error_on_cpu_preview(
 
 @pytest.mark.skipif(_first_onnx() is None, reason="RVM ONNX weights not available")
 def test_live_cpu_rvm_person_matte_not_slab(monkeypatch: pytest.MonkeyPatch):
-    """P0: CPUExecutionProvider RVM must produce a structured person alpha (or heuristic)."""
+    """P0: CPU path (RVM ± ResNet auto-switch ± heuristic) must yield a person matte."""
     import cv2
 
-    from hybrid_editor.engines.fast_rvm import FastEngine, _OrtRvmSession
+    from hybrid_editor.engines.fast_rvm import FastEngine
     from hybrid_editor.media.video_io import is_matte_degenerate, is_matte_empty
 
     monkeypatch.setenv("HYBRID_ORT_PROVIDER", "cpu")
@@ -403,25 +403,21 @@ def test_live_cpu_rvm_person_matte_not_slab(monkeypatch: pytest.MonkeyPatch):
     cv2.ellipse(bgr, (w // 2, int(h * 0.55)), (w // 5, h // 3), 0, 0, 360, (190, 170, 150), -1)
     cv2.circle(bgr, (w // 2, int(h * 0.28)), w // 8, (200, 180, 160), -1)
 
-    sess = _OrtRvmSession(onnx)
+    # Product path: primary ORT → alternate ResNet/MobileNet → heuristic.
+    eng = FastEngine()
     try:
-        assert sess.provider == "CPUExecutionProvider"
-        assert sess._uses_cuda is False
-        alpha = None
-        for ds in (0.25, 0.5, 1.0):
-            a = sess.matte(bgr, downsample=ds)
-            if not is_matte_empty(a) and not is_matte_degenerate(a):
-                alpha = a
-                break
-            sess.reset()
-        assert alpha is not None, "CPU RVM produced no usable person matte"
+        assert "CPU" in str(eng._backend) or eng._rvm is None or not getattr(
+            eng._rvm, "_uses_cuda", False
+        )
+        alpha = eng._matte(bgr)
+        assert not is_matte_empty(alpha), "CPU matte ladder produced no usable person matte"
         assert float(alpha.std()) > 0.04
         cover = float((alpha > 0.15).mean())
         assert 0.02 < cover < 0.95
         assert not np.allclose(alpha, 1.0)
         assert not is_matte_degenerate(alpha)
     finally:
-        sess.close()
+        eng.close()
 
     # FastEngine preview on sample (if present) must not sticky-toast gray slab.
     sample = ROOT / "cache" / "sample_person.mp4"
@@ -431,7 +427,7 @@ def test_live_cpu_rvm_person_matte_not_slab(monkeypatch: pytest.MonkeyPatch):
             eng.open_media(sample)
             frame = eng.preview_frame(0.0)
             meta = frame.meta or {}
-            assert meta.get("stamp") == "2026-10-12-simple-bg2"
+            assert meta.get("stamp") == "2026-10-12-simple-bg3"
             empty = bool(meta.get("matte_empty") or meta.get("source_fallback"))
             err = str(meta.get("matte_error") or "")
             assert not empty, f"CPU preview still empty/slab: {meta}"

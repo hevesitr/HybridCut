@@ -206,23 +206,72 @@ def normalize_alpha(alpha: np.ndarray) -> np.ndarray:
     return np.clip(a, 0.0, 1.0)
 
 
+def _matte_border_mean(a: np.ndarray) -> float:
+    h, w = a.shape[:2]
+    if h < 8 or w < 8:
+        return float(a.mean())
+    b = max(2, min(h, w) // 40)
+    border = np.concatenate(
+        [
+            a[:b, :].ravel(),
+            a[-b:, :].ravel(),
+            a[:, :b].ravel(),
+            a[:, -b:].ravel(),
+        ]
+    )
+    return float(border.mean())
+
+
+def _matte_center_mean(a: np.ndarray) -> float:
+    h, w = a.shape[:2]
+    return float(a[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4].mean())
+
+
+def is_closeup_person_matte(alpha: np.ndarray) -> bool:
+    """True for a high-cover silhouette with transparent-ish border (face/hair fill).
+
+    Close-up 1920×1080 talking-head clips often have cover 0.7–0.95 — that must NOT
+    be treated as an all-ones gray slab.
+    """
+    if alpha is None:
+        return False
+    a = normalize_alpha(alpha)
+    if a.size == 0 or a.shape[0] < 8 or a.shape[1] < 8:
+        return False
+    std = float(a.std())
+    if std < 0.04:
+        return False
+    cover = float((a > 0.15).mean())
+    if cover < 0.35:
+        return False
+    center = _matte_center_mean(a)
+    border = _matte_border_mean(a)
+    # Person fills frame: interior opaque, rim softer / punched.
+    return center >= 0.55 and (center - border) >= 0.10 and border <= 0.82
+
+
 def is_matte_degenerate(alpha: np.ndarray) -> bool:
     """True when alpha is a near-uniform full-frame slab (no person silhouette).
 
     Matches user Maszk screenshot: solid light-gray rectangle on checkerboard —
     ``visualize_alpha_matte`` with a≈1 everywhere paints ~210 gray over the frame.
     Cutout then stays fully opaque (BG never punched).
+
+    Close-up face/hair silhouettes (high cover, structured rim) are NOT degenerate.
     """
     if alpha is None:
         return False
     a = normalize_alpha(alpha)
     if a.size == 0:
         return False
+    # Structured close-up person — accept before slab heuristics.
+    if is_closeup_person_matte(a):
+        return False
     cover = float((a > 0.15).mean())
     std = float(a.std())
     mean = float(a.mean())
     opaque = float((a >= 0.99).mean())
-    if opaque >= DEGENERATE_OPAQUE:
+    if opaque >= DEGENERATE_OPAQUE and std < 0.08:
         return True
     if cover >= DEGENERATE_COVER and std < DEGENERATE_STD:
         return True
@@ -231,16 +280,8 @@ def is_matte_degenerate(alpha: np.ndarray) -> bool:
     # Opaque border + near-full cover ⇒ full-frame fill, not a person cutout.
     h, w = a.shape[:2]
     if h >= 8 and w >= 8:
-        b = max(2, min(h, w) // 40)
-        border = np.concatenate(
-            [
-                a[:b, :].ravel(),
-                a[-b:, :].ravel(),
-                a[:, :b].ravel(),
-                a[:, -b:].ravel(),
-            ]
-        )
-        if cover >= 0.85 and float(border.mean()) >= 0.85 and std < 0.12:
+        border_m = _matte_border_mean(a)
+        if cover >= 0.85 and border_m >= 0.85 and std < 0.12:
             return True
     return False
 
