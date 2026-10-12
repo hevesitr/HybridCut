@@ -1,7 +1,7 @@
 # HybridCut simple-bg4 one-shot (Windows)
 # Prefer Agent Store copy (no PAT). Fallback: git pull GitHub tip.
 # Copies -> Documents\Videoeditor\hybrid_cut, purges stale dist, downloads ResNet if missing.
-# ASCII-safe. Paste into PowerShell.
+# ASCII-only (no em-dash / accented chars) so Windows PowerShell parsers do not break.
 
 $ErrorActionPreference = "Stop"
 $TipStamp = "2026-10-12-simple-bg4"
@@ -46,7 +46,7 @@ foreach ($c in $candidates) {
 }
 
 if (-not $src) {
-  Write-Host "Tip stamp not in Agent Store — pulling GitHub hevesitr/HybridCut ..."
+  Write-Host "Tip stamp not in Agent Store - pulling GitHub hevesitr/HybridCut ..."
   $repo = Join-Path $env:USERPROFILE "Documents\HybridCut"
   if (-not (Test-Path -LiteralPath (Join-Path $repo ".git"))) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $repo) | Out-Null
@@ -103,10 +103,11 @@ if (-not $js) { Write-Error "No frontend dist JS" }
 Write-Host ("DIST JS: " + $js.Name)
 $banned = @("index-BGJ2h0CY.js", "index-fyrBYl2A.js", "index-DY2_6z5E.js", "index-DakKRMds.js")
 if ($banned -contains $js.Name) {
-  Write-Error ("Stale dist still present: " + $js.Name + " — purge failed; delete frontend\dist and re-run.")
+  Write-Error ("Stale dist still present: " + $js.Name + " - purge failed; delete frontend\dist and re-run.")
 }
 $sample = Get-Content -LiteralPath $js.FullName -Raw
-if ($sample -match "AI sáv|AI SÁV|\+ V1 klip|\+ B-roll|tl-polish-btn") {
+# ASCII-safe banned chrome check (accented AI sav variants matched loosely)
+if ($sample -match "AI [Ss].[Vv]|\+ V1 klip|\+ B-roll|tl-polish-btn") {
   Write-Error ("Dist still contains multi-track chrome: " + $js.Name)
 }
 Write-Host "VERIFY OK: SYNC + dist have no AI SAV / +V1 / +B-roll"
@@ -115,6 +116,6 @@ Set-Location -LiteralPath $ve
 $env:HYBRID_ORT_PROVIDER = "cpu"
 Write-Host "Starting run_hybrid.ps1 ..."
 Write-Host "Open http://127.0.0.1:3847 then Ctrl+F5"
-Write-Host "Expect: SYNC 2026-10-12-simple-bg4 · only V1 · Cutout person silhouette"
-Write-Host "Gyors auto-retries Max on gray-slab — no need to click Max first."
+Write-Host "Expect: SYNC 2026-10-12-simple-bg4 - only V1 - Cutout person silhouette"
+Write-Host "Gyors auto-retries Max on gray-slab - no need to click Max first."
 .\run_hybrid.ps1
