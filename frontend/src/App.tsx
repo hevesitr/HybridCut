@@ -584,12 +584,16 @@ export default function App() {
             (st as { person_matte_hint_hu?: string }).person_matte_hint_hu ||
             st.person_matte_label_hu ||
             "";
+          const cpuNow =
+            st.rvm?.ort_label_hu === "CPU ORT" || st.rvm?.prefer === "cpu";
           setNote(
             mode === "gyors"
               ? "Gyors = gyors/lágyabb · MobileNet scrub"
-              : personHint
-                ? `Max · ${personHint} · Éles szélek alapból be`
-                : "Max = élesebb export · ResNet50 ha van · Éles szélek alapból be",
+              : cpuNow
+                ? "Max · CPU gyors bake (MobileNet~720) — ETA ~CUDA; full-reshez CUDA EP"
+                : personHint
+                  ? `Max · ${personHint} · Éles szélek alapból be`
+                  : "Max = élesebb export · ResNet50 ha van · Éles szélek alapból be",
           );
           if (mode === "max") {
             // Seed panel available but not required — auto person first.
@@ -994,11 +998,14 @@ export default function App() {
       setStatus(res.status);
       const dur =
         status?.timeline?.duration_sec ?? status?.media?.duration_sec ?? outSec - inSec;
+      const cpuNow =
+        status?.rvm?.ort_label_hu === "CPU ORT" || status?.rvm?.prefer === "cpu";
       const etaNow = bothModeEtas(
         clipDurationSec(inSec, outSec, dur),
         status?.timeline?.fps || status?.media?.fps || 25,
         status?.media?.width || 1280,
         status?.media?.height || 720,
+        { cpuOrt: !!cpuNow },
       )[mode]?.labelHu;
       setNote(
         res.queued
@@ -1060,8 +1067,13 @@ export default function App() {
   // ETA only: if probe missing, assume 720p — never inflate to fake 1080p.
   const etaW = mediaW > 0 ? mediaW : 1280;
   const etaH = mediaH > 0 ? mediaH : 720;
-  const etas = bothModeEtas(bakeSpanSec, mediaFps, etaW, etaH);
-  const fullEtas = bothModeEtas(fullClipSec, mediaFps, etaW, etaH);
+  const cpuOrt =
+    status?.rvm?.ort_label_hu === "CPU ORT" ||
+    status?.rvm?.prefer === "cpu" ||
+    (!!status?.rvm?.cuda_fallback &&
+      /CUDA→CPU|plugin EP|CPU ORT/i.test(String(status.rvm.cuda_fallback)));
+  const etas = bothModeEtas(bakeSpanSec, mediaFps, etaW, etaH, { cpuOrt });
+  const fullEtas = bothModeEtas(fullClipSec, mediaFps, etaW, etaH, { cpuOrt });
   const selectedEta = etas[mode]?.labelHu ?? "Kb. —";
   const rangeLabel = `${Math.max(0, inSec).toFixed(1)}–${Math.max(inSec, outSec).toFixed(1)}s`;
   const rangeIsPartial =
@@ -1081,6 +1093,7 @@ export default function App() {
         mode,
         bakeProgress: status?.bake_progress ?? 0,
         bakeStatus: status?.bake_status ?? "",
+        cpuOrt,
       })
     : 0;
   const remainLabel = status?.bake_running ? formatEtaHu(remainSec) : "";

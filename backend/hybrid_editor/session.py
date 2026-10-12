@@ -909,7 +909,7 @@ class EditorSession:
                     meta_extra: dict[str, Any] = {
                         "matte_empty": empty,
                         "has_alpha_clip": bool(getattr(matte_layer, "has_alpha", False)),
-                        "stamp": "2026-10-12-simple-bg4",
+                        "stamp": "2026-10-12-simple-bg5",
                         **overlay_meta,
                     }
                     if empty:

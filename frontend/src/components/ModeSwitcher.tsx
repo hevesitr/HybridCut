@@ -10,6 +10,7 @@ type Props = {
 export function ModeSwitcher({ mode, disabled, onChange, etaGyors, etaMax }: Props) {
   const gEta = etaGyors && etaGyors !== "Kb. —" ? etaGyors : "Kb. —";
   const mEta = etaMax && etaMax !== "Kb. —" ? etaMax : "Kb. —";
+  // Title hint: Max ETA assumes CPU fast-path when badge is CPU ORT.
   return (
     <div
       className="mode-switch"

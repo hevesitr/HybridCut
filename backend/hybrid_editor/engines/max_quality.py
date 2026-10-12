@@ -87,6 +87,25 @@ class MaxQualityEngine(MattingEngine):
     def set_sharp_edges(self, enabled: bool) -> None:
         self.sharp_edges = bool(enabled)
 
+    def _on_cpu_ort(self) -> bool:
+        """True when live RVM session is CPU (or heuristic) — not CUDA EP."""
+        rvm = getattr(self._fast, "_rvm", None)
+        if rvm is None:
+            return True
+        if bool(getattr(rvm, "_uses_cuda", False)):
+            return False
+        return "CPU" in str(getattr(rvm, "provider", "CPU") or "CPU")
+
+    def _cpu_max_fast_enabled(self) -> bool:
+        """CPU Max bake uses MobileNet@~720 so wall-clock matches CUDA ETA (~43s/10s).
+
+        Opt out: HYBRID_CPU_MAX_FULLRES=1 (slow full-res ResNet on CPU).
+        """
+        if not self._on_cpu_ort():
+            return False
+        raw = (os.environ.get("HYBRID_CPU_MAX_FULLRES") or "").strip().lower()
+        return raw not in {"1", "true", "yes", "full", "fullres"}
+
     def person_matte_label(self) -> str:
         """Clear HU status: MatAnyone2 active vs RVM person-matte fallback."""
         if self._adapter.available:
@@ -398,7 +417,7 @@ class MaxQualityEngine(MattingEngine):
             "source_height": int(self._media.height) if self._media else int(bgr.shape[0]),
             "infer_width": int(bgr.shape[1]),
             "infer_height": int(bgr.shape[0]),
-            "stamp": "2026-10-12-simple-bg4",
+            "stamp": "2026-10-12-simple-bg5",
         }
         if empty and matte_error is None and alpha is not None:
             from hybrid_editor.media.video_io import matte_failure_reason
@@ -473,8 +492,40 @@ class MaxQualityEngine(MattingEngine):
     ) -> BakeResult:
         assert self._media is not None
         self.reset()
-        # Full-res RVM for Max bake (sibling may also touch in/out range — keep this local).
-        self._fast.set_full_res_matte(True)
+        # CUDA Max: full-res ResNet. CPU Max: MobileNet@~720 so ~43s ETA is real
+        # (full-res ResNet on CPU was ~15 min for 10s@24fps).
+        cpu_fast = self._cpu_max_fast_enabled()
+        try:
+            bake_long = int(os.environ.get("HYBRID_CPU_MAX_LONG", "720") or "720")
+        except ValueError:
+            bake_long = 720
+        bake_long = max(480, min(1080, bake_long))
+        own_fast: Optional[FastEngine] = None
+        old_fast = self._fast
+        if cpu_fast:
+            own_fast = FastEngine(prefer_quality=False)
+            own_fast.set_full_res_matte(False)
+            own_fast._matte_target_long = bake_long  # noqa: SLF001
+            own_fast.open_media(Path(self._media.path))
+            self._fast = own_fast
+            logger.warning(
+                "CPU Max bake fast-path: MobileNet long=%d (target ~CUDA ETA; "
+                "set HYBRID_CPU_MAX_FULLRES=1 for slow full-res)",
+                bake_long,
+            )
+        else:
+            self._fast.set_full_res_matte(True)
+
+        def _restore_fast() -> None:
+            nonlocal own_fast
+            if own_fast is not None:
+                try:
+                    own_fast.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._fast = old_fast
+                own_fast = None
+
         path = Path(self._media.path)
         fps = self._media.fps or 25.0
         start_t = max(0.0, float(in_sec))
@@ -482,6 +533,7 @@ class MaxQualityEngine(MattingEngine):
         end_t = max(start_t, end_t)
         cap = cv2.VideoCapture(str(path))
         if not cap.isOpened():
+            _restore_fast()
             raise RuntimeError(f"Cannot open {path}")
         cap.set(cv2.CAP_PROP_POS_MSEC, start_t * 1000.0)
         written = 0
@@ -515,11 +567,22 @@ class MaxQualityEngine(MattingEngine):
                 cur_t = start_t + (idx / fps)
                 if cur_t > end_t + 1e-6:
                     break
-                # Full source resolution polish/bake (no proxy downsample before matte).
-                alpha = self._polish(bgr, warmup=(idx == 0))
-                # Mid-clip re-warmup on strong drift vs seed
-                if idx > 0 and idx % 48 == 0 and self._seed is not None:
-                    drift = float(np.mean(np.abs(alpha - self._seed)))
+                # CPU fast: matte/polish at bake_long, alpha upscaled to native for MOV.
+                bgr_m = downscale_long_side(bgr, bake_long) if cpu_fast else bgr
+                alpha = self._polish(bgr_m, warmup=(idx == 0))
+                if alpha.shape[:2] != bgr.shape[:2]:
+                    alpha = cv2.resize(
+                        alpha, (bgr.shape[1], bgr.shape[0]), interpolation=cv2.INTER_LINEAR
+                    )
+                # Mid-clip re-warmup on strong drift vs seed (rarer on CPU fast-path).
+                rewarm_every = 96 if cpu_fast else 48
+                if idx > 0 and idx % rewarm_every == 0 and self._seed is not None:
+                    seed_u = self._seed
+                    if seed_u.shape[:2] != alpha.shape[:2]:
+                        seed_u = cv2.resize(
+                            seed_u, (alpha.shape[1], alpha.shape[0]), interpolation=cv2.INTER_LINEAR
+                        )
+                    drift = float(np.mean(np.abs(alpha - seed_u)))
                     if drift > 0.28:
                         if progress:
                             progress(
@@ -527,7 +590,13 @@ class MaxQualityEngine(MattingEngine):
                                 f"Max re-warmup… {written}/{total_est} frame",
                             )
                         self._fast.reset()
-                        alpha = self._polish(bgr, warmup=True)
+                        alpha = self._polish(bgr_m, warmup=True)
+                        if alpha.shape[:2] != bgr.shape[:2]:
+                            alpha = cv2.resize(
+                                alpha,
+                                (bgr.shape[1], bgr.shape[0]),
+                                interpolation=cv2.INTER_LINEAR,
+                            )
                 # CapCut RGB fringe / cyan + bright spill before writing BGRA
                 cut_bgr = bgr
                 if self.sharp_edges:
@@ -673,6 +742,7 @@ class MaxQualityEngine(MattingEngine):
 
         audio_note = " · audio AAC" if audio_ok else ""
         sharp_note = " · éles szélek · apex" if self.sharp_edges else ""
+        cpu_note = f" · CPU gyors Max@{bake_long}" if cpu_fast else " · full-res"
         mov_note = f" · {prores}" if prores else " · HIÁNYZIK: *_full_nobg.mov"
         dur_note = f" · {end_t - start_t:.2f}s / {written} frame"
         weights = self._fast.capabilities().weights_path
@@ -680,7 +750,7 @@ class MaxQualityEngine(MattingEngine):
         msg_core = (
             f"Kész: {Path(prores).name}" if prores else "SIKERTELEN: nincs *_full_nobg.mov (ffmpeg?)"
         )
-        return BakeResult(
+        result = BakeResult(
             ok=written > 0 and bool(prores),
             out_dir=str(out_dir.resolve()),
             frames_written=written,
@@ -688,7 +758,7 @@ class MaxQualityEngine(MattingEngine):
             backend=self._backend,
             message=(
                 f"{msg_core} · {written} frame{audio_note}"
-                f"{sharp_note}{mov_note}{dur_note}{w_note} (full-res · stream · {self._backend})"
+                f"{sharp_note}{cpu_note}{mov_note}{dur_note}{w_note} (stream · {self._backend})"
             ),
             alpha_preview=(str(alpha_dir / "000000.png") if alpha_dir is not None and written else None),
             preview_mp4=preview_mp4,
@@ -699,7 +769,9 @@ class MaxQualityEngine(MattingEngine):
                 "audio": audio_ok,
                 "sharp_edges": self.sharp_edges,
                 "full_res_alpha": True,
-                "full_res_rvm": bool(getattr(self._fast, "_full_res_matte", False)),
+                "full_res_rvm": bool(getattr(self._fast, "_full_res_matte", False)) and not cpu_fast,
+                "cpu_max_fast": bool(cpu_fast),
+                "cpu_max_long": bake_long if cpu_fast else None,
                 "color_polish": bool(self.sharp_edges),
                 "peak_spec": bool(self.sharp_edges),
                 "apex_spec": bool(self.sharp_edges),
@@ -709,9 +781,11 @@ class MaxQualityEngine(MattingEngine):
                 "frames_total_est": total_est,
                 "max_frames_cap": max_frames,
                 "mov_path": prores,
-                "stamp": "2026-10-10-apex",
+                "stamp": "2026-10-12-simple-bg5",
             },
         )
+        _restore_fast()
+        return result
 
     def _bake_matanyone2(
         self,

@@ -34,9 +34,19 @@ export function resolutionFactor(width: number, height: number, mode: BakeMode):
   return Math.min(2.4, Math.max(0.5, mp ** 0.88));
 }
 
-export function secPerFrame(width: number, height: number, mode: BakeMode): number {
+export function secPerFrame(
+  width: number,
+  height: number,
+  mode: BakeMode,
+  opts?: { cpuOrt?: boolean },
+): number {
   const base = mode === "gyors" ? GYORS_SEC_PER_FRAME_1080P : MAX_SEC_PER_FRAME_1080P;
-  return base * resolutionFactor(width, height, mode);
+  let spf = base * resolutionFactor(width, height, mode);
+  // CPU Max uses MobileNet@~720 fast-path (~CUDA wall clock). Gyors on CPU is slower.
+  if (opts?.cpuOrt) {
+    spf *= mode === "max" ? 1.15 : 2.4;
+  }
+  return spf;
 }
 
 export function estimateBakeSec(
@@ -45,10 +55,11 @@ export function estimateBakeSec(
   width: number,
   height: number,
   mode: BakeMode,
+  opts?: { cpuOrt?: boolean },
 ): number {
   const n = frameCount(durationSec, fps);
   if (n <= 0) return 0;
-  const matte = n * secPerFrame(width, height, mode);
+  const matte = n * secPerFrame(width, height, mode, opts);
   const mux = MUX_FIXED_SEC + MUX_PER_VIDEO_SEC * Math.max(0, durationSec);
   return matte + mux;
 }
@@ -90,18 +101,21 @@ export function remainingBakeSec(opts: {
   mode: BakeMode;
   bakeProgress?: number;
   bakeStatus?: string;
+  cpuOrt?: boolean;
 }): number {
+  const cpuOpts = { cpuOrt: !!opts.cpuOrt };
   const total = estimateBakeSec(
     opts.durationSec,
     opts.fps,
     opts.width,
     opts.height,
     opts.mode,
+    cpuOpts,
   );
   const parsed = parseBakeFrames(opts.bakeStatus || "");
   if (parsed) {
     const left = Math.max(0, parsed.total - parsed.done);
-    const spf = secPerFrame(opts.width, opts.height, opts.mode);
+    const spf = secPerFrame(opts.width, opts.height, opts.mode, cpuOpts);
     const mux = MUX_FIXED_SEC + MUX_PER_VIDEO_SEC * Math.max(0, opts.durationSec);
     if (left <= 0) {
       const prog = Math.max(0, Math.min(1, opts.bakeProgress ?? 0));
@@ -121,11 +135,12 @@ export function bothModeEtas(
   fps: number,
   width: number,
   height: number,
+  opts?: { cpuOrt?: boolean },
 ): Record<BakeMode, { seconds: number; labelHu: string }> {
   const modes: BakeMode[] = ["gyors", "max"];
   const out = {} as Record<BakeMode, { seconds: number; labelHu: string }>;
   for (const mode of modes) {
-    const seconds = estimateBakeSec(durationSec, fps, width, height, mode);
+    const seconds = estimateBakeSec(durationSec, fps, width, height, mode, opts);
     out[mode] = { seconds, labelHu: formatEtaHu(seconds) };
   }
   return out;

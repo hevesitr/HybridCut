@@ -50,9 +50,19 @@ def resolution_factor(width: int, height: int, mode: Mode) -> float:
     return min(2.4, max(0.5, mp**0.88))
 
 
-def sec_per_frame(width: int, height: int, mode: Mode) -> float:
+def sec_per_frame(
+    width: int,
+    height: int,
+    mode: Mode,
+    *,
+    cpu_ort: bool = False,
+) -> float:
     base = GYORS_SEC_PER_FRAME_1080P if mode == "gyors" else MAX_SEC_PER_FRAME_1080P
-    return base * resolution_factor(width, height, mode)
+    spf = base * resolution_factor(width, height, mode)
+    # CPU Max → MobileNet@~720 fast-path (~CUDA wall clock). Gyors on CPU slower.
+    if cpu_ort:
+        spf *= 1.15 if mode == "max" else 2.4
+    return spf
 
 
 def estimate_bake_sec(
@@ -61,12 +71,14 @@ def estimate_bake_sec(
     width: int,
     height: int,
     mode: Mode,
+    *,
+    cpu_ort: bool = False,
 ) -> float:
     """Estimated wall-clock seconds for háttéreltávolítás bake (+ light mux)."""
     n = frame_count(duration_sec, fps)
     if n <= 0:
         return 0.0
-    matte = n * sec_per_frame(width, height, mode)
+    matte = n * sec_per_frame(width, height, mode, cpu_ort=cpu_ort)
     mux = MUX_FIXED_SEC + MUX_PER_VIDEO_SEC * max(0.0, float(duration_sec))
     return matte + mux
 
@@ -115,14 +127,15 @@ def remaining_bake_sec(
     mode: Mode,
     bake_progress: float = 0.0,
     bake_status: str = "",
+    cpu_ort: bool = False,
 ) -> float:
     """Remaining ETA while bake runs — prefer frame counters, else progress."""
-    total = estimate_bake_sec(duration_sec, fps, width, height, mode)
+    total = estimate_bake_sec(duration_sec, fps, width, height, mode, cpu_ort=cpu_ort)
     parsed = parse_bake_frames(bake_status)
     if parsed:
         done, n = parsed
         left = max(0, n - done)
-        spf = sec_per_frame(width, height, mode)
+        spf = sec_per_frame(width, height, mode, cpu_ort=cpu_ort)
         # After last frame, mux still remains (progress often jumps near 0.88+).
         mux = MUX_FIXED_SEC + MUX_PER_VIDEO_SEC * max(0.0, float(duration_sec))
         if left <= 0:
@@ -145,10 +158,14 @@ def both_mode_etas(
     fps: float,
     width: int,
     height: int,
+    *,
+    cpu_ort: bool = False,
 ) -> dict[str, dict[str, float | str]]:
     """Convenience: Gyors + Max estimates with HU labels."""
     out: dict[str, dict[str, float | str]] = {}
     for mode in ("gyors", "max"):
-        sec = estimate_bake_sec(duration_sec, fps, width, height, mode)  # type: ignore[arg-type]
+        sec = estimate_bake_sec(
+            duration_sec, fps, width, height, mode, cpu_ort=cpu_ort  # type: ignore[arg-type]
+        )
         out[mode] = {"seconds": sec, "label_hu": format_eta_hu(sec)}
     return out

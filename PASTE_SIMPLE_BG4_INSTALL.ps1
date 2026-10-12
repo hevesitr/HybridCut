@@ -4,7 +4,7 @@
 # ASCII-only (no em-dash / accented chars) so Windows PowerShell parsers do not break.
 
 $ErrorActionPreference = "Stop"
-$TipStamp = "2026-10-12-simple-bg4"
+$TipStamp = "2026-10-12-simple-bg5"
 $StoreId = "bc-41930eab-1501-4c19-acf3-0c9d63afbf4d"
 
 Write-Host "=== HybridCut simple-bg4 install ==="
@@ -101,7 +101,7 @@ $assets = Get-ChildItem -LiteralPath (Join-Path $ve "frontend\dist\assets") -Fil
 $js = $assets | Select-Object -First 1
 if (-not $js) { Write-Error "No frontend dist JS" }
 Write-Host ("DIST JS: " + $js.Name)
-$banned = @("index-BGJ2h0CY.js", "index-fyrBYl2A.js", "index-DY2_6z5E.js", "index-DakKRMds.js")
+$banned = @("index-BGJ2h0CY.js", "index-fyrBYl2A.js", "index-DY2_6z5E.js", "index-DakKRMds.js", "index-7OPITa-N.js")
 if ($banned -contains $js.Name) {
   Write-Error ("Stale dist still present: " + $js.Name + " - purge failed; delete frontend\dist and re-run.")
 }
@@ -116,6 +116,6 @@ Set-Location -LiteralPath $ve
 $env:HYBRID_ORT_PROVIDER = "cpu"
 Write-Host "Starting run_hybrid.ps1 ..."
 Write-Host "Open http://127.0.0.1:3847 then Ctrl+F5"
-Write-Host "Expect: SYNC 2026-10-12-simple-bg4 - only V1 - Cutout person silhouette"
+Write-Host "Expect: SYNC 2026-10-12-simple-bg5 - only V1 - Cutout person silhouette"
 Write-Host "Gyors auto-retries Max on gray-slab - no need to click Max first."
 .\run_hybrid.ps1
