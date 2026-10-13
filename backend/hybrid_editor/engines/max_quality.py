@@ -488,7 +488,7 @@ class MaxQualityEngine(MattingEngine):
             "source_height": int(self._media.height) if self._media else int(bgr.shape[0]),
             "infer_width": int(bgr.shape[1]),
             "infer_height": int(bgr.shape[0]),
-            "stamp": "2026-10-13-peak-cutout",
+            "stamp": "2026-10-13-peak-ui",
         }
         if empty and matte_error is None and alpha is not None:
             from hybrid_editor.media.video_io import matte_failure_reason
@@ -884,7 +884,7 @@ class MaxQualityEngine(MattingEngine):
                 "frames_total_est": total_est,
                 "max_frames_cap": max_frames,
                 "mov_path": prores,
-                "stamp": "2026-10-13-peak-cutout",
+                "stamp": "2026-10-13-peak-ui",
             },
         )
         _restore_fast()

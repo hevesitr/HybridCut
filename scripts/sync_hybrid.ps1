@@ -7,13 +7,13 @@
 #   & "$env:LOCALAPPDATA\Cursor\AgentStores\cursor_agent_stores\bc-41930eab-1501-4c19-acf3-0c9d63afbf4d\files\docs\capcut-features\sync_hybrid.ps1"
 #   cd $env:USERPROFILE\Documents\Videoeditor
 #   Get-Content .\hybrid_cut\SYNC_VERSION.txt
-#   # expect tip stamp: 2026-10-13-peak-cutout
+#   # expect tip stamp: 2026-10-13-peak-ui
 #   .\run_hybrid.ps1
 
 $ErrorActionPreference = "Stop"
 
 # Tip this script MUST install. Stale AgentStores (run-ps1 / rvm-back) are rejected.
-$TipStamp = "2026-10-13-peak-cutout"
+$TipStamp = "2026-10-13-peak-ui"
 $StaleStamps = @(
     "2026-10-11-run-ps1",
     "2026-10-11-rvm-back",
@@ -198,14 +198,14 @@ function Find-HybridSrc {
         return @{ Src = $tipHits[0]; Tried = $tried; Stamp = (Get-SrcStamp $tipHits[0]) }
     }
 
-    # No tip tree — report stale finds so user refreshes Agent Store.
+    # No tip tree - report stale finds so user refreshes Agent Store.
     if ($otherHits.Count -gt 0) {
         $st = Get-SrcStamp $otherHits[0]
         Write-Host ""
         Write-Host ("HIBA: tip " + $TipStamp + " nincs a helyi Agent Store-ban.")
         Write-Host ("Talalt regi forras: " + $otherHits[0] + " (SYNC=" + $st + ")")
         Write-Host "Nyisd ujra a Cursor-t / varj amig a Cloud Agent Store frissul, majd futtasd ujra."
-        Write-Error ("Tip stamp missing locally — refuse to install stale " + $st)
+        Write-Error ("Tip stamp missing locally - refuse to install stale " + $st)
     }
 
     return @{ Src = $null; Tried = $tried; Stamp = $null }
@@ -231,20 +231,20 @@ function Assert-HybridDst {
         Write-Error "Sync incomplete - missing files listed above."
     }
     $verDst = Join-Path $Dest "SYNC_VERSION.txt"
-    # Force tip stamp onto DST — never leave an older SYNC from a partial robocopy.
+    # Force tip stamp onto DST - never leave an older SYNC from a partial robocopy.
     Set-Content -LiteralPath $verDst -Value ($ExpectedStamp + "`n") -Encoding ascii -NoNewline
     Copy-Item -LiteralPath $verDst -Destination (Join-Path $Dest "SYNC_VERSION") -Force
     $stamp = (Get-Content -LiteralPath $verDst -Raw).Trim()
     if ($stamp -ne $ExpectedStamp) {
         Write-Error ("SYNC_VERSION mismatch after sync: got '" + $stamp + "' expected '" + $ExpectedStamp + "'")
     }
-    # Refuse obvious stale UI markers (AI SÁV lane in built JS of old tips).
+    # Refuse obvious stale UI markers (AI SAV lane in built JS of old tips).
     $distJs = Get-ChildItem -Path (Join-Path $Dest "frontend\dist\assets") -Filter "index-*.js" -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($distJs) {
         $sample = Get-Content -LiteralPath $distJs.FullName -Raw -ErrorAction SilentlyContinue
         if ($sample -and ($sample -match "tl-polish-btn" -or $sample -match "renderLane\(v2")) {
-            Write-Error ("DST dist still looks like AI-sav tip (" + $distJs.Name + ") — Agent Store stale; re-open Cursor.")
+            Write-Error ("DST dist still looks like AI-sav tip (" + $distJs.Name + ") - Agent Store stale; re-open Cursor.")
         }
         Write-Host ("DIST: " + $distJs.Name)
     }
@@ -285,7 +285,7 @@ if ($src) {
     Write-Host ("SRC: " + $src)
     Write-Host ("SRC SYNC: " + $srcStamp)
     if (-not (Test-TipStamp $srcStamp)) {
-        Write-Error ("Refuse stale SRC SYNC='" + $srcStamp + "' — need " + $TipStamp)
+        Write-Error ("Refuse stale SRC SYNC='" + $srcStamp + "' - need " + $TipStamp)
     }
 
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
@@ -314,7 +314,7 @@ if ($src) {
         Copy-Item -LiteralPath $sampleSrc -Destination (Join-Path $sampleDstDir "sample_person.mp4") -Force
     }
 
-    # Always re-stamp DST from tip — never leave run-ps1 SYNC if SRC was correct.
+    # Always re-stamp DST from tip - never leave run-ps1 SYNC if SRC was correct.
     $srcVer = Join-Path $src "SYNC_VERSION.txt"
     if (Test-Path -LiteralPath $srcVer) {
         Copy-Item -LiteralPath $srcVer -Destination (Join-Path $dst "SYNC_VERSION.txt") -Force

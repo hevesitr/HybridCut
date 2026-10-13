@@ -13,7 +13,7 @@ HTML = ROOT / "frontend" / "index.html"
 
 
 def test_sync_stamp_concat_flow():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-peak-cutout"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-peak-ui"
 
 
 def test_app_result_card_and_explorer():
@@ -38,10 +38,13 @@ def test_app_result_card_and_explorer():
     # Compact chip labels + apex Max copy
     assert 'label: status?.mode === "max" ? "Max" : "Gyors"' in text
     assert "APEX polish" in text or "apex polish" in text
-    # CapCut-simple one-click flow
-    assert "Megnyitás → auto Cutout → Exportálás" in text
+    # CapCut-simple one-click flow (peak-ui copy)
+    assert "Megnyitás → Cutout → Export" in text or "Megnyitás → Előnézet Cutout → Export" in text
     assert "flow-steps" in text
     assert "flow-num" in text
+    assert "1 · Megnyitás" in text
+    assert "2 · Előnézet" in text or "2 · Előnézet Cutout" in text
+    assert "3 · Exportálás" in text
     # ETA on Gyors/Max mode cards + slim Be/Ki strip (no duplicate eta-pair cards in rail)
     assert "export-eta" in text
     assert "eta-pair" not in text  # decluttered — ETA lives on ModeSwitcher
@@ -77,12 +80,13 @@ def test_css_result_and_checker_motion():
     assert ".flow-steps" in css
     assert "@keyframes cta-glow" in css
     assert "--accent: #ff7a1a" in css
-    assert "--accent-2: #b8f000" in css
-    assert "Syne" in css
-    assert "Figtree" in css
+    assert "--accent-2: #c8f000" in css or "--accent-2: #b8f000" in css
+    assert "Sora" in css
+    assert "DM Sans" in css
     assert ".eta-pair" in css  # retained (hidden) for contract / reuse
     assert ".export-eta" in css
     assert ".mode-eta" in css
+    assert "peak-ui" in css
     # layout-fix retained: no 1fr intel void; preview fills; timeline dock
     assert "intel-strip" in css
     assert "timeline-dock" in css
@@ -96,7 +100,15 @@ def test_css_result_and_checker_motion():
     assert ".empty-workspace" in css
     assert ".empty-drop" in css
     assert "min(720px" not in css
-    assert "person-restore" in css or "auto-person" in css or "person-fix2" in css or "look-peak" in css or "ai-tracks" in css
+    assert (
+        "person-restore" in css
+        or "auto-person" in css
+        or "person-fix2" in css
+        or "look-peak" in css
+        or "ai-tracks" in css
+        or "peak-ui" in css
+        or "peak-cutout" in css
+    )
     assert "@keyframes playhead-glow" in css
     assert "@keyframes stage-focus" in css
     assert "--ink-tl" in css
@@ -107,8 +119,8 @@ def test_css_result_and_checker_motion():
 
 def test_fonts_loaded():
     html = HTML.read_text(encoding="utf-8")
-    assert "Syne" in html
-    assert "Figtree" in html
+    assert "Sora" in html
+    assert "DM+Sans" in html or "DM Sans" in html
 
 
 def test_readme_mentions_concat_flow_stamp():

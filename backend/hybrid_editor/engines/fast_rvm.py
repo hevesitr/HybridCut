@@ -1619,8 +1619,17 @@ class FastEngine(MattingEngine):
             matte_error = matte_failure_reason(alpha)
         # Annotate inference size — never claim 1080p when src was smaller.
         infer_h, infer_w = int(bgr.shape[0]), int(bgr.shape[1])
+        # peak-ui: display-boost so Gyors Cutout instantly shows recognition working.
+        alpha_vis = alpha
+        if alpha is not None and not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
+            try:
+                from hybrid_editor.engines.peak_cutout import preview_boost_person_alpha
+
+                alpha_vis = preview_boost_person_alpha(alpha)
+            except Exception:  # noqa: BLE001
+                alpha_vis = alpha
         try:
-            jpg, png, w, h, src, empty = encode_preview_pair(bgr, alpha)
+            jpg, png, w, h, src, empty = encode_preview_pair(bgr, alpha_vis)
         except Exception as exc:  # noqa: BLE001
             logger.warning("preview encode failed — source-only: %s", exc)
             jpg, png, w, h, src, empty = encode_source_only_preview(bgr)
@@ -1645,11 +1654,12 @@ class FastEngine(MattingEngine):
             "proxy_lanes": lane_meta,
             "matte_empty": empty,
             "matte_recovered": bool(recovered and not empty),
+            "preview_boost": bool(not empty and alpha_vis is not alpha),
             "source_width": src_w,
             "source_height": src_h,
             "infer_width": infer_w,
             "infer_height": infer_h,
-            "stamp": "2026-10-13-peak-cutout",
+            "stamp": "2026-10-13-peak-ui",
         }
         if matte_error and empty:
             meta["matte_error"] = matte_error

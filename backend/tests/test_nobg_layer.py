@@ -35,7 +35,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_nobg_layer():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-peak-cutout"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-peak-ui"
 
 
 def test_looks_like_alpha_media():

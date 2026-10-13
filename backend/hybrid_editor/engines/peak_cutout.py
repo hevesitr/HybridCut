@@ -243,6 +243,31 @@ def peak_refine_alpha(
     return a
 
 
+def preview_boost_person_alpha(alpha: np.ndarray) -> np.ndarray:
+    """Gyors/Előnézet: make the person silhouette pop on checker instantly.
+
+    Soft MobileNet mattes can look like a faint ghost. Mild mid-band lift +
+    edge crisp for *display only* — bake still uses the raw/polished matte path.
+    """
+    a = _as_hw_float(alpha)
+    if float(a.max()) < 0.05:
+        return a
+    # Lift soft person body so Cutout reads clearly against checker.
+    body = (a > 0.18).astype(np.float32)
+    body = cv2.GaussianBlur(body, (0, 0), sigmaX=1.1)
+    lifted = np.clip(a + body * 0.18 * (1.0 - a), 0.0, 1.0)
+    # Keep hair band; crush detached fog so recognition looks intentional.
+    hard = (lifted >= 0.45).astype(np.uint8)
+    try:
+        near = cv2.dilate(hard, np.ones((5, 5), np.uint8), iterations=2)
+    except Exception:  # noqa: BLE001
+        near = hard
+    out = lifted.copy()
+    far_soft = (out > 0.04) & (out < 0.40) & (near == 0)
+    out[far_soft] *= 0.25
+    return peak_edge_crisp(out, strength=0.38)
+
+
 def extract_fgr_bgr(outs: list, session: object, h: int, w: int) -> Optional[np.ndarray]:
     """Pull RVM ``fgr`` RGB→BGR uint8 when present (PeterL1n layout)."""
     try:

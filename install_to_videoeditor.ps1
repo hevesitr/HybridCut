@@ -82,7 +82,7 @@ New-Item -ItemType Directory -Force -Path $dst | Out-Null
 Write-Host ("SRC: " + $src)
 Write-Host ("DST: " + $dst)
 
-# simple-bg3: purge stale frontend/dist so old hashed JS (AI SÁV / + V1 / + B-roll) cannot linger.
+# simple-bg3: purge stale frontend/dist so old hashed JS (AI SAV / + V1 / + B-roll) cannot linger.
 $dstDist = Join-Path $dst "frontend\dist"
 if (Test-Path -LiteralPath $dstDist) {
     Write-Host ("PURGE stale dist: " + $dstDist)
@@ -112,9 +112,9 @@ $distJs = Get-ChildItem -LiteralPath (Join-Path $dst "frontend\dist\assets") -Fi
 foreach ($js in $distJs) {
     $txt = Get-Content -LiteralPath $js.FullName -Raw -ErrorAction SilentlyContinue
     if (-not $txt) { continue }
-    if ($txt -match "AI sáv|AI SÁV|\+ V1 klip|\+ B-roll|tl-polish-btn") {
+    if ($txt -match "AI sav|AI SAV|\+ V1 klip|\+ B-roll|tl-polish-btn") {
         Remove-TempQuiet -Path $robolog
-        Write-Error ("Install refused: dist still contains AI SÁV / + V1 / + B-roll: " + $js.Name)
+        Write-Error ("Install refused: dist still contains AI SAV / + V1 / + B-roll: " + $js.Name)
     }
 }
 
@@ -163,7 +163,7 @@ Write-Host ""
 Write-Host "Kovetkezo / Next:"
 Write-Host '  cd $env:USERPROFILE\Documents\Videoeditor'
 Write-Host "  Get-Content .\hybrid_cut\SYNC_VERSION.txt"
-Write-Host "  # expect: 2026-10-13-peak-cutout"
+Write-Host "  # expect: 2026-10-13-peak-ui"
 Write-Host "  # Hard-refresh browser: Ctrl+F5 (clear old hashed JS)"
 Write-Host "  .\hybrid_cut\run_hybrid.ps1"
 Write-Host "  # or CUDA path-inject: .\hybrid_cut\start_hybrid_cuda.ps1"

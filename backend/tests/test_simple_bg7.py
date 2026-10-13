@@ -9,7 +9,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
-STAMP = "2026-10-13-peak-cutout"
+STAMP = "2026-10-13-peak-ui"
 SYNC = ROOT / "SYNC_VERSION.txt"
 START = ROOT / "start_hybrid_cuda.ps1"
 RUN = ROOT / "run_hybrid.ps1"

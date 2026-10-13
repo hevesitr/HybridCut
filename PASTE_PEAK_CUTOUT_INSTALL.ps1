@@ -4,7 +4,7 @@
 # ASCII-only (no em-dash / accented chars) so Windows PowerShell parsers do not break.
 
 $ErrorActionPreference = "Stop"
-$TipStamp = "2026-10-13-peak-cutout"
+$TipStamp = "2026-10-13-peak-ui"
 $StoreId = "bc-41930eab-1501-4c19-acf3-0c9d63afbf4d"
 
 Write-Host "=== HybridCut peak-cutout install ==="
@@ -117,7 +117,7 @@ Set-Location -LiteralPath $ve
 # Do NOT force HYBRID_ORT_PROVIDER=cpu - that blocked morning CUDA forever.
 Write-Host "Starting start_hybrid_cuda.ps1 (probe + launch) ..."
 Write-Host "Open http://127.0.0.1:3847 then Ctrl+F5"
-Write-Host "Expect: SYNC 2026-10-13-peak-cutout - only V1 - Cutout person silhouette"
+Write-Host "Expect: SYNC 2026-10-13-peak-ui - only V1 - Cutout person silhouette"
 Write-Host "Peak cutout: guided upsample + flow temporal + fgr edges. Badge RVM CUDA when probe OK."
 if (Test-Path -LiteralPath ".\start_hybrid_cuda.ps1") {
   .\start_hybrid_cuda.ps1

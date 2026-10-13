@@ -1182,7 +1182,7 @@ export default function App() {
 
   if (!hasMedia) {
     return (
-      <div className="app empty concat-home look-peak matte-visible rvm-matte">
+      <div className="app empty concat-home look-peak matte-visible rvm-matte peak-ui">
         {dragOver ? (
           <div className="drop-overlay">
             <strong>Ejtés: videó betöltése</strong>
@@ -1192,6 +1192,7 @@ export default function App() {
           <div className="topbar-left">
             <div className="brand">
               <div className="brand-mark">HybridCut</div>
+              <span className="brand-sub">cutout</span>
             </div>
             <span
               className={`gpu-chip${gpuOrtChip(status).warn ? " warn" : ""}`}
@@ -1255,9 +1256,10 @@ export default function App() {
           <section className="stage empty-stage home-stage">
             <div className="empty-drop home-projects" role="region" aria-label="Projektek">
               <div className="empty-drop-brand brand-mark">HybridCut</div>
-              <p className="empty-drop-title">Projektek</p>
+              <p className="empty-drop-kicker">helyi cutout szerkesztő</p>
+              <p className="empty-drop-title">Egy klip. Tiszta kivágás.</p>
               <p className="empty-drop-sub">
-                Húzd ide a videót, vagy indíts új projektet. Megnyitás → Cutout → Export · C:\bgcut
+                Húzd ide a videót — Megnyitás → Cutout → Export. Nobg a C:\bgcut mappába.
               </p>
               <div className="home-project-actions">
                 <button
@@ -1294,13 +1296,14 @@ export default function App() {
   }
 
   return (
-    <div className="app look-peak matte-visible rvm-matte">
+    <div className="app look-peak matte-visible rvm-matte peak-ui">
       {/* Compact editor chrome: topbar + workspace only (no separate 1fr intel row). look-peak visual shell. */}
 
       <header className="topbar">
         <div className="topbar-left">
           <div className="brand">
             <div className="brand-mark">HybridCut</div>
+            <span className="brand-sub">cutout</span>
           </div>
           <span
             className={`gpu-chip${gpuOrtChip(status).warn ? " warn" : ""}`}

@@ -49,9 +49,9 @@ def _write_person_clip(path: Path, n: int = 8) -> None:
 
 
 def test_stamp_and_docs():
-    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-13-peak-cutout"
-    assert FEATURE_RESTORE.read_text(encoding="utf-8").strip() == "2026-10-13-peak-cutout"
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-peak-cutout"
+    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-13-peak-ui"
+    assert FEATURE_RESTORE.read_text(encoding="utf-8").strip() == "2026-10-13-peak-ui"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-peak-ui"
     assert RESTART.is_file()
     restart = RESTART.read_text(encoding="utf-8")
     assert "2026-10-11-cuda-restore" in restart
