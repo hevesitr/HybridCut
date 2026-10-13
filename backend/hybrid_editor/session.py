@@ -166,13 +166,23 @@ class EditorSession:
             self.engine.set_user_seed(None)
 
     def _preview_matte_long(self) -> int:
-        """Long-side for timeline composite matte decode — Max keeps near-4K detail."""
+        """Long-side for timeline composite matte decode.
+
+        preview-fast: CPU Max / Gyors stay ≤720 so Előnézet is not a mini-bake.
+        """
+        prefer = (os.environ.get("HYBRID_ORT_PROVIDER") or "cpu").strip().lower()
+        on_cpu = prefer in {"cpu", "cpuexecutionprovider", ""}
+        if on_cpu:
+            try:
+                return max(320, min(720, int(os.environ.get("HYBRID_CPU_MAX_PREVIEW_LONG", "720") or "720")))
+            except ValueError:
+                return 720
         if self.mode is EngineMode.MAX and self.sharp_edges:
             try:
                 return max(960, int(os.environ.get("HYBRID_MAX_PREVIEW_LONG", "1440") or "1440"))
             except ValueError:
                 return 1440
-        return 960
+        return 720
 
     def _bake_matte_long(self) -> int:
         """Long-side for multiclip bake decode — Max prefers native/4K-friendly."""
@@ -942,7 +952,7 @@ class EditorSession:
                     meta_extra: dict[str, Any] = {
                         "matte_empty": empty,
                         "has_alpha_clip": bool(getattr(matte_layer, "has_alpha", False)),
-                        "stamp": "2026-10-13-full-body-fast",
+                        "stamp": "2026-10-13-preview-fast",
                         **overlay_meta,
                     }
                     if empty:

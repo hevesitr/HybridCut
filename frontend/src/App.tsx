@@ -567,10 +567,12 @@ export default function App() {
             : prev,
         );
       } else if (showEmptyUi && (matteErr || frame.meta?.source_fallback)) {
-        if (!opts?.retryOnEmpty) {
+        // preview-fast: never scare with gray-slab toast while a silent retry / auto-Max runs.
+        // Only toast after the last attempt still has no cutout.
+        if (!opts?.retryOnEmpty && !frame.meta?.auto_max_retry) {
           showToast(
             degenerate
-              ? "Hibás maszk (egyenletes szürke lap) — próbáld Max módot"
+              ? "Maszk gyenge — automatikus javítás… kattints Előnézet / Max"
               : matteErr
                 ? `Ember-maszk sikertelen — ${matteErr.slice(0, 140)}`
                 : "Ember-maszk sikertelen — futtasd újra az Előnézetet",

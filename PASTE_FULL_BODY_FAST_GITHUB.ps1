@@ -3,7 +3,7 @@
 # Requires: git + network to https://github.com/hevesitr/HybridCut
 
 $ErrorActionPreference = "Stop"
-$TipStamp = "2026-10-13-full-body-fast"
+$TipStamp = "2026-10-13-preview-fast"
 $RepoUrl = "https://github.com/hevesitr/HybridCut.git"
 $Repo = Join-Path $env:USERPROFILE "Documents\HybridCut"
 

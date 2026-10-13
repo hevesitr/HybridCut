@@ -4,7 +4,7 @@
 # ASCII-only (no em-dash / accented chars) so Windows PowerShell parsers do not break.
 
 $ErrorActionPreference = "Stop"
-$TipStamp = "2026-10-13-full-body-fast"
+$TipStamp = "2026-10-13-preview-fast"
 $StoreId = "bc-41930eab-1501-4c19-acf3-0c9d63afbf4d"
 
 Write-Host "=== HybridCut peak-ui install ==="
@@ -102,11 +102,11 @@ $js = $assets | Select-Object -First 1
 if (-not $js) { Write-Error "No frontend dist JS" }
 Write-Host ("DIST JS: " + $js.Name)
 # Tip dist for peak-ui (warn if unexpected; ban known stale hashes)
-$expectedJs = "index-D_S52bYl.js"
+$expectedJs = "index-DD1Dp8Q1.js"
 if ($js.Name -ne $expectedJs) {
   Write-Host ("NOTE: DIST JS is " + $js.Name + " (expected tip " + $expectedJs + " if store is fresh)")
 }
-$banned = @("index-BSZBtAvx.js", "index-BK_-KW48.js", "index-BGJ2h0CY.js", "index-fyrBYl2A.js", "index-DY2_6z5E.js", "index-DakKRMds.js", "index-7OPITa-N.js", "index-3rVnbc6C.js", "index-CFjr8qhD.js", "index-FhoJfHMi.js", "index-DQ4SEXZR.js", "index--o179zLg.css")
+$banned = @("index-D_S52bYl.js", "index-BSZBtAvx.js", "index-BK_-KW48.js", "index-BGJ2h0CY.js", "index-fyrBYl2A.js", "index-DY2_6z5E.js", "index-DakKRMds.js", "index-7OPITa-N.js", "index-3rVnbc6C.js", "index-CFjr8qhD.js", "index-FhoJfHMi.js", "index-DQ4SEXZR.js", "index--o179zLg.css")
 if ($banned -contains $js.Name) {
   Write-Error ("Stale dist still present: " + $js.Name + " - purge failed; delete frontend\dist and re-run.")
 }
@@ -122,7 +122,7 @@ Set-Location -LiteralPath $ve
 # Do NOT force HYBRID_ORT_PROVIDER=cpu - that blocked morning CUDA forever.
 Write-Host "Starting start_hybrid_cuda.ps1 (probe + launch) ..."
 Write-Host "Open http://127.0.0.1:3847 then Ctrl+F5"
-Write-Host "Expect: SYNC 2026-10-13-full-body-fast - only V1 - Cutout person silhouette"
+Write-Host "Expect: SYNC 2026-10-13-preview-fast - only V1 - Cutout person silhouette"
 Write-Host "Peak UI: CapCut-class chrome + Gyors matte pop. Badge RVM CUDA when probe OK."
 if (Test-Path -LiteralPath ".\start_hybrid_cuda.ps1") {
   .\start_hybrid_cuda.ps1

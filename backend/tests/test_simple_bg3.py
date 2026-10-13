@@ -16,7 +16,7 @@ ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
 SYNC = ROOT / "SYNC_VERSION.txt"
-STAMP = "2026-10-13-full-body-fast"
+STAMP = "2026-10-13-preview-fast"
 
 
 def _closeup_bgr(h: int = 540, w: int = 960) -> np.ndarray:

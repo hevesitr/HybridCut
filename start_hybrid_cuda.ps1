@@ -1,6 +1,6 @@
 # start_hybrid_cuda.ps1 - HybridCut CUDA prep + launch (ASCII-only)
 # Includes: rvm-back - cuda-restore - simple-bg7 CUDA stick
-# Stamp: 2026-10-13-full-body-fast (CUDA probe sticks; single V1 BG remove)
+# Stamp: 2026-10-13-preview-fast (CUDA probe sticks; single V1 BG remove)
 # Default: do NOT call CapCut remount_ort_gpu.ps1 (its pip upgrade can hit Windows
 # OSError access violation). Inject nvidia cudnn/cublas PATH from hybrid + parent
 # site-packages, pin onnxruntime-gpu==1.30.0 (morning-working), probe plugin EP,
@@ -60,7 +60,7 @@ if (-not ($parentRoot -and (Test-Path -LiteralPath (Join-Path $parentRoot "run_g
 Write-Host "=== HybridCut CUDA start ==="
 Write-Host ("Root: " + $Root)
 Write-Host ("Parent: " + $parentRoot)
-Write-Host ("Stamp: 2026-10-13-full-body-fast - pin onnxruntime-gpu==" + $OrtGpuPin + "; CUDA only after hard probe OK; persist cache\ort_provider.txt; ASCII PS1")
+Write-Host ("Stamp: 2026-10-13-preview-fast - pin onnxruntime-gpu==" + $OrtGpuPin + "; CUDA only after hard probe OK; persist cache\ort_provider.txt; ASCII PS1")
 Write-Host "CWD tip: inside hybrid_cut use .\start_hybrid_cuda.ps1  |  from Videoeditor use .\hybrid_cut\start_hybrid_cuda.ps1"
 
 # Resolve python: hybrid .venv or parent CapCut .venv

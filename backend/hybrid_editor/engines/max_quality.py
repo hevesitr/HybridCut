@@ -279,22 +279,28 @@ class MaxQualityEngine(MattingEngine):
     def _crush_soft_shadow_alpha(alpha: np.ndarray) -> np.ndarray:
         """Hard-ish nobg silhouette: kill milky rim/ghosts; keep filled heads.
 
-        Order matters: fill enclosed holes first, build a modest person protect
-        halo, zero everything outside, edge-aware crush soft rim *outside* the
-        solid core (not inside hair), then harden remaining mid-band. Prefer
-        clean checkerboard over grey shoulder shadows.
+        preview-fast: MobileNet CPU often peaks ~0.25–0.35 (no hard≥0.36 core).
+        Old crush zeroed the whole frame → empty Előnézet + gray-slab toast.
+        Adaptive core threshold + never-return-empty guard.
         """
         from hybrid_editor.engines.videoeditor_polish import (
             harden_foggy_halo,
             keep_person_instances_soft,
         )
+        from hybrid_editor.media.video_io import is_matte_empty
 
         a = np.clip(np.asarray(alpha, dtype=np.float32), 0.0, 1.0)
         if a.ndim == 3:
             a = a[..., 0]
         # 1) Protect silhouette fill before any edge trim.
-        a = fill_person_holes(a, min_fg=0.18, close_px=13, fill_value=0.92)
-        hard = (a >= 0.36).astype(np.uint8)
+        a = fill_person_holes(a, min_fg=0.16, close_px=13, fill_value=0.90)
+        pre = a.copy()
+        # Adaptive hard core — soft MobileNet must still form a protect halo.
+        p90 = float(np.percentile(a, 90)) if a.size else 0.0
+        hard_t = float(np.clip(max(0.22, min(0.36, p90 * 0.85)), 0.20, 0.40))
+        hard = (a >= hard_t).astype(np.uint8)
+        if int(hard.max()) < 1:
+            hard = (a >= max(0.16, hard_t * 0.7)).astype(np.uint8)
         try:
             k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
             k9 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
@@ -303,6 +309,12 @@ class MaxQualityEngine(MattingEngine):
         except Exception:  # noqa: BLE001
             core = hard
             protect = hard
+        # No core at all → don't invent a wipe; gentle harden only.
+        if int(protect.max()) < 1:
+            out = harden_foggy_halo(pre, lo=0.22, hi=0.78)
+            return fill_person_holes(
+                np.clip(out, 0.0, 1.0), min_fg=0.14, close_px=11, fill_value=0.88
+            )
         out = a.copy()
         # 2) Ghost duplicates / leftover BG between subjects → hard zero.
         out[protect == 0] = 0.0
@@ -314,18 +326,24 @@ class MaxQualityEngine(MattingEngine):
         soft_rim = (rim_zone > 0) & (core == 0) & (out > 0.02) & (out < 0.55)
         out[soft_rim] = np.where(out[soft_rim] < 0.40, 0.0, 1.0)
         # 4) Collapse milky mid-band inside protect toward hard 0/1 (no foggy halo).
-        out = harden_foggy_halo(out, lo=0.30, hi=0.70)
+        out = harden_foggy_halo(out, lo=0.28, hi=0.72)
         # 5) Attached soft hair still readable → lift toward opaque (not milky grey).
-        hair = (protect > 0) & (core > 0) & (out > 0.28) & (out < 0.82)
-        out[hair] = np.clip(out[hair] * 1.20 + 0.08, 0.0, 1.0)
+        hair = (protect > 0) & (out > 0.20) & (out < 0.82)
+        out[hair] = np.clip(out[hair] * 1.22 + 0.10, 0.0, 1.0)
         try:
             out = keep_person_instances_soft(out, min_area_frac=0.003, relative_frac=0.08)
         except Exception:  # noqa: BLE001
             pass
-        # 6) Re-fill any tiny gaps harden punched in crown/body.
-        return fill_person_holes(
-            np.clip(out, 0.0, 1.0), min_fg=0.16, close_px=11, fill_value=0.92
+        out = fill_person_holes(
+            np.clip(out, 0.0, 1.0), min_fg=0.14, close_px=11, fill_value=0.90
         )
+        # Never ship an all-zero crush — restore pre-crush person (better than toast).
+        if is_matte_empty(out):
+            out = harden_foggy_halo(pre, lo=0.24, hi=0.76)
+            out = fill_person_holes(
+                np.clip(out, 0.0, 1.0), min_fg=0.14, close_px=11, fill_value=0.88
+            )
+        return np.clip(out, 0.0, 1.0).astype(np.float32)
 
     def _polish(
         self, bgr: np.ndarray, *, warmup: bool = False, soft_cpu: bool = False
@@ -471,7 +489,9 @@ class MaxQualityEngine(MattingEngine):
             alpha = self._ensure_nonempty_alpha(bgr, alpha)
             if not is_matte_empty(alpha):
                 if cpu_fast:
-                    alpha = self._crush_soft_shadow_alpha(alpha)
+                    crushed = self._crush_soft_shadow_alpha(alpha)
+                    # preview-fast: keep uncrushed salvage if crush wiped soft MobileNet.
+                    alpha = crushed if not is_matte_empty(crushed) else alpha
                 cut_bgr = bgr
                 if self.sharp_edges:
                     cut_bgr = apply_color_polish(
@@ -485,9 +505,34 @@ class MaxQualityEngine(MattingEngine):
                 jpg, png, w, h, src, empty = encode_preview_pair(
                     cut_bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
                 )
-                recovered = True
+                recovered = not empty
             else:
                 empty = True
+        # preview-fast: absolute last resort — always show a person cutout on Max.
+        if empty:
+            try:
+                from hybrid_editor.engines.fast_rvm import hard_person_alpha
+
+                forced = hard_person_alpha(bgr)
+                if not is_matte_empty(forced):
+                    alpha = forced
+                    cut_bgr = bgr
+                    if self.sharp_edges:
+                        cut_bgr = apply_color_polish(
+                            bgr,
+                            alpha,
+                            decontaminate=float(polish_spec_decon.decontaminate),
+                            despill=float(polish_spec_decon.despill),
+                            bright_fringe=float(polish_spec_decon.bright_fringe),
+                            micro_despill=float(polish_spec_decon.micro_despill),
+                        )
+                    jpg, png, w, h, src, empty = encode_preview_pair(
+                        cut_bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
+                    )
+                    recovered = not empty
+                    matte_error = None
+            except Exception as force_exc:  # noqa: BLE001
+                logger.warning("Max preview-fast force salvage failed: %s", force_exc)
         info = self.person_matte_info()
         weights = self._fast.capabilities().weights_path
         # Status: clear empty vs live RVM person-matte label.
@@ -523,7 +568,7 @@ class MaxQualityEngine(MattingEngine):
             "source_height": int(self._media.height) if self._media else int(bgr.shape[0]),
             "infer_width": int(bgr.shape[1]),
             "infer_height": int(bgr.shape[0]),
-            "stamp": "2026-10-13-full-body-fast",
+            "stamp": "2026-10-13-preview-fast",
         }
         if empty and matte_error is None and alpha is not None:
             from hybrid_editor.media.video_io import matte_failure_reason
@@ -928,7 +973,7 @@ class MaxQualityEngine(MattingEngine):
                 "frames_total_est": total_est,
                 "max_frames_cap": max_frames,
                 "mov_path": prores,
-                "stamp": "2026-10-13-full-body-fast",
+                "stamp": "2026-10-13-preview-fast",
             },
         )
         _restore_fast()

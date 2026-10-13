@@ -1,6 +1,6 @@
 # full-body-fast restart
 
-Stamp: `2026-10-13-full-body-fast`
+Stamp: `2026-10-13-preview-fast`
 
 ## What changed
 
@@ -16,7 +16,7 @@ Stamp: `2026-10-13-full-body-fast`
 # paste PASTE_FULL_BODY_FAST_INSTALL.ps1 into PowerShell
 
 Get-Content "$env:USERPROFILE\Documents\Videoeditor\hybrid_cut\SYNC_VERSION.txt"
-# expect: 2026-10-13-full-body-fast
+# expect: 2026-10-13-preview-fast
 ```
 
 Dist tip: `index-D_S52bYl.js`.

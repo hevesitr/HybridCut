@@ -562,11 +562,15 @@ def hard_person_alpha(bgr: np.ndarray) -> np.ndarray:
             continue
         cover = float((cand > 0.15).mean())
         std = float(cand.std())
-        # full-body-fast: prefer fuller recall (cover) over holey high-std mattes.
-        if cover < 0.02 or cover > 0.88:
-            score = std * 0.25 + float(cand.max()) * 0.1
+        # preview-fast: mid cover (0.15–0.75) beats near-full milky plates that
+        # look like the gray Maszk slab even when not formally degenerate.
+        if cover < 0.02 or cover > 0.82:
+            score = std * 0.35 + float(cand.max()) * 0.15
         else:
-            score = cover * 3.0 + std * 1.0 + float(cand.max()) * 0.5
+            score = cover * 2.2 + std * 2.0 + float(cand.max()) * 0.6
+            # Bonus for two-person / indoor structured mattes.
+            if 0.18 <= cover <= 0.70 and std >= 0.12:
+                score += 1.2
         if is_matte_good_enough(cand):
             score += 1.5
         if score > best_score:
@@ -576,10 +580,13 @@ def hard_person_alpha(bgr: np.ndarray) -> np.ndarray:
         try:
             from hybrid_editor.engines.videoeditor_polish import fill_person_holes
 
-            best = fill_person_holes(best, min_fg=0.18, close_px=13, fill_value=0.92)
+            best = fill_person_holes(best, min_fg=0.16, close_px=11, fill_value=0.90)
         except Exception:  # noqa: BLE001
             pass
-        return best.astype(np.float32, copy=False)
+        # If fill bloated into a near-slab, keep pre-fill candidate.
+        if is_matte_degenerate(best) or float((best > 0.15).mean()) > 0.90:
+            best = candidates[0] if candidates else best
+        return np.clip(best, 0.0, 1.0).astype(np.float32)
 
     # Absolute last resort: visible multi-lobe prior so UI always shows recognition.
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
@@ -1285,7 +1292,12 @@ class FastEngine(MattingEngine):
         self._prefetch = ScrubPrefetcher(ahead=8)
         self._lanes: Optional[ProxyLaneCache] = None
         self._last_frame_idx = 0
-        self._proxy_long = int(os.environ.get("HYBRID_PROXY_LONG", "720") or "720")
+        # preview-fast: CPU scrub proxy ~480 (was 720) — Előnézet must feel instant.
+        try:
+            self._proxy_long = int(os.environ.get("HYBRID_PROXY_LONG", "480") or "480")
+        except ValueError:
+            self._proxy_long = 480
+        self._proxy_long = max(320, min(960, self._proxy_long))
         # Gyors scrub: MobileNet + low ds. Max backbone: ResNet when available.
         # Max bake defaults to FULL-RES RVM (ds=1.0) — 768 long was leaving residual BG islands.
         self._prefer_quality = bool(prefer_quality)
@@ -1807,6 +1819,19 @@ class FastEngine(MattingEngine):
                 alpha_vis = alpha
             except Exception:  # noqa: BLE001
                 pass
+        # preview-fast: final hard salvage + re-encode — never leave Előnézet empty.
+        if empty or alpha is None or is_matte_empty(alpha):
+            try:
+                forced = hard_person_alpha(bgr)
+                if not is_matte_empty(forced) and not is_matte_degenerate(forced):
+                    alpha = forced
+                    alpha_vis = forced
+                    jpg, png, w, h, src, empty = encode_preview_pair(bgr, forced)
+                    matte_error = None
+                    recovered = True
+                    logger.warning("preview-fast: forced hard_person_alpha after empty encode")
+            except Exception as force_exc:  # noqa: BLE001
+                logger.warning("preview-fast force salvage failed: %s", force_exc)
         if empty or is_matte_empty(alpha):
             empty = True
             if matte_error is None and alpha is not None:
@@ -1831,7 +1856,7 @@ class FastEngine(MattingEngine):
             "source_height": src_h,
             "infer_width": infer_w,
             "infer_height": infer_h,
-            "stamp": "2026-10-13-full-body-fast",
+            "stamp": "2026-10-13-preview-fast",
         }
         if matte_error and empty:
             meta["matte_error"] = matte_error
