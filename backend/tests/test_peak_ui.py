@@ -11,7 +11,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
-STAMP = "2026-10-13-peak-ui"
+STAMP = "2026-10-13-matte-hard"
 SYNC = ROOT / "SYNC_VERSION.txt"
 FEATURE = ROOT / "backend" / "hybrid_editor" / "FEATURE_PEAK_UI.txt"
 PASTE = ROOT / "PASTE_PEAK_UI_INSTALL.ps1"

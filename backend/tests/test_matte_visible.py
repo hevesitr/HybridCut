@@ -49,9 +49,9 @@ def _write_person_clip(path: Path, n: int = 8) -> None:
 
 
 def test_stamp_and_docs():
-    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-13-peak-ui"
-    assert FEATURE_RESTORE.read_text(encoding="utf-8").strip() == "2026-10-13-peak-ui"
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-peak-ui"
+    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-13-matte-hard"
+    assert FEATURE_RESTORE.read_text(encoding="utf-8").strip() == "2026-10-13-matte-hard"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-matte-hard"
     assert RESTART.is_file()
     restart = RESTART.read_text(encoding="utf-8")
     assert "2026-10-11-cuda-restore" in restart
@@ -191,6 +191,7 @@ def test_fast_engine_rejects_all_ones_rvm(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_session_preview_flags_degenerate_not_cutout_ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """matte-hard: even when RVM/chroma/heur return all-ones, hard salvage → Cutout ready."""
     from hybrid_editor.engines.fast_rvm import FastEngine
     from hybrid_editor.session import EditorSession
 
@@ -205,7 +206,7 @@ def test_session_preview_flags_degenerate_not_cutout_ready(tmp_path: Path, monke
     fast = getattr(eng, "_fast", eng)
     assert isinstance(fast, FastEngine)
     ones = lambda bgr, *a, **k: np.ones(bgr.shape[:2], dtype=np.float32)
-    # Entire stack returns slabs (no heuristic/chroma/auto-Max rescue) — must surface failure.
+    # Primary ladder returns slabs — matte-hard hard_person_alpha must still recover.
     monkeypatch.setattr(fast, "_matte", ones)
     monkeypatch.setattr(
         "hybrid_editor.engines.fast_rvm.heuristic_person_alpha",
@@ -219,13 +220,15 @@ def test_session_preview_flags_degenerate_not_cutout_ready(tmp_path: Path, monke
         monkeypatch.setattr(eng, "_polish", lambda bgr, warmup=False: ones(bgr))
     if hasattr(eng, "_ensure_nonempty_alpha"):
         monkeypatch.setattr(eng, "_ensure_nonempty_alpha", lambda bgr, alpha: ones(bgr))
-    # Isolate this failure-path check from simple-bg4 Gyors→Max auto-retry.
+    # Isolate from simple-bg4 Gyors→Max auto-retry — salvage must work on Gyors alone.
     sess._preview_auto_max_guard = True
+    sess._suppress_auto_max = True
 
     frame = sess.preview(0.0)
     empty = bool((frame.meta or {}).get("matte_empty") or (frame.meta or {}).get("source_fallback"))
-    assert empty, f"degenerate must not be Cutout-ready: {frame.meta}"
-    assert (frame.meta or {}).get("matte_error") or (frame.meta or {}).get("source_fallback")
+    assert not empty, f"matte-hard must salvage slab → Cutout-ready: {frame.meta}"
+    assert (frame.meta or {}).get("matte_recovered") is True
+    assert not (frame.meta or {}).get("matte_error")
 
 
 def test_max_recovers_from_all_ones_via_heuristic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

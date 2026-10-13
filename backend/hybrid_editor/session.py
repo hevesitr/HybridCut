@@ -57,6 +57,8 @@ class EditorSession:
         # Explicit Gyors click sets _suppress_auto_max so UI mode sticks.
         self._auto_max_done: bool = False
         self._suppress_auto_max: bool = False
+        # matte-hard: UI auto-runs Előnézet once after Megnyitás / upload.
+        self._auto_preview_recommended: bool = False
         self._sync_sharp_to_engine()
 
     def _sync_sharp_to_engine(self) -> None:
@@ -296,6 +298,9 @@ class EditorSession:
                 ),
                 "mask_rate": MASK_RATE,
                 "intelligence": intel,
+                "auto_preview_recommended": bool(
+                    getattr(self, "_auto_preview_recommended", False)
+                ),
                 **self.analyser.status(),
             }
 
@@ -520,7 +525,17 @@ class EditorSession:
             if isinstance(self.engine, MaxQualityEngine):
                 self.engine.set_user_seed(None)
             self._apply_seed_to_engine(None)
-            return self.status()
+            self._auto_preview_recommended = True
+            st = self.status()
+            st = {
+                **st,
+                "auto_preview_recommended": True,
+                "person_matte_hint_hu": (
+                    st.get("person_matte_label_hu")
+                    or "Automatikus ember-maszk — Előnézet indul"
+                ),
+            }
+            return st
 
     def update_timeline(
         self,
@@ -927,7 +942,7 @@ class EditorSession:
                     meta_extra: dict[str, Any] = {
                         "matte_empty": empty,
                         "has_alpha_clip": bool(getattr(matte_layer, "has_alpha", False)),
-                        "stamp": "2026-10-13-peak-ui",
+                        "stamp": "2026-10-13-matte-hard",
                         **overlay_meta,
                     }
                     if empty:
@@ -1064,6 +1079,8 @@ class EditorSession:
                     "source_height": int(self.media.height),
                     "source_fps": float(self.media.fps),
                 }
+            # Consumed: UI should not loop auto Előnézet after a preview call.
+            self._auto_preview_recommended = False
             return frame
 
     def start_analyse(

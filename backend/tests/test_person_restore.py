@@ -52,16 +52,16 @@ def _write_person_clip(path: Path, n: int = 8) -> None:
 
 
 def test_stamp_and_docs():
-    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-13-peak-ui"
-    assert FEATURE_AUTO.read_text(encoding="utf-8").strip() == "2026-10-13-peak-ui"
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-peak-ui"
+    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-13-matte-hard"
+    assert FEATURE_AUTO.read_text(encoding="utf-8").strip() == "2026-10-13-matte-hard"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-matte-hard"
     assert RESTART.is_file() and RESTART_PRIOR.is_file()
     prior = RESTART_PRIOR.read_text(encoding="utf-8")
     assert "MaskStore" in prior or "cache" in prior.lower()
     assert "Varázsceruza" in prior
     assert "Delete" in prior or "Backspace" in prior
     readme = README.read_text(encoding="utf-8")
-    assert "2026-10-13-peak-ui" in readme or "simple-bg" in readme
+    assert "2026-10-13-matte-hard" in readme or "simple-bg" in readme
     css = CSS.read_text(encoding="utf-8")
     assert "simple-bg" in css or "person-restore" in css or "matte-visible" in css
     assert "def purge" in MASK_STORE.read_text(encoding="utf-8")

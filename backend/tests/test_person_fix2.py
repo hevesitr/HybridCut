@@ -24,10 +24,10 @@ AI_RESTART = ROOT / "docs" / "ai-tracks-restart.md"
 
 
 def test_feature_docs_and_stamp_string():
-    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-13-peak-ui"
-    assert FEATURE_AUTO.read_text(encoding="utf-8").strip() == "2026-10-13-peak-ui"
+    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-13-matte-hard"
+    assert FEATURE_AUTO.read_text(encoding="utf-8").strip() == "2026-10-13-matte-hard"
     tip = SYNC.read_text(encoding="utf-8").strip()
-    assert tip == "2026-10-13-peak-ui"
+    assert tip == "2026-10-13-matte-hard"
     assert RESTART.is_file()
     restart = RESTART.read_text(encoding="utf-8")
     assert "2026-10-11-cuda-restore" in restart

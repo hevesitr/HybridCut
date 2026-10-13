@@ -235,6 +235,9 @@ def is_closeup_person_matte(alpha: np.ndarray) -> bool:
 
     Close-up 1920×1080 talking-head clips often have cover 0.7–0.95 — that must NOT
     be treated as an all-ones gray slab.
+
+    matte-hard: reject near-uniform soft plates that only punch a thin rim
+    (std low + cover ~1.0) — those look like the gray Maszk toast users report.
     """
     if alpha is None:
         return False
@@ -242,15 +245,18 @@ def is_closeup_person_matte(alpha: np.ndarray) -> bool:
     if a.size == 0 or a.shape[0] < 8 or a.shape[1] < 8:
         return False
     std = float(a.std())
-    if std < 0.04:
+    if std < 0.08:
         return False
     cover = float((a > 0.15).mean())
     if cover < 0.35:
         return False
+    # Soft full-frame plate with hairline rim ≠ close-up person.
+    if cover >= 0.92 and std < 0.14:
+        return False
     center = _matte_center_mean(a)
     border = _matte_border_mean(a)
     # Person fills frame: interior opaque, rim softer / punched.
-    return center >= 0.55 and (center - border) >= 0.10 and border <= 0.82
+    return center >= 0.55 and (center - border) >= 0.12 and border <= 0.75
 
 
 def is_matte_degenerate(alpha: np.ndarray) -> bool:
@@ -279,6 +285,9 @@ def is_matte_degenerate(alpha: np.ndarray) -> bool:
     if cover >= DEGENERATE_COVER and std < DEGENERATE_STD:
         return True
     if mean >= DEGENERATE_MEAN and std < DEGENERATE_STD * 1.6:
+        return True
+    # matte-hard: soft full-frame plate (thin rim only) ≡ gray Maszk slab.
+    if cover >= 0.92 and std < 0.10:
         return True
     # Opaque border + near-full cover ⇒ full-frame fill, not a person cutout.
     h, w = a.shape[:2]
@@ -368,11 +377,17 @@ def is_matte_good_enough(alpha: np.ndarray) -> bool:
     simple-bg4: MobileNet on CPU can emit a tiny structured speck that passed
     ``is_matte_empty`` / structured floors; that skipped ResNet + chroma and left
     the user with a useless (or later gray-slab) preview. Specks must retry.
+
+    matte-hard: near-full cover with weak spatial structure is NOT good enough —
+    it reads as the gray Maszk slab and must continue the recovery ladder.
     """
     if alpha is None or is_matte_empty(alpha) or is_matte_degenerate(alpha):
         return False
     a = normalize_alpha(alpha)
     cover = float((a > 0.15).mean())
+    std = float(a.std())
+    if cover >= 0.90 and std < 0.12 and not is_closeup_person_matte(a):
+        return False
     if cover >= GOOD_ENOUGH_COVER:
         return True
     # Low cover: require a real connected person blob (not ORT dust).

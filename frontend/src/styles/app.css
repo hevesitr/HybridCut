@@ -1,5 +1,5 @@
 :root {
-  /* HybridCut peak-ui — stamp 2026-10-13-peak-ui · CapCut-class chrome · peak-cutout · simple-bg7 · matte-visible · person-restore · auto-person · look-peak · ai-tracks */
+  /* HybridCut matte-hard — stamp 2026-10-13-matte-hard · peak-ui · CapCut-class chrome · peak-cutout · simple-bg7 · matte-visible · person-restore · auto-person · look-peak · ai-tracks */
   --ink: #0a0b0c;
   --ink-2: #121416;
   --ink-3: #1a1d21;
@@ -17,7 +17,7 @@
   --max: #ff7a1a;
   --font-display: "Sora", sans-serif;
   --font-body: "DM Sans", sans-serif;
-  --hc-stamp: "2026-10-13-peak-ui";
+  --hc-stamp: "2026-10-13-matte-hard";
   --chrome-glow: rgba(200, 240, 0, 0.07);
   --chrome-warm: rgba(255, 122, 26, 0.05);
   color: var(--fog);

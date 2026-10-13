@@ -248,7 +248,7 @@ class MaxQualityEngine(MattingEngine):
 
     def _ensure_nonempty_alpha(self, bgr: np.ndarray, alpha: Optional[np.ndarray]) -> np.ndarray:
         """Last-resort person alpha so Max Előnézet never ships an empty mask."""
-        from hybrid_editor.engines.fast_rvm import heuristic_person_alpha, solid_bg_person_alpha
+        from hybrid_editor.engines.fast_rvm import hard_person_alpha, solid_bg_person_alpha
 
         if alpha is not None and not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
             return alpha
@@ -261,7 +261,7 @@ class MaxQualityEngine(MattingEngine):
         chroma = solid_bg_person_alpha(bgr)
         if not is_matte_empty(chroma) and not is_matte_degenerate(chroma):
             return chroma
-        return heuristic_person_alpha(bgr)
+        return hard_person_alpha(bgr)
 
     def _seed_for(self, bgr: np.ndarray, auto: np.ndarray) -> np.ndarray:
         """Auto-person guidance only — paint/wand seeds are ignored (apex default)."""
@@ -488,7 +488,7 @@ class MaxQualityEngine(MattingEngine):
             "source_height": int(self._media.height) if self._media else int(bgr.shape[0]),
             "infer_width": int(bgr.shape[1]),
             "infer_height": int(bgr.shape[0]),
-            "stamp": "2026-10-13-peak-ui",
+            "stamp": "2026-10-13-matte-hard",
         }
         if empty and matte_error is None and alpha is not None:
             from hybrid_editor.media.video_io import matte_failure_reason
@@ -884,7 +884,7 @@ class MaxQualityEngine(MattingEngine):
                 "frames_total_est": total_est,
                 "max_frames_cap": max_frames,
                 "mov_path": prores,
-                "stamp": "2026-10-13-peak-ui",
+                "stamp": "2026-10-13-matte-hard",
             },
         )
         _restore_fast()

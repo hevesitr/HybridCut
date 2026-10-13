@@ -396,8 +396,8 @@ export default function App() {
         if (st?.media || st?.timeline?.clips?.length) {
           const t = st.timeline?.playhead_sec ?? 0;
           setTSec(t);
-          // simple-bg3: auto Cutout on open so user never sits on „Nincs ember-maszk”.
-          void runPreview(t, st, undefined, { preferCutout: true });
+          // matte-hard: auto Cutout on open (+ one retry) so user never sits on Nincs ember-maszk.
+          void runPreview(t, st, undefined, { preferCutout: true, retryOnEmpty: true });
         }
       })
       .catch(() => {
@@ -484,12 +484,13 @@ export default function App() {
     t: number,
     st?: EditorStatus | null,
     noteOverride?: string,
-    opts?: { preferCutout?: boolean },
-  ) => {
+    opts?: { preferCutout?: boolean; retryOnEmpty?: boolean },
+  ): Promise<boolean> => {
     const cur = st ?? status;
-    if (!cur?.media && !cur?.timeline?.clips?.length) return;
+    if (!cur?.media && !cur?.timeline?.clips?.length) return false;
     setBusy(true);
     setError(null);
+    let ok = false;
     try {
       await api.setTimeline({ playhead_sec: t });
       const frame = await api.preview(t);
@@ -499,7 +500,7 @@ export default function App() {
       const matteErr = String(frame.meta?.matte_error || "");
       const autoMax = Boolean(frame.meta?.auto_max_retry);
       const degenerate =
-        /egyenletes|teljes-keret|0–255|0-255|hibás RVM|hibas maszk/i.test(matteErr);
+        /egyenletes|teljes-keret|0–255|0-255/i.test(matteErr);
       const seedHit = frame.meta?.user_seed ? " · kézi finomítás ✓" : "";
       const ov = (frame.meta?.overlay_layers as unknown[] | undefined)?.length ?? 0;
       const composite = Boolean(frame.meta?.timeline_composite);
@@ -509,7 +510,7 @@ export default function App() {
         noteOverride ??
           (empty
             ? degenerate
-              ? "Hibás egyenletes maszk — RVM újrafuttatás / Max mód"
+              ? "Hibás egyenletes maszk — újra Előnézet / Max"
               : matteErr
                 ? `Ember-maszk hiba — ${matteErr.slice(0, 120)}`
                 : "Nincs ember-maszk — futtasd az Előnézetet"
@@ -518,6 +519,7 @@ export default function App() {
       // Always surface RVM/ORT/CUDA matte failures (never silent gray slab + Cutout ✓).
       // Drop sticky CUDA gray-slab toast whenever preview recovers a person matte.
       const recovered = Boolean(frame.meta?.matte_recovered) || !empty;
+      ok = !empty;
       if (recovered) {
         if (toastTimer.current) window.clearTimeout(toastTimer.current);
         setToast((prev) =>
@@ -527,13 +529,16 @@ export default function App() {
         );
       } else if (empty && (matteErr || frame.meta?.source_fallback)) {
         // Only toast true failures — never re-poison after matte_recovered.
-        showToast(
-          degenerate
-            ? "Hibás maszk (egyenletes szürke lap) — CPU ORT / Max mód"
-            : matteErr
-              ? `Ember-maszk sikertelen — ${matteErr.slice(0, 140)}`
-              : "Ember-maszk sikertelen — RVM/heuristic nem adott maszkot",
-        );
+        // matte-hard: one silent retry on upload/open before scaring the user.
+        if (!opts?.retryOnEmpty) {
+          showToast(
+            degenerate
+              ? "Hibás maszk (egyenletes szürke lap) — próbáld Max módot"
+              : matteErr
+                ? `Ember-maszk sikertelen — ${matteErr.slice(0, 140)}`
+                : "Ember-maszk sikertelen — futtasd újra az Előnézetet",
+          );
+        }
       }
       // Explicit Előnézet / upload: jump to Cutout when matte ready (scrub stays put).
       if (opts?.preferCutout) {
@@ -546,18 +551,28 @@ export default function App() {
                 ? `${personLabel} — Exportálás a következő lépés`
                 : "Cutout kész — Exportálás a következő lépés",
           );
-        } else if (!(matteErr || frame.meta?.source_fallback)) {
+        } else if (!(matteErr || frame.meta?.source_fallback) && !opts?.retryOnEmpty) {
           showToast("Nincs ember-maszk — futtasd az Előnézetet újra");
         }
       }
       const refreshed = await api.status();
       setStatus(refreshed);
       syncTrimFromStatus(refreshed);
+      // matte-hard: auto-retry once when first pass empty (upload / Megnyitás).
+      if (empty && opts?.retryOnEmpty) {
+        setBusy(false);
+        return runPreview(t, refreshed, noteOverride, {
+          preferCutout: opts.preferCutout,
+          retryOnEmpty: false,
+        });
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      ok = false;
     } finally {
       setBusy(false);
     }
+    return ok;
   };
 
   const schedulePreview = (t: number) => {
@@ -619,7 +634,7 @@ export default function App() {
       setTSec(0);
       setViewMode("source");
       syncTrimFromStatus(st);
-      await runPreview(0, st, undefined, { preferCutout: true });
+      await runPreview(0, st, undefined, { preferCutout: true, retryOnEmpty: true });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -646,8 +661,16 @@ export default function App() {
       setTSec(0);
       setViewMode("source");
       syncTrimFromStatus(st);
-      await runPreview(0, st, undefined, { preferCutout: true });
-      setNote("Videó betöltve — Gyors auto ember-maszk (háttéreltávolítás)");
+      // matte-hard: always auto-run Előnézet on Megnyitás (retry once if empty).
+      const ok = await runPreview(0, st, undefined, {
+        preferCutout: true,
+        retryOnEmpty: true,
+      });
+      setNote(
+        ok
+          ? "Videó betöltve — auto Cutout kész (háttéreltávolítás)"
+          : "Videó betöltve — futtasd az Előnézetet (ember-maszk)",
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
