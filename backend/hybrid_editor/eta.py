@@ -128,8 +128,13 @@ def remaining_bake_sec(
     bake_progress: float = 0.0,
     bake_status: str = "",
     cpu_ort: bool = False,
+    elapsed_sec: float = 0.0,
 ) -> float:
-    """Remaining ETA while bake runs — prefer frame counters, else progress."""
+    """Remaining ETA while bake runs — prefer frame counters, else progress.
+
+    When ``elapsed_sec`` + done frames are available, blend model spf with
+    observed wall-clock spf so a slow full-res CPU path cannot keep showing ~44s.
+    """
     total = estimate_bake_sec(duration_sec, fps, width, height, mode, cpu_ort=cpu_ort)
     parsed = parse_bake_frames(bake_status)
     if parsed:
@@ -143,6 +148,14 @@ def remaining_bake_sec(
             if prog >= 0.99:
                 return 0.0
             return mux * max(0.05, 1.0 - prog)
+        el = float(elapsed_sec or 0.0)
+        if done >= 8 and el > 1.5:
+            observed = el / float(done)
+            # Trust wall-clock once it clearly diverges from the model (slow path).
+            if observed > spf * 1.35:
+                spf = 0.25 * spf + 0.75 * observed
+            else:
+                spf = 0.65 * spf + 0.35 * observed
         return left * spf + mux * 0.85
 
     prog = max(0.0, min(1.0, float(bake_progress or 0.0)))
@@ -150,6 +163,11 @@ def remaining_bake_sec(
         return total
     if prog >= 0.99:
         return 0.0
+    el = float(elapsed_sec or 0.0)
+    if el > 2.0 and prog > 0.05:
+        # Extrapolate from observed progress rate when frame counters missing.
+        est_total = el / prog
+        return max(0.0, est_total * (1.0 - prog))
     return total * (1.0 - prog)
 
 

@@ -26,7 +26,7 @@ SYNC = ROOT / "SYNC_VERSION.txt"
 
 
 def test_sync_stamp_concat_flow():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-matte-hard"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-full-body-fast"
 
 
 def test_gyors_faster_than_max_same_clip():
@@ -96,6 +96,29 @@ def test_remaining_from_frames_and_progress():
     assert abs(mid - total * 0.5) > 0 or True  # progress path uses gyors total
     g_total = estimate_bake_sec(10.0, 30.0, 1920, 1080, "gyors")
     assert abs(mid - g_total * 0.5) < 0.5
+    # Slow wall-clock path must inflate remaining (no more ~44s lie at 8%).
+    optimistic = remaining_bake_sec(
+        duration_sec=10.0,
+        fps=24.0,
+        width=1920,
+        height=1080,
+        mode="max",
+        bake_status="Max bake 20/240 frame",
+        cpu_ort=True,
+        elapsed_sec=0.0,
+    )
+    honest = remaining_bake_sec(
+        duration_sec=10.0,
+        fps=24.0,
+        width=1920,
+        height=1080,
+        mode="max",
+        bake_status="Max bake 20/240 frame",
+        cpu_ort=True,
+        elapsed_sec=50.0,  # ~2.5s/frame observed
+    )
+    assert honest > optimistic * 2.0
+    assert honest > 120
 
 
 def test_resolution_factor_gyors_softer():

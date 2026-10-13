@@ -248,24 +248,34 @@ def preview_boost_person_alpha(alpha: np.ndarray) -> np.ndarray:
 
     Soft MobileNet mattes can look like a faint ghost. Mild mid-band lift +
     edge crisp for *display only* — bake still uses the raw/polished matte path.
+
+    full-body-fast: do not crush soft hair/crown (old far_soft kill punched holes).
     """
     a = _as_hw_float(alpha)
     if float(a.max()) < 0.05:
         return a
-    # Lift soft person body so Cutout reads clearly against checker.
-    body = (a > 0.18).astype(np.float32)
-    body = cv2.GaussianBlur(body, (0, 0), sigmaX=1.1)
-    lifted = np.clip(a + body * 0.18 * (1.0 - a), 0.0, 1.0)
-    # Keep hair band; crush detached fog so recognition looks intentional.
-    hard = (lifted >= 0.45).astype(np.uint8)
     try:
-        near = cv2.dilate(hard, np.ones((5, 5), np.uint8), iterations=2)
+        from hybrid_editor.engines.videoeditor_polish import fill_person_holes
+
+        a = fill_person_holes(a, min_fg=0.16, close_px=11, fill_value=0.90)
     except Exception:  # noqa: BLE001
-        near = hard
-    out = lifted.copy()
-    far_soft = (out > 0.04) & (out < 0.40) & (near == 0)
-    out[far_soft] *= 0.25
-    return peak_edge_crisp(out, strength=0.38)
+        pass
+    # Halo from *pre-boost* core so corner fog is not absorbed into hair band.
+    hard0 = (a >= 0.28).astype(np.uint8)
+    try:
+        near0 = cv2.dilate(hard0, np.ones((9, 9), np.uint8), iterations=2)
+    except Exception:  # noqa: BLE001
+        near0 = hard0
+    out = a.copy()
+    # Crush far fog BEFORE mid-band lift — soft dust must not jump past the crush band.
+    far_soft = (out > 0.04) & (out < 0.32) & (near0 == 0)
+    out[far_soft] *= 0.15
+    # Lift soft person body only near the silhouette (blur bleed masked to halo).
+    body = ((out > 0.14) & (near0 > 0)).astype(np.float32)
+    body = cv2.GaussianBlur(body, (0, 0), sigmaX=1.2)
+    body = body * (near0 > 0).astype(np.float32)
+    out = np.clip(out + body * 0.22 * (1.0 - out), 0.0, 1.0)
+    return peak_edge_crisp(out, strength=0.28)
 
 
 def extract_fgr_bgr(outs: list, session: object, h: int, w: int) -> Optional[np.ndarray]:

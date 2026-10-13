@@ -1,6 +1,6 @@
-# HybridCut restart - peak-ui (`2026-10-13-matte-hard`)
+# HybridCut restart - peak-ui (`2026-10-13-full-body-fast`)
 
-Feature stamp: **`2026-10-13-matte-hard`** (includes peak-cutout + simple-bg7).
+Feature stamp: **`2026-10-13-full-body-fast`** (includes peak-cutout + simple-bg7).
 
 **Háttéreltávolítás** focus: Megnyitás → Előnézet Cutout → Export. **One timeline** — single **V1** only (no **AI sáv** / + V1 / + B-roll).
 
@@ -18,7 +18,7 @@ Feature stamp: **`2026-10-13-matte-hard`** (includes peak-cutout + simple-bg7).
 ```powershell
 cd $env:USERPROFILE\Documents\HybridCut
 git pull origin main
-Get-Content .\SYNC_VERSION.txt   # MUST: 2026-10-13-matte-hard
+Get-Content .\SYNC_VERSION.txt   # MUST: 2026-10-13-full-body-fast
 .\PASTE_PEAK_UI_INSTALL.ps1
 # http://127.0.0.1:3847 - Ctrl+F5
 ```

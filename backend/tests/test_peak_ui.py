@@ -11,7 +11,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
-STAMP = "2026-10-13-matte-hard"
+STAMP = "2026-10-13-full-body-fast"
 SYNC = ROOT / "SYNC_VERSION.txt"
 FEATURE = ROOT / "backend" / "hybrid_editor" / "FEATURE_PEAK_UI.txt"
 PASTE = ROOT / "PASTE_PEAK_UI_INSTALL.ps1"
@@ -44,9 +44,9 @@ def test_stamp_and_ui_chrome():
 def test_preview_boost_person_alpha():
     from hybrid_editor.engines.peak_cutout import preview_boost_person_alpha
 
-    a = np.zeros((80, 80), np.float32)
-    a[20:60, 20:60] = 0.42  # soft person
-    a[10:14, 10:40] = 0.22  # detached fog
+    a = np.zeros((120, 120), np.float32)
+    a[40:90, 40:90] = 0.42  # soft person
+    a[2:8, 2:12] = 0.18  # far corner fog
     out = preview_boost_person_alpha(a)
-    assert float(out[40, 40]) > float(a[40, 40])
-    assert float(out[12, 20]) < float(a[12, 20]) + 0.01
+    assert float(out[60, 60]) > float(a[60, 60])
+    assert float(out[4, 5]) < float(a[4, 5]) * 0.6

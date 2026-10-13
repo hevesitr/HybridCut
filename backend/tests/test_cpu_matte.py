@@ -46,9 +46,9 @@ def _first_onnx() -> Path | None:
 
 
 def test_stamp_rvm_back():
-    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-13-matte-hard"
-    assert FEATURE2.read_text(encoding="utf-8").strip() == "2026-10-13-matte-hard"
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-matte-hard"
+    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-13-full-body-fast"
+    assert FEATURE2.read_text(encoding="utf-8").strip() == "2026-10-13-full-body-fast"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-full-body-fast"
     text = RESTART.read_text(encoding="utf-8")
     assert "2026-10-11-rvm-back" in text
     assert "CPU-first" in text or "cpu-first" in text.lower()
@@ -427,7 +427,7 @@ def test_live_cpu_rvm_person_matte_not_slab(monkeypatch: pytest.MonkeyPatch):
             eng.open_media(sample)
             frame = eng.preview_frame(0.0)
             meta = frame.meta or {}
-            assert meta.get("stamp") == "2026-10-13-matte-hard"
+            assert meta.get("stamp") == "2026-10-13-full-body-fast"
             empty = bool(meta.get("matte_empty") or meta.get("source_fallback"))
             err = str(meta.get("matte_error") or "")
             assert not empty, f"CPU preview still empty/slab: {meta}"

@@ -29,9 +29,9 @@ APP = ROOT / "frontend" / "src" / "App.tsx"
 
 def test_stamp_and_docs():
     tip = SYNC.read_text(encoding="utf-8").strip()
-    assert tip == "2026-10-13-matte-hard"
-    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-13-matte-hard"
-    assert FEATURE_EP.read_text(encoding="utf-8").strip() == "2026-10-13-matte-hard"
+    assert tip == "2026-10-13-full-body-fast"
+    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-13-full-body-fast"
+    assert FEATURE_EP.read_text(encoding="utf-8").strip() == "2026-10-13-full-body-fast"
     text = RESTART.read_text(encoding="utf-8")
     assert "No registered plugin EP" in text
     assert "CPU ORT" in text

@@ -114,26 +114,27 @@ RECOMMENDED_SPEC = VideoeditorPolishSpec(
     hair_strand=0.0,
     micro_despill=0.0,
 )
-# CPU Max @~720 upscale: sharper than RECOMMENDED, lighter residual than APEX
-# (APEX residual_halo_px=11 on soft MobileNet edges reads as a thick shadow).
+# CPU Max @~720: hard-ish nobg (no milky shoulder shadow). residual_halo < APEX
+# so soft MobileNet rims do not paint grey ghosts on checkerboard; hole-fill
+# + modest hair protect still cover crown without MatAnyone-wide fog.
 CPU_MAX_SPEC = VideoeditorPolishSpec(
-    edge_feather=0.28,
-    fg_threshold=0.976,
-    bg_threshold=0.018,
+    edge_feather=0.12,
+    fg_threshold=0.978,
+    bg_threshold=0.020,
     morph_open=0,
-    morph_close=2,
-    guided_radius=6,
-    hair_boost=0.62,
+    morph_close=3,  # fuller hole close for hair/crown
+    guided_radius=3,  # faster + less edge smear on CPU @720
+    hair_boost=0.52,
     target_long_side=0.0,
-    decontaminate=0.62,
-    despill=0.55,
-    residual_hard_thresh=0.50,
-    residual_halo_px=7,
-    unknown_hair=0.40,
-    bright_fringe=0.28,
-    edge_sharpen=0.36,
-    hair_strand=0.35,
-    micro_despill=0.12,
+    decontaminate=0.82,
+    despill=0.68,
+    residual_hard_thresh=0.46,  # sever soft ghost bridges
+    residual_halo_px=7,  # < APEX — kill grey rim / between-subject BG
+    unknown_hair=0.34,
+    bright_fringe=0.42,
+    edge_sharpen=0.40,
+    hair_strand=0.32,
+    micro_despill=0.28,
 )
 
 
@@ -354,6 +355,71 @@ def fill_hair_holes(alpha: np.ndarray, *, close_iters: int = 2) -> np.ndarray:
     support = cv2.dilate((a8 > 40).astype(np.uint8) * 255, k3, iterations=1)
     filled = np.where(support > 0, np.maximum(a8, closed), a8)
     return (filled.astype(np.float32) / 255.0).astype(np.float32)
+
+
+def fill_person_holes(
+    alpha: np.ndarray,
+    *,
+    min_fg: float = 0.22,
+    close_px: int = 11,
+    fill_value: float = 0.92,
+    max_hole_frac: float = 0.08,
+) -> np.ndarray:
+    """Fill enclosed holes inside the person silhouette (hair / crown / body gaps).
+
+    full-body-fast: morph-close + flood-fill enclosed zeros so crowns stay opaque.
+    Only fills *enclosed* hole components (size-capped) — does not grow into BG
+    or turn textured salvage into an all-ones gray slab.
+    """
+    a = _as_hw_float(alpha)
+    h, w = a.shape[:2]
+    if h < 8 or w < 8:
+        return a
+    px = max(3, int(close_px))
+    if px % 2 == 0:
+        px += 1
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (px, px))
+    fg = (a >= float(min_fg)).astype(np.uint8) * 255
+    if int(fg.max()) < 1:
+        return a
+    closed = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k, iterations=2)
+    out = a.copy()
+    # Soft alpha close only inside a modest dilate of original FG (no BG grow).
+    a8 = (np.clip(a, 0, 1) * 255.0).astype(np.uint8)
+    a_closed = cv2.morphologyEx(a8, cv2.MORPH_CLOSE, k, iterations=1)
+    support = cv2.dilate(fg, k, iterations=1)
+    out = np.where(support > 0, np.maximum(out, a_closed.astype(np.float32) / 255.0), out)
+    # Enclosed holes inside closed silhouette (border-connected BG stays BG).
+    flood = closed.copy()
+    mask = np.zeros((h + 2, w + 2), np.uint8)
+    for x, y in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)):
+        if flood[y, x] == 0:
+            try:
+                cv2.floodFill(flood, mask, (x, y), 128)
+            except Exception:  # noqa: BLE001
+                pass
+    hole_mask = ((closed == 0) & (flood != 128)).astype(np.uint8) * 255
+    if int(hole_mask.max()) < 1:
+        return np.clip(out, 0.0, 1.0).astype(np.float32)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(hole_mask, connectivity=8)
+    max_area = max(64, int(h * w * float(max_hole_frac)))
+    fv = float(fill_value)
+    for i in range(1, n):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area <= 0 or area > max_area:
+            continue
+        sel = labels == i
+        out[sel] = np.maximum(out[sel], fv)
+    # Mild mid-band lift only on *large* person instances (not fog dust).
+    n2, labels2, stats2, _ = cv2.connectedComponentsWithStats(fg, connectivity=8)
+    min_person = max(200, int(h * w * 0.01))
+    person = np.zeros((h, w), dtype=bool)
+    for i in range(1, n2):
+        if int(stats2[i, cv2.CC_STAT_AREA]) >= min_person:
+            person |= labels2 == i
+    mid = person & (out > 0.10) & (out < 0.50)
+    out[mid] = np.maximum(out[mid], np.clip(out[mid] * 1.25 + 0.08, 0.0, 0.85))
+    return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
 def harden_foggy_halo(alpha: np.ndarray, *, lo: float = 0.32, hi: float = 0.68) -> np.ndarray:
@@ -777,9 +843,11 @@ def refine_alpha_matte(
     # Restore protected mid-band after morph
     a = np.maximum(a, thin_protect * raw * 0.85)
     a = fill_hair_holes(a, close_iters=max(1, int(spec.morph_close)))
+    # full-body-fast: enclosed head/body holes → opaque (prefer recall)
+    a = fill_person_holes(a, min_fg=0.20, close_px=9, fill_value=0.90)
 
     # Reconnect limbs, keep all person instances, then residual BG suppress
-    a = reconnect_body_parts(a, gap_px=7)
+    a = reconnect_body_parts(a, gap_px=9)
     a = keep_largest_person_soft(a, min_area_frac=0.005)
     a = suppress_residual_bg(
         a,
@@ -832,8 +900,9 @@ def refine_alpha_matte(
             min_area_frac=0.005,
             relative_frac=0.12,
         )
-    a = reconnect_body_parts(a, gap_px=5)
+    a = reconnect_body_parts(a, gap_px=7)
     a = keep_largest_person_soft(a, min_area_frac=0.005)
+    a = fill_person_holes(a, min_fg=0.18, close_px=11, fill_value=0.92)
     a = np.where(a < bg_threshold, 0.0, a)
     a = np.where(a > fg_threshold, 1.0, a)
     return np.clip(a, 0.0, 1.0).astype(np.float32)

@@ -331,6 +331,8 @@ export default function App() {
     h: number;
   } | null>(null);
   const transformCommitTimer = useRef<number | null>(null);
+  /** Wall-clock bake start — remainingBakeSec blends observed spf so CPU slow-path cannot lie. */
+  const bakeStartedAt = useRef<number | null>(null);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -469,7 +471,11 @@ export default function App() {
   });
 
   useEffect(() => {
-    if (!status?.bake_running) return;
+    if (!status?.bake_running) {
+      bakeStartedAt.current = null;
+      return;
+    }
+    if (bakeStartedAt.current == null) bakeStartedAt.current = Date.now();
     const id = window.setInterval(() => void pollBake(), 400);
     return () => window.clearInterval(id);
   }, [status?.bake_running, pollBake]);
@@ -1124,6 +1130,10 @@ export default function App() {
         bakeProgress: status?.bake_progress ?? 0,
         bakeStatus: status?.bake_status ?? "",
         cpuOrt,
+        elapsedSec:
+          bakeStartedAt.current != null
+            ? (Date.now() - bakeStartedAt.current) / 1000
+            : 0,
       })
     : 0;
   const remainLabel = status?.bake_running ? formatEtaHu(remainSec) : "";

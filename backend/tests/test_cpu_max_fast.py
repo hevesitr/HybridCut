@@ -11,7 +11,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
-STAMP = "2026-10-13-matte-hard"
+STAMP = "2026-10-13-full-body-fast"
 
 
 def test_stamp_simple_bg5():

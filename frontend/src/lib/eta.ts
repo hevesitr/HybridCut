@@ -102,6 +102,8 @@ export function remainingBakeSec(opts: {
   bakeProgress?: number;
   bakeStatus?: string;
   cpuOrt?: boolean;
+  /** Wall-clock seconds since bake start — corrects lying model ETA on slow CPU. */
+  elapsedSec?: number;
 }): number {
   const cpuOpts = { cpuOrt: !!opts.cpuOrt };
   const total = estimateBakeSec(
@@ -115,18 +117,30 @@ export function remainingBakeSec(opts: {
   const parsed = parseBakeFrames(opts.bakeStatus || "");
   if (parsed) {
     const left = Math.max(0, parsed.total - parsed.done);
-    const spf = secPerFrame(opts.width, opts.height, opts.mode, cpuOpts);
+    let spf = secPerFrame(opts.width, opts.height, opts.mode, cpuOpts);
     const mux = MUX_FIXED_SEC + MUX_PER_VIDEO_SEC * Math.max(0, opts.durationSec);
     if (left <= 0) {
       const prog = Math.max(0, Math.min(1, opts.bakeProgress ?? 0));
       if (prog >= 0.99) return 0;
       return mux * Math.max(0.05, 1 - prog);
     }
+    const el = Number(opts.elapsedSec) || 0;
+    if (parsed.done >= 8 && el > 1.5) {
+      const observed = el / parsed.done;
+      spf =
+        observed > spf * 1.35
+          ? 0.25 * spf + 0.75 * observed
+          : 0.65 * spf + 0.35 * observed;
+    }
     return left * spf + mux * 0.85;
   }
   const prog = Math.max(0, Math.min(1, opts.bakeProgress ?? 0));
   if (prog <= 0.01) return total;
   if (prog >= 0.99) return 0;
+  const el = Number(opts.elapsedSec) || 0;
+  if (el > 2 && prog > 0.05) {
+    return Math.max(0, (el / prog) * (1 - prog));
+  }
   return total * (1 - prog);
 }
 

@@ -41,6 +41,7 @@ from hybrid_editor.engines.videoeditor_polish import (
     APEX_SPEC,
     CPU_MAX_SPEC,
     apply_color_polish,
+    fill_person_holes,
     polish_videoeditor,
 )
 from hybrid_editor.engines.vram import acquire_cuda, force_release_all, release_cuda
@@ -109,11 +110,17 @@ class MaxQualityEngine(MattingEngine):
         """CPU Max bake uses MobileNet@~720 so wall-clock matches CUDA ETA (~43s/10s).
 
         Opt out: HYBRID_CPU_MAX_FULLRES=1 (slow full-res ResNet on CPU).
+        full-body-fast: also force when HYBRID_ORT_PROVIDER prefers cpu — UI can
+        show CPU ORT while a stale CUDA flag would otherwise skip the fast path
+        and bake ~10 min for a 10s clip.
         """
-        if not self._on_cpu_ort():
-            return False
         raw = (os.environ.get("HYBRID_CPU_MAX_FULLRES") or "").strip().lower()
-        return raw not in {"1", "true", "yes", "full", "fullres"}
+        if raw in {"1", "true", "yes", "full", "fullres"}:
+            return False
+        prefer = (os.environ.get("HYBRID_ORT_PROVIDER") or "cpu").strip().lower()
+        if prefer in {"cpu", "cpuexecutionprovider", ""}:
+            return True
+        return self._on_cpu_ort()
 
     def person_matte_label(self) -> str:
         """Clear HU status: MatAnyone2 active vs RVM person-matte fallback."""
@@ -270,51 +277,63 @@ class MaxQualityEngine(MattingEngine):
 
     @staticmethod
     def _crush_soft_shadow_alpha(alpha: np.ndarray) -> np.ndarray:
-        """Kill soft gray fringe that looks like a shadow after 720→native upscale.
+        """Hard-ish nobg silhouette: kill milky rim/ghosts; keep filled heads.
 
-        MobileNet@~720 + INTER_LINEAR leaves a mid-gray band / detached soft plate
-        around the person; when composited it reads as a dark halo or foot shadow.
-        Keep solid FG + a thin near-edge hair band; zero soft pixels far from FG.
+        Order matters: fill enclosed holes first, build a modest person protect
+        halo, zero everything outside, edge-aware crush soft rim *outside* the
+        solid core (not inside hair), then harden remaining mid-band. Prefer
+        clean checkerboard over grey shoulder shadows.
         """
+        from hybrid_editor.engines.videoeditor_polish import (
+            harden_foggy_halo,
+            keep_person_instances_soft,
+        )
+
         a = np.clip(np.asarray(alpha, dtype=np.float32), 0.0, 1.0)
         if a.ndim == 3:
             a = a[..., 0]
-        hard = (a >= 0.55).astype(np.uint8)
+        # 1) Protect silhouette fill before any edge trim.
+        a = fill_person_holes(a, min_fg=0.18, close_px=13, fill_value=0.92)
+        hard = (a >= 0.36).astype(np.uint8)
         try:
-            near = cv2.dilate(hard, np.ones((7, 7), np.uint8), iterations=2)
+            k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            k9 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+            core = cv2.morphologyEx(hard, cv2.MORPH_CLOSE, k5, iterations=1)
+            protect = cv2.dilate(core, k9, iterations=1)  # hair/crown reach only
         except Exception:  # noqa: BLE001
-            near = hard
-        out = np.zeros_like(a)
-        out[a >= 0.55] = a[a >= 0.55]
-        # Hair / soft edge only within a few px of solid FG.
-        band = (a > 0.12) & (a < 0.55) & (near > 0)
-        out[band] = np.power(np.clip((a[band] - 0.12) / 0.43, 0.0, 1.0), 1.55)
-        # Detached soft plate (shadow under feet, gray slab islands) → kill.
-        detached = (a > 0.05) & (a < 0.55) & (near == 0)
-        out[detached] = 0.0
+            core = hard
+            protect = hard
+        out = a.copy()
+        # 2) Ghost duplicates / leftover BG between subjects → hard zero.
+        out[protect == 0] = 0.0
+        # 3) Soft rim just outside solid core paints grey on checker — kill or snap.
         try:
-            u8 = (np.clip(out, 0, 1) * 255).astype(np.uint8)
-            n, labels, stats, _ = cv2.connectedComponentsWithStats(
-                (u8 > 20).astype(np.uint8), connectivity=8
-            )
-            if n > 2:
-                areas = stats[1:, cv2.CC_STAT_AREA]
-                keep = 1 + int(np.argmax(areas))
-                min_keep = max(48, int(0.0008 * a.size))
-                for i in range(1, n):
-                    if i == keep:
-                        continue
-                    if int(stats[i, cv2.CC_STAT_AREA]) < min_keep:
-                        out[labels == i] = 0.0
+            rim_zone = cv2.dilate(core, np.ones((5, 5), np.uint8), iterations=1)
+        except Exception:  # noqa: BLE001
+            rim_zone = protect
+        soft_rim = (rim_zone > 0) & (core == 0) & (out > 0.02) & (out < 0.55)
+        out[soft_rim] = np.where(out[soft_rim] < 0.40, 0.0, 1.0)
+        # 4) Collapse milky mid-band inside protect toward hard 0/1 (no foggy halo).
+        out = harden_foggy_halo(out, lo=0.30, hi=0.70)
+        # 5) Attached soft hair still readable → lift toward opaque (not milky grey).
+        hair = (protect > 0) & (core > 0) & (out > 0.28) & (out < 0.82)
+        out[hair] = np.clip(out[hair] * 1.20 + 0.08, 0.0, 1.0)
+        try:
+            out = keep_person_instances_soft(out, min_area_frac=0.003, relative_frac=0.08)
         except Exception:  # noqa: BLE001
             pass
-        return np.clip(out, 0.0, 1.0)
+        # 6) Re-fill any tiny gaps harden punched in crown/body.
+        return fill_person_holes(
+            np.clip(out, 0.0, 1.0), min_fg=0.16, close_px=11, fill_value=0.92
+        )
 
     def _polish(
         self, bgr: np.ndarray, *, warmup: bool = False, soft_cpu: bool = False
     ) -> np.ndarray:
         if warmup:
-            a = warmup_alpha(self._base_alpha, bgr, n_warmup=DEFAULT_WARMUP)
+            # full-body-fast: CPU bake warmup×2 (not ×10) — 10× MobileNet was wasting seconds.
+            n_w = 2 if soft_cpu else DEFAULT_WARMUP
+            a = warmup_alpha(self._base_alpha, bgr, n_warmup=n_w)
         else:
             a = self._base_alpha(bgr)
         if self._seed is None:
@@ -338,14 +357,14 @@ class MaxQualityEngine(MattingEngine):
                 sharp_edges=False,
                 frame_bgr=bgr,
             )
-        # peak-cutout: flow temporal + mid-band edge crisp (OpenCV only).
-        if not (is_matte_empty(out) or is_matte_degenerate(out)):
+        # peak-cutout: flow temporal + edge crisp — skip heavy temporal on CPU bake.
+        if not soft_cpu and not (is_matte_empty(out) or is_matte_degenerate(out)):
             try:
                 out = peak_refine_alpha(
                     out,
                     bgr,
                     temporal=self._flow_temporal,
-                    edge_crisp=0.28 if soft_cpu else 0.42,
+                    edge_crisp=0.42,
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -354,19 +373,20 @@ class MaxQualityEngine(MattingEngine):
             logger.warning("Max polish produced degenerate slab — keeping base RVM/heuristic alpha")
             self._stabilizer.reset()
             self._flow_temporal.reset()
-            return np.clip(np.asarray(a, dtype=np.float32), 0.0, 1.0)
+            return fill_person_holes(np.clip(np.asarray(a, dtype=np.float32), 0.0, 1.0))
         if is_matte_empty(out) or is_matte_degenerate(out):
             # simple-bg4: MobileNet/ResNet slab after polish — recover before UI toast.
             recovered = self._ensure_nonempty_alpha(bgr, a if not is_matte_empty(a) else out)
             if not is_matte_empty(recovered) and not is_matte_degenerate(recovered):
                 self._stabilizer.reset()
                 self._flow_temporal.reset()
-                return recovered
+                return fill_person_holes(recovered)
             # Never ship gray-slab as success — zeros → UI empty path (not opaque Cutout).
             self._stabilizer.reset()
             self._flow_temporal.reset()
             return np.zeros(bgr.shape[:2], dtype=np.float32)
-        return out
+        # Prefer fuller recall: close head/body holes after polish.
+        return fill_person_holes(out, min_fg=0.18, close_px=11 if soft_cpu else 9)
 
     def preview_frame(self, t_sec: float) -> PreviewFrame:
         if self._media is None:
@@ -488,7 +508,7 @@ class MaxQualityEngine(MattingEngine):
             "source_height": int(self._media.height) if self._media else int(bgr.shape[0]),
             "infer_width": int(bgr.shape[1]),
             "infer_height": int(bgr.shape[0]),
-            "stamp": "2026-10-13-matte-hard",
+            "stamp": "2026-10-13-full-body-fast",
         }
         if empty and matte_error is None and alpha is not None:
             from hybrid_editor.media.video_io import matte_failure_reason
@@ -625,10 +645,12 @@ class MaxQualityEngine(MattingEngine):
             total_est = min(total_est, max_frames)
         frames_bgr: list[np.ndarray] = []
         frames_alpha: list[np.ndarray] = []
-        # Apex: stream full-res BGRA to disk (RTX 3060 RAM) — keep only preview proxies in RAM
+        # CUDA Max: stream full-res BGRA PNGs. CPU fast: keep BGRA in RAM at export
+        # long-side (no per-frame guided upsample + disk PNG — that was ~10 min).
         stream_dir = Path(tempfile.mkdtemp(prefix="hybrid-apex-bgra-"))
         frames_bgra_fallback: list[np.ndarray] = []
-        stream_mode = bool(self.sharp_edges)
+        stream_mode = bool(self.sharp_edges) and not cpu_fast
+        export_long = bake_long if cpu_fast else 10**9
         try:
             idx = 0
             while written < limit:
@@ -638,20 +660,26 @@ class MaxQualityEngine(MattingEngine):
                 cur_t = start_t + (idx / fps)
                 if cur_t > end_t + 1e-6:
                     break
-                # CPU fast: matte/polish at bake_long; peak-cutout guided upsample to native.
-                bgr_m = downscale_long_side(bgr, bake_long) if cpu_fast else bgr
+                # CPU fast: matte/polish/export at bake_long (~720) — real ~45s path.
+                if cpu_fast:
+                    bgr_m = downscale_long_side(bgr, bake_long)
+                    cut_base = bgr_m
+                else:
+                    bgr_m = bgr
+                    cut_base = bgr
                 alpha = self._polish(bgr_m, warmup=(idx == 0), soft_cpu=cpu_fast)
-                if alpha.shape[:2] != bgr.shape[:2]:
+                if (not cpu_fast) and alpha.shape[:2] != bgr.shape[:2]:
                     try:
-                        alpha = guided_upsample_alpha(alpha, bgr, radius=4 if cpu_fast else 3)
+                        alpha = guided_upsample_alpha(alpha, bgr, radius=3)
                     except Exception:  # noqa: BLE001
                         alpha = cv2.resize(
                             alpha, (bgr.shape[1], bgr.shape[0]), interpolation=cv2.INTER_LINEAR
                         )
-                    if cpu_fast:
-                        alpha = self._crush_soft_shadow_alpha(alpha)
+                if cpu_fast:
+                    # Hole-fill + gentle fringe kill (no guided upsample — speed + hair keep).
+                    alpha = self._crush_soft_shadow_alpha(alpha)
                 # Mid-clip re-warmup on strong drift vs seed (rarer on CPU fast-path).
-                rewarm_every = 96 if cpu_fast else 48
+                rewarm_every = 120 if cpu_fast else 48
                 if idx > 0 and idx % rewarm_every == 0 and self._seed is not None:
                     seed_u = self._seed
                     if seed_u.shape[:2] != alpha.shape[:2]:
@@ -659,7 +687,7 @@ class MaxQualityEngine(MattingEngine):
                             seed_u, (alpha.shape[1], alpha.shape[0]), interpolation=cv2.INTER_LINEAR
                         )
                     drift = float(np.mean(np.abs(alpha - seed_u)))
-                    if drift > 0.28:
+                    if drift > 0.32:
                         if progress:
                             progress(
                                 written / max(total_est, 1),
@@ -668,29 +696,29 @@ class MaxQualityEngine(MattingEngine):
                         self._fast.reset()
                         self._flow_temporal.reset()
                         alpha = self._polish(bgr_m, warmup=True, soft_cpu=cpu_fast)
-                        if alpha.shape[:2] != bgr.shape[:2]:
+                        if cpu_fast:
+                            alpha = self._crush_soft_shadow_alpha(alpha)
+                        elif alpha.shape[:2] != bgr.shape[:2]:
                             try:
-                                alpha = guided_upsample_alpha(alpha, bgr, radius=4)
+                                alpha = guided_upsample_alpha(alpha, bgr, radius=3)
                             except Exception:  # noqa: BLE001
                                 alpha = cv2.resize(
                                     alpha,
                                     (bgr.shape[1], bgr.shape[0]),
                                     interpolation=cv2.INTER_LINEAR,
                                 )
-                            if cpu_fast:
-                                alpha = self._crush_soft_shadow_alpha(alpha)
                 # CapCut RGB fringe / cyan + bright spill before writing BGRA
-                cut_bgr = bgr
+                cut_bgr = cut_base
                 # Prefer RVM fgr near edges when the last ORT pass produced it.
                 fgr = None
                 rvm = getattr(self._fast, "_rvm", None)
                 if rvm is not None:
                     fgr = getattr(rvm, "last_fgr_bgr", None)
-                if fgr is not None:
+                if fgr is not None and not cpu_fast:
                     try:
-                        cut_bgr = composite_with_fgr(bgr, alpha, fgr, mix=0.68)
+                        cut_bgr = composite_with_fgr(cut_base, alpha, fgr, mix=0.68)
                     except Exception:  # noqa: BLE001
-                        cut_bgr = bgr
+                        cut_bgr = cut_base
                 if self.sharp_edges:
                     if cpu_fast:
                         # CPU_MAX_SPEC color polish — APEX despill on soft edges = dark shadow.
@@ -714,8 +742,8 @@ class MaxQualityEngine(MattingEngine):
                 a8 = (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
                 if alpha_dir is not None:
                     cv2.imwrite(str(alpha_dir / f"{idx:06d}.png"), a8)
-                # preview.mp4 may use a display proxy; ProRes / sharp export keeps full-res BGRA.
-                preview_long = 1080 if self.sharp_edges else 720
+                # preview.mp4 proxy; CPU fast exports BGRA at bake_long (in-RAM, no PNG stream).
+                preview_long = min(1080, export_long) if cpu_fast else (1080 if self.sharp_edges else 720)
                 proxy = downscale_long_side(cut_bgr, preview_long)
                 a_p = cv2.resize(alpha, (proxy.shape[1], proxy.shape[0]), interpolation=cv2.INTER_LINEAR)
                 frames_bgr.append(proxy)
@@ -735,7 +763,8 @@ class MaxQualityEngine(MattingEngine):
                     total_est = written
                 if progress:
                     pct = min(0.85, written / max(total_est, 1))
-                    progress(pct, f"Max bake {written}/{total_est} frame")
+                    tag = "CPU Max~720" if cpu_fast else "Max bake"
+                    progress(pct, f"{tag} {written}/{total_est} frame")
         finally:
             cap.release()
 
@@ -884,7 +913,7 @@ class MaxQualityEngine(MattingEngine):
                 "frames_total_est": total_est,
                 "max_frames_cap": max_frames,
                 "mov_path": prores,
-                "stamp": "2026-10-13-matte-hard",
+                "stamp": "2026-10-13-full-body-fast",
             },
         )
         _restore_fast()

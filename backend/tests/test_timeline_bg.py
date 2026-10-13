@@ -29,7 +29,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_timeline_bg():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-matte-hard"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-full-body-fast"
 
 
 def test_remove_extra_v1_and_v2():

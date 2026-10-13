@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-13-matte-hard` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-13-full-body-fast` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-13-matte-hard
+# expect: 2026-10-13-full-body-fast
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # Default: CPU ORT (real person matte). Optional CUDA after hard probe:
@@ -59,7 +59,7 @@ One-click from Agent Store:
 ```powershell
 & "$env:LOCALAPPDATA\Cursor\AgentStores\cursor_agent_stores\bc-41930eab-1501-4c19-acf3-0c9d63afbf4d\files\docs\capcut-features\sync_hybrid.ps1"
 cd $env:USERPROFILE\Documents\Videoeditor
-Get-Content .\hybrid_cut\SYNC_VERSION.txt   # 2026-10-13-matte-hard
+Get-Content .\hybrid_cut\SYNC_VERSION.txt   # 2026-10-13-full-body-fast
 cd hybrid_cut
 .\run_hybrid.ps1
 ```
@@ -78,15 +78,19 @@ cd $env:USERPROFILE\Documents\Videoeditor\hybrid_cut
 ---
 
 
-## Stamp - matte-hard (`2026-10-13-matte-hard`)
+## Stamp - full-body-fast (`2026-10-13-full-body-fast`)
+
+Hole-fill + hair/head protect (no checkerboard crown gaps), CPU Max bake MobileNet@~720 in-RAM (~45s for 10s@24 1080p — no guided upsample / full-HD PNG stream), hard-ish nobg crush (kill milky shoulder halo / ghost edges without reopening head holes), stronger CPU decontaminate/despill, and wall-clock–aware Hátravan ETA. Includes matte-hard salvage. Install: `PASTE_FULL_BODY_FAST_INSTALL.ps1`. Dist: `index-BSZBtAvx.js`.
+
+## Stamp - matte-hard (`2026-10-13-full-body-fast`)
 
 CPU ORT gray-slab toast fix on top of peak-ui: `hard_person_alpha` salvage (relaxed BG + GrabCut + multi-lobe prior) so Előnézet always shows a person matte; tighter closeup/slab rejection; auto Előnézet on Megnyitás with one retry. Install: `PASTE_MATTE_HARD_INSTALL.ps1`. Dist: `index-B9mlbaHn.js`.
 
-## Stamp - peak-ui (`2026-10-13-matte-hard`)
+## Stamp - peak-ui (`2026-10-13-full-body-fast`)
 
 CapCut-class chrome on top of peak-cutout + simple-bg7: hero **HybridCut** brand, Sora/DM Sans, dark lime/orange shell, 1·Megnyitás / 2·Előnézet / 3·Export flow, mode/preview/export motion. Gyors preview uses `preview_boost_person_alpha` so the person matte is instantly visible. Single V1 + auto person BG only. Install: `PASTE_PEAK_UI_INSTALL.ps1`. Dist: `index-DcH3y0LK.js`.
 
-## Stamp - simple-bg (`2026-10-13-matte-hard`)
+## Stamp - simple-bg (`2026-10-13-full-body-fast`)
 
 Tip restart: [`docs/simple-bg-restart.md`](docs/simple-bg-restart.md).
 
@@ -94,7 +98,7 @@ Tip restart: [`docs/simple-bg-restart.md`](docs/simple-bg-restart.md).
 
 ## Prior - run-ps1 (superseded)
 
-## Stamp - run-ps1 (historical) (`2026-10-13-matte-hard`)
+## Stamp - run-ps1 (historical) (`2026-10-13-full-body-fast`)
 
 Tip restart: [`docs/run-ps1-restart.md`](docs/run-ps1-restart.md).
 

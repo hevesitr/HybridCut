@@ -1,4 +1,4 @@
-"""simple-bg (`2026-10-13-matte-hard`) — one V1 clip + BG remove only."""
+"""simple-bg (`2026-10-13-full-body-fast`) — one V1 clip + BG remove only."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ TL = ROOT / "frontend" / "src" / "components" / "TimelineTrack.tsx"
 CSS = ROOT / "frontend" / "src" / "styles" / "app.css"
 RESTART = ROOT / "docs" / "simple-bg-restart.md"
 README = ROOT / "README.md"
-STAMP = "2026-10-13-matte-hard"
+STAMP = "2026-10-13-full-body-fast"
 
 
 def _synthetic_person_bgr(h: int = 160, w: int = 120) -> np.ndarray:

@@ -510,18 +510,18 @@ def relaxed_bg_person_alpha(bgr: np.ndarray) -> np.ndarray:
     alpha = np.clip((dist - thr_lo) / max(1e-3, thr_hi - thr_lo), 0.0, 1.0).astype(
         np.float32
     )
-    soft = (alpha > 0.40).astype(np.uint8) * 255
+    soft = (alpha > 0.35).astype(np.uint8) * 255
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    soft = cv2.morphologyEx(soft, cv2.MORPH_OPEN, k, iterations=1)
-    soft = cv2.morphologyEx(soft, cv2.MORPH_CLOSE, k, iterations=2)
+    # Close only — open punches hair/crown holes on textured BG.
+    soft = cv2.morphologyEx(soft, cv2.MORPH_CLOSE, k, iterations=3)
     alpha = np.maximum(
-        alpha * 0.40, cv2.GaussianBlur(soft.astype(np.float32) / 255.0, (0, 0), 2.0)
+        alpha * 0.45, cv2.GaussianBlur(soft.astype(np.float32) / 255.0, (0, 0), 2.0)
     )
-    rim = max(2, min(h, w) // 70)
-    alpha[:rim, :] *= 0.10
-    alpha[-rim:, :] *= 0.10
-    alpha[:, :rim] *= 0.10
-    alpha[:, -rim:] *= 0.10
+    rim = max(2, min(h, w) // 90)
+    alpha[:rim, :] *= 0.20
+    alpha[-rim:, :] *= 0.20
+    alpha[:, :rim] *= 0.20
+    alpha[:, -rim:] *= 0.20
     return np.clip(alpha, 0.0, 1.0).astype(np.float32)
 
 
@@ -562,17 +562,23 @@ def hard_person_alpha(bgr: np.ndarray) -> np.ndarray:
             continue
         cover = float((cand > 0.15).mean())
         std = float(cand.std())
-        # Prefer real person cover (not dust, not full-frame fog).
+        # full-body-fast: prefer fuller recall (cover) over holey high-std mattes.
         if cover < 0.02 or cover > 0.88:
             score = std * 0.25 + float(cand.max()) * 0.1
         else:
-            score = std * 2.0 + cover * 0.5 + float(cand.max())
+            score = cover * 3.0 + std * 1.0 + float(cand.max()) * 0.5
         if is_matte_good_enough(cand):
             score += 1.5
         if score > best_score:
             best_score = score
             best = cand
     if best is not None and not is_matte_empty(best) and not is_matte_degenerate(best):
+        try:
+            from hybrid_editor.engines.videoeditor_polish import fill_person_holes
+
+            best = fill_person_holes(best, min_fg=0.18, close_px=13, fill_value=0.92)
+        except Exception:  # noqa: BLE001
+            pass
         return best.astype(np.float32, copy=False)
 
     # Absolute last resort: visible multi-lobe prior so UI always shows recognition.
@@ -598,6 +604,12 @@ def hard_person_alpha(bgr: np.ndarray) -> np.ndarray:
     peak = float(alpha.max())
     if peak > 1e-4 and peak < 0.55:
         alpha = np.clip(alpha * (0.75 / peak), 0.0, 1.0)
+    try:
+        from hybrid_editor.engines.videoeditor_polish import fill_person_holes
+
+        alpha = fill_person_holes(alpha, min_fg=0.16, close_px=13, fill_value=0.90)
+    except Exception:  # noqa: BLE001
+        pass
     return alpha.astype(np.float32)
 
 
@@ -1640,7 +1652,13 @@ class FastEngine(MattingEngine):
                 logger.warning("RVM matte failed — trying alternate / chroma / heuristic: %s", exc)
                 alpha = None
         if alpha is not None and is_matte_good_enough(alpha):
-            return alpha
+            # Prefer fuller recall: close hair/body holes on usable RVM mattes too.
+            try:
+                from hybrid_editor.engines.videoeditor_polish import fill_person_holes
+
+                return fill_person_holes(alpha, min_fg=0.18, close_px=11, fill_value=0.90)
+            except Exception:  # noqa: BLE001
+                return alpha
         if alpha is not None:
             why = matte_failure_reason(alpha) or "weak/speck"
             kind = "degenerate slab" if is_matte_degenerate(alpha) else "empty/weak"
@@ -1813,7 +1831,7 @@ class FastEngine(MattingEngine):
             "source_height": src_h,
             "infer_width": infer_w,
             "infer_height": infer_h,
-            "stamp": "2026-10-13-matte-hard",
+            "stamp": "2026-10-13-full-body-fast",
         }
         if matte_error and empty:
             meta["matte_error"] = matte_error
