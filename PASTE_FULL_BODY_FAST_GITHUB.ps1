@@ -1,4 +1,4 @@
-# HybridCut full-body-fast — GitHub-only install (no Agent Store / Context sync).
+# HybridCut full-body-fast - GitHub-only install (no Agent Store / Context sync).
 # ASCII-only. Paste into Windows PowerShell.
 # Requires: git + network to https://github.com/hevesitr/HybridCut
 
@@ -17,7 +17,7 @@ Get-NetTCPConnection -LocalPort 3847 -ErrorAction SilentlyContinue |
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Repo) | Out-Null
 if (-not (Test-Path -LiteralPath (Join-Path $Repo ".git"))) {
   if (Test-Path -LiteralPath $Repo) {
-    Write-Host ("Existing folder without .git — cloning into " + $Repo + "_tip")
+    Write-Host ("Existing folder without .git - cloning into " + $Repo + "_tip")
     $Repo = Join-Path $env:USERPROFILE "Documents\HybridCut_tip"
   }
   git clone $RepoUrl $Repo
@@ -32,7 +32,7 @@ $stamp = if (Test-Path -LiteralPath $stampFile) { (Get-Content -LiteralPath $sta
 Write-Host ("SRC: " + $Repo)
 Write-Host ("SYNC_VERSION: " + $stamp)
 if ($stamp -ne $TipStamp) {
-  Write-Host ("WARN: expected " + $TipStamp + " — tip may not be pushed yet. Continuing with pulled tip.")
+  Write-Host ("WARN: expected " + $TipStamp + " - tip may not be pushed yet. Continuing with pulled tip.")
 }
 
 & .\install_to_videoeditor.ps1

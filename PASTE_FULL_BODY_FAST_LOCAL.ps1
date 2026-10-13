@@ -1,4 +1,4 @@
-# HybridCut full-body-fast — local path finder (Agent Store lag / no Context).
+# HybridCut full-body-fast - local path finder (Agent Store lag / no Context).
 # ASCII-only. Tries several known local mirrors, then falls back to GitHub.
 # Paste into Windows PowerShell.
 
@@ -43,7 +43,7 @@ foreach ($c in $candidates) {
 }
 
 if (-not $src -or (Get-Stamp $src) -ne $TipStamp) {
-  Write-Host "Tip not in Agent Store / local mirrors — switching to GitHub pull ..."
+  Write-Host "Tip not in Agent Store / local mirrors - switching to GitHub pull ..."
   $gh = Join-Path $env:USERPROFILE "Documents\HybridCut"
   if (-not (Test-Path -LiteralPath (Join-Path $gh ".git"))) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $gh) | Out-Null

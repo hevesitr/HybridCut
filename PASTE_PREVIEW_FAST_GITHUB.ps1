@@ -1,4 +1,4 @@
-# HybridCut preview-fast — GitHub-only install (no Agent Store).
+# HybridCut preview-fast - GitHub-only install (no Agent Store).
 # ASCII-only. Paste into Windows PowerShell.
 
 $ErrorActionPreference = "Stop"
@@ -27,7 +27,7 @@ $sf = Join-Path $Repo "SYNC_VERSION.txt"
 if (Test-Path -LiteralPath $sf) { $stamp = (Get-Content -LiteralPath $sf -Raw).Trim() }
 Write-Host ("SRC SYNC_VERSION: " + $stamp)
 if ($stamp -ne $TipStamp) {
-  Write-Host ("WARN: expected " + $TipStamp + " — continuing with pulled tip")
+  Write-Host ("WARN: expected " + $TipStamp + " - continuing with pulled tip")
 }
 
 & .\install_to_videoeditor.ps1

@@ -48,7 +48,7 @@ foreach ($c in $candidates) {
 }
 
 if (-not $src) {
-  Write-Host "Tip stamp not in Agent Store — pulling GitHub hevesitr/HybridCut ..."
+  Write-Host "Tip stamp not in Agent Store - pulling GitHub hevesitr/HybridCut ..."
   $repo = Join-Path $env:USERPROFILE "Documents\HybridCut"
   if (-not (Test-Path -LiteralPath (Join-Path $repo ".git"))) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $repo) | Out-Null
@@ -86,7 +86,7 @@ if (-not $js) { Write-Error "No frontend dist JS" }
 Write-Host ("DIST JS: " + $js.Name)
 $banned = @("index-BGJ2h0CY.js", "index-fyrBYl2A.js", "index-DY2_6z5E.js")
 if ($banned -contains $js.Name) {
-  Write-Error ("Stale dist still present: " + $js.Name + " — purge failed; delete frontend\dist and re-run.")
+  Write-Error ("Stale dist still present: " + $js.Name + " - purge failed; delete frontend\dist and re-run.")
 }
 $sample = Get-Content -LiteralPath $js.FullName -Raw
 if ($sample -match "AI sáv|AI SÁV|\+ V1 klip|\+ B-roll|tl-polish-btn") {
