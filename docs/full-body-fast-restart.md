@@ -19,10 +19,21 @@ Get-Content "$env:USERPROFILE\Documents\Videoeditor\hybrid_cut\SYNC_VERSION.txt"
 # expect: 2026-10-13-full-body-fast
 ```
 
-Dist tip: `index-BSZBtAvx.js`.
+Dist tip: `index-D_S52bYl.js`.
 
 ## Verify
 
 1. Előnézet — full person silhouette, no crown checkerboard holes.
 2. Max Export on CPU ORT — status shows `CPU Max~720`, ~45s for ~10s 1080p24 (not ~10 min).
 3. nobg.mov — clean hard-ish edges, no grey/green shoulder halo or ghost duplicate.
+
+## No Agent Store
+
+Use `PASTE_FULL_BODY_FAST_GITHUB.ps1` or:
+
+```powershell
+cd $env:USERPROFILE\Documents\HybridCut
+git pull origin main
+Get-Content .\SYNC_VERSION.txt
+.\PASTE_FULL_BODY_FAST_INSTALL.ps1
+```

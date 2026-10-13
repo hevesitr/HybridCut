@@ -80,7 +80,13 @@ cd $env:USERPROFILE\Documents\Videoeditor\hybrid_cut
 
 ## Stamp - full-body-fast (`2026-10-13-full-body-fast`)
 
-Hole-fill + hair/head protect (no checkerboard crown gaps), CPU Max bake MobileNet@~720 in-RAM (~45s for 10s@24 1080p — no guided upsample / full-HD PNG stream), hard-ish nobg crush (kill milky shoulder halo / ghost edges without reopening head holes), stronger CPU decontaminate/despill, and wall-clock–aware Hátravan ETA. Includes matte-hard salvage. Install: `PASTE_FULL_BODY_FAST_INSTALL.ps1`. Dist: `index-BSZBtAvx.js`.
+Hole-fill + hair/head protect (no checkerboard crown gaps), CPU Max bake MobileNet@~720 in-RAM (~45s for 10s@24 1080p — no guided upsample / full-HD PNG stream), hard-ish nobg crush (kill milky shoulder halo / ghost edges without reopening head holes), stronger CPU decontaminate/despill, wall-clock–aware Hátravan ETA, and **preview keep-alive** (click/mode re-matte must not blank Cutout). Includes matte-hard salvage.
+
+**Install (pick one):**
+- Agent Store: `PASTE_FULL_BODY_FAST_INSTALL.ps1` (or `PASTE_FULL_BODY_FAST_LOCAL.ps1` if Context lag)
+- **No Agent Store / reliable:** `PASTE_FULL_BODY_FAST_GITHUB.ps1` — `git pull` `hevesitr/HybridCut` then install
+
+Dist tip after rebuild is hashed in `frontend/dist/`.
 
 ## Stamp - matte-hard (`2026-10-13-full-body-fast`)
 

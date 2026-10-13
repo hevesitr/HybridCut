@@ -391,17 +391,25 @@ class MaxQualityEngine(MattingEngine):
     def preview_frame(self, t_sec: float) -> PreviewFrame:
         if self._media is None:
             raise RuntimeError("No media open")
-        # Preview: quality polish; MaskStore/prefetch live inside Fast backbone
-        self._fast.reset()
         # Keep Fast backend string fresh (CUDA→CPU fallback may update it).
         if not self._adapter.available:
             self._backend = f"quality-pipeline+{self._fast.capabilities().backend}"
-        frame = self._fast.preview_frame(t_sec)
-        # Re-polish with Videoeditor path at near-source resolution (match left-side quality).
+        # full-body-fast: do NOT call _fast.preview_frame here — that was a full
+        # throwaway matte+encode before Max polish (2× work → click feels stuck).
+        try:
+            if getattr(self._fast, "_media", None) is None:
+                self._fast.open_media(Path(self._media.path))
+        except Exception:  # noqa: BLE001
+            pass
+        self._fast.reset()
         bgr, t = read_frame_at(Path(self._media.path), t_sec)
-        # Cap at source long-side — never upsample a 720p clip to 1440 for CPU matte.
+        # Cap at source long-side — CPU Max preview @~720 so re-click stays snappy.
         src_long = max(int(bgr.shape[0]), int(bgr.shape[1]))
-        preview_long = int(os.environ.get("HYBRID_MAX_PREVIEW_LONG", "1440") or "1440")
+        cpu_fast = self._cpu_max_fast_enabled()
+        if cpu_fast:
+            preview_long = int(os.environ.get("HYBRID_CPU_MAX_PREVIEW_LONG", "720") or "720")
+        else:
+            preview_long = int(os.environ.get("HYBRID_MAX_PREVIEW_LONG", "1440") or "1440")
         if not self.sharp_edges:
             preview_long = 720
         preview_long = max(64, min(preview_long, src_long))
@@ -410,22 +418,25 @@ class MaxQualityEngine(MattingEngine):
         self._seed = None
         matte_error = None
         recovered = False
+        polish_spec_decon = CPU_MAX_SPEC if cpu_fast else APEX_SPEC
         try:
-            alpha = self._polish(bgr, warmup=True)
+            alpha = self._polish(bgr, warmup=True, soft_cpu=cpu_fast)
             # Polish / empty RVM must never leave Max without a person mask.
             if is_matte_empty(alpha):
                 alpha = self._ensure_nonempty_alpha(bgr, alpha)
                 recovered = not is_matte_empty(alpha)
+            if cpu_fast and alpha is not None and not is_matte_empty(alpha):
+                alpha = self._crush_soft_shadow_alpha(alpha)
             # CapCut fringe / cyan + bright spill on cutout RGB (Éles szélek / apex)
             cut_bgr = bgr
             if self.sharp_edges and alpha is not None and not is_matte_empty(alpha):
                 cut_bgr = apply_color_polish(
                     bgr,
                     alpha,
-                    decontaminate=float(APEX_SPEC.decontaminate),
-                    despill=float(APEX_SPEC.despill),
-                    bright_fringe=float(APEX_SPEC.bright_fringe),
-                    micro_despill=float(APEX_SPEC.micro_despill),
+                    decontaminate=float(polish_spec_decon.decontaminate),
+                    despill=float(polish_spec_decon.despill),
+                    bright_fringe=float(polish_spec_decon.bright_fringe),
+                    micro_despill=float(polish_spec_decon.micro_despill),
                 )
             jpg, png, w, h, src, empty = encode_preview_pair(
                 cut_bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
@@ -435,15 +446,17 @@ class MaxQualityEngine(MattingEngine):
             try:
                 alpha = self._ensure_nonempty_alpha(bgr, None)
                 recovered = not is_matte_empty(alpha)
+                if cpu_fast and alpha is not None and not is_matte_empty(alpha):
+                    alpha = self._crush_soft_shadow_alpha(alpha)
                 cut_bgr = bgr
                 if self.sharp_edges and not is_matte_empty(alpha):
                     cut_bgr = apply_color_polish(
                         bgr,
                         alpha,
-                        decontaminate=float(APEX_SPEC.decontaminate),
-                        despill=float(APEX_SPEC.despill),
-                        bright_fringe=float(APEX_SPEC.bright_fringe),
-                        micro_despill=float(APEX_SPEC.micro_despill),
+                        decontaminate=float(polish_spec_decon.decontaminate),
+                        despill=float(polish_spec_decon.despill),
+                        bright_fringe=float(polish_spec_decon.bright_fringe),
+                        micro_despill=float(polish_spec_decon.micro_despill),
                     )
                 jpg, png, w, h, src, empty = encode_preview_pair(
                     cut_bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
@@ -457,15 +470,17 @@ class MaxQualityEngine(MattingEngine):
             # Final hard retry before admitting empty to the UI.
             alpha = self._ensure_nonempty_alpha(bgr, alpha)
             if not is_matte_empty(alpha):
+                if cpu_fast:
+                    alpha = self._crush_soft_shadow_alpha(alpha)
                 cut_bgr = bgr
                 if self.sharp_edges:
                     cut_bgr = apply_color_polish(
                         bgr,
                         alpha,
-                        decontaminate=float(APEX_SPEC.decontaminate),
-                        despill=float(APEX_SPEC.despill),
-                        bright_fringe=float(APEX_SPEC.bright_fringe),
-                        micro_despill=float(APEX_SPEC.micro_despill),
+                        decontaminate=float(polish_spec_decon.decontaminate),
+                        despill=float(polish_spec_decon.despill),
+                        bright_fringe=float(polish_spec_decon.bright_fringe),
+                        micro_despill=float(polish_spec_decon.micro_despill),
                     )
                 jpg, png, w, h, src, empty = encode_preview_pair(
                     cut_bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges

@@ -92,3 +92,18 @@ def test_eta_cpu_max_still_near_45s():
 
     cpu = estimate_bake_sec(10.0, 24.0, 1920, 1080, "max", cpu_ort=True)
     assert 35 <= cpu <= 90
+
+
+def test_ui_keeps_preview_on_mode_reclick():
+    """Regression: Max/Gyors re-click must not setPreview(null) / blank Cutout."""
+    app = (ROOT / "frontend/src/App.tsx").read_text(encoding="utf-8")
+    mode = (ROOT / "frontend/src/components/ModeSwitcher.tsx").read_text(encoding="utf-8")
+    assert "lastGoodPreview" in app
+    assert "previewGen" in app
+    assert "setPreview(null)" in app  # still used for new project
+    # Mode change path must not blank before re-matte
+    assert "Clear stale empty matte" not in app
+    assert 'if (mode !== "max") onChange("max")' in mode or "mode !== \"max\"" in mode
+    assert "PASTE_FULL_BODY_FAST_GITHUB.ps1" in (ROOT / "PASTE_FULL_BODY_FAST_GITHUB.ps1").read_text(
+        encoding="utf-8"
+    ) or (ROOT / "PASTE_FULL_BODY_FAST_GITHUB.ps1").is_file()

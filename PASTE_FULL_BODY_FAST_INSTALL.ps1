@@ -102,11 +102,11 @@ $js = $assets | Select-Object -First 1
 if (-not $js) { Write-Error "No frontend dist JS" }
 Write-Host ("DIST JS: " + $js.Name)
 # Tip dist for full-body-fast (warn if unexpected; ban known stale hashes)
-$expectedJs = "index-BSZBtAvx.js"
+$expectedJs = "index-D_S52bYl.js"
 if ($js.Name -ne $expectedJs) {
   Write-Host ("NOTE: DIST JS is " + $js.Name + " (expected tip " + $expectedJs + " if store is fresh)")
 }
-$banned = @("index-BK_-KW48.js", "index-BGJ2h0CY.js", "index-fyrBYl2A.js", "index-DY2_6z5E.js", "index-DakKRMds.js", "index-7OPITa-N.js", "index-3rVnbc6C.js", "index-CFjr8qhD.js", "index-FhoJfHMi.js", "index-DQ4SEXZR.js", "index--o179zLg.css")
+$banned = @("index-BSZBtAvx.js", "index-BK_-KW48.js", "index-BGJ2h0CY.js", "index-fyrBYl2A.js", "index-DY2_6z5E.js", "index-DakKRMds.js", "index-7OPITa-N.js", "index-3rVnbc6C.js", "index-CFjr8qhD.js", "index-FhoJfHMi.js", "index-DQ4SEXZR.js", "index--o179zLg.css")
 if ($banned -contains $js.Name) {
   Write-Error ("Stale dist still present: " + $js.Name + " - purge failed; delete frontend\dist and re-run.")
 }

@@ -333,6 +333,20 @@ export default function App() {
   const transformCommitTimer = useRef<number | null>(null);
   /** Wall-clock bake start — remainingBakeSec blends observed spf so CPU slow-path cannot lie. */
   const bakeStartedAt = useRef<number | null>(null);
+  /** Ignore stale preview responses when a newer request already started. */
+  const previewGen = useRef(0);
+  /** Last non-empty cutout — never wipe UI to blank/source on a failed click-refresh. */
+  const lastGoodPreview = useRef<PreviewResult | null>(null);
+  const busyDepth = useRef(0);
+
+  const pushBusy = () => {
+    busyDepth.current += 1;
+    setBusy(true);
+  };
+  const popBusy = () => {
+    busyDepth.current = Math.max(0, busyDepth.current - 1);
+    if (busyDepth.current === 0) setBusy(false);
+  };
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -490,17 +504,19 @@ export default function App() {
     t: number,
     st?: EditorStatus | null,
     noteOverride?: string,
-    opts?: { preferCutout?: boolean; retryOnEmpty?: boolean },
+    opts?: { preferCutout?: boolean; retryOnEmpty?: boolean; allowEmptyReplace?: boolean },
   ): Promise<boolean> => {
     const cur = st ?? status;
     if (!cur?.media && !cur?.timeline?.clips?.length) return false;
-    setBusy(true);
+    const gen = ++previewGen.current;
+    pushBusy();
     setError(null);
     let ok = false;
     try {
       await api.setTimeline({ playhead_sec: t });
       const frame = await api.preview(t);
-      setPreview(frame);
+      // A newer click/scrub already started — drop this response.
+      if (gen !== previewGen.current) return false;
       const empty = Boolean(frame.meta?.matte_empty || frame.meta?.source_fallback);
       const personLabel = String(frame.meta?.person_matte_label_hu || "");
       const matteErr = String(frame.meta?.matte_error || "");
@@ -511,10 +527,30 @@ export default function App() {
       const ov = (frame.meta?.overlay_layers as unknown[] | undefined)?.length ?? 0;
       const composite = Boolean(frame.meta?.timeline_composite);
       const ovHit = ov ? (composite ? ` · kompozit ×${ov}` : "") : "";
-      // Apex: short human status — tech detail stays under Részletek.
+      // Keep last good Cutout on click/scrub glitch — empty follow-up must not blank the stage.
+      if (!empty) {
+        lastGoodPreview.current = frame;
+        setPreview(frame);
+        ok = true;
+      } else if (lastGoodPreview.current && !opts?.allowEmptyReplace) {
+        setPreview({
+          ...lastGoodPreview.current,
+          t_sec: frame.t_sec,
+          meta: {
+            ...(lastGoodPreview.current.meta || {}),
+            matte_refresh_failed: true,
+            last_matte_error: matteErr || undefined,
+          },
+        });
+        ok = true;
+      } else {
+        setPreview(frame);
+        ok = false;
+      }
+      const showEmptyUi = empty && !(lastGoodPreview.current && !opts?.allowEmptyReplace);
       setNote(
         noteOverride ??
-          (empty
+          (showEmptyUi
             ? degenerate
               ? "Hibás egyenletes maszk — újra Előnézet / Max"
               : matteErr
@@ -522,20 +558,15 @@ export default function App() {
                 : "Nincs ember-maszk — futtasd az Előnézetet"
             : `Cutout kész${seedHit}${ovHit} · t=${frame.t_sec.toFixed(2)}s`),
       );
-      // Always surface RVM/ORT/CUDA matte failures (never silent gray slab + Cutout ✓).
-      // Drop sticky CUDA gray-slab toast whenever preview recovers a person matte.
-      const recovered = Boolean(frame.meta?.matte_recovered) || !empty;
-      ok = !empty;
-      if (recovered) {
+      const recovered = Boolean(frame.meta?.matte_recovered) || !empty || ok;
+      if (recovered && !showEmptyUi) {
         if (toastTimer.current) window.clearTimeout(toastTimer.current);
         setToast((prev) =>
           prev && /Hibás maszk|egyenletes|szürke lap|Ember-maszk/i.test(prev)
             ? null
             : prev,
         );
-      } else if (empty && (matteErr || frame.meta?.source_fallback)) {
-        // Only toast true failures — never re-poison after matte_recovered.
-        // matte-hard: one silent retry on upload/open before scaring the user.
+      } else if (showEmptyUi && (matteErr || frame.meta?.source_fallback)) {
         if (!opts?.retryOnEmpty) {
           showToast(
             degenerate
@@ -546,37 +577,41 @@ export default function App() {
           );
         }
       }
-      // Explicit Előnézet / upload: jump to Cutout when matte ready (scrub stays put).
       if (opts?.preferCutout) {
-        if (!empty) {
+        if (!showEmptyUi) {
           setViewMode("cutout");
-          showToast(
-            autoMax
-              ? "Gyors üres volt — Max auto-retry OK · Cutout kész"
-              : personLabel
-                ? `${personLabel} — Exportálás a következő lépés`
-                : "Cutout kész — Exportálás a következő lépés",
-          );
+          if (!empty) {
+            showToast(
+              autoMax
+                ? "Gyors üres volt — Max auto-retry OK · Cutout kész"
+                : personLabel
+                  ? `${personLabel} — Exportálás a következő lépés`
+                  : "Cutout kész — Exportálás a következő lépés",
+            );
+          }
         } else if (!(matteErr || frame.meta?.source_fallback) && !opts?.retryOnEmpty) {
           showToast("Nincs ember-maszk — futtasd az Előnézetet újra");
         }
       }
       const refreshed = await api.status();
+      if (gen !== previewGen.current) return ok;
       setStatus(refreshed);
       syncTrimFromStatus(refreshed);
-      // matte-hard: auto-retry once when first pass empty (upload / Megnyitás).
       if (empty && opts?.retryOnEmpty) {
-        setBusy(false);
+        popBusy();
         return runPreview(t, refreshed, noteOverride, {
           preferCutout: opts.preferCutout,
           retryOnEmpty: false,
         });
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      ok = false;
+      if (gen === previewGen.current) {
+        setError(e instanceof Error ? e.message : String(e));
+        // Keep last good frame visible after network/ORT blip.
+        if (!lastGoodPreview.current) ok = false;
+      }
     } finally {
-      setBusy(false);
+      popBusy();
     }
     return ok;
   };
@@ -590,13 +625,20 @@ export default function App() {
   };
 
   const onMode = (mode: "gyors" | "max") => {
-    startTransition(() => {
-      setBusy(true);
-      setError(null);
-      // Clear stale empty matte from previous mode before Max auto-preview.
-      if (mode === "max") {
-        setPreview(null);
+    // Same-mode re-click: soft refresh only — never blank the Cutout stage.
+    if (statusRef.current?.mode === mode) {
+      const hasMedia = !!(
+        statusRef.current.media || (statusRef.current.timeline?.clips?.length ?? 0) > 0
+      );
+      if (hasMedia) {
+        void runPreview(tSec, statusRef.current, undefined, { preferCutout: true });
       }
+      return;
+    }
+    startTransition(() => {
+      pushBusy();
+      setError(null);
+      // Keep last good preview visible while Max/Gyors re-matte runs (CPU can take seconds).
       api
         .setMode(mode)
         .then(async (st) => {
@@ -616,9 +658,6 @@ export default function App() {
                   ? `Max · ${personHint} · Éles szélek alapból be`
                   : "Max = élesebb export · ResNet50 ha van · Éles szélek alapból be",
           );
-          if (mode === "max") {
-            // Seed panel available but not required — auto person first.
-          }
           const hasMedia = !!(st.media || (st.timeline?.clips?.length ?? 0) > 0);
           if (hasMedia) {
             await runPreview(tSec, st, undefined, { preferCutout: true });
@@ -627,7 +666,7 @@ export default function App() {
           }
         })
         .catch((e: Error) => setError(e.message))
-        .finally(() => setBusy(false));
+        .finally(() => popBusy());
     });
   };
 
@@ -666,11 +705,13 @@ export default function App() {
       setStatus(st);
       setTSec(0);
       setViewMode("source");
+      lastGoodPreview.current = null;
       syncTrimFromStatus(st);
       // matte-hard: always auto-run Előnézet on Megnyitás (retry once if empty).
       const ok = await runPreview(0, st, undefined, {
         preferCutout: true,
         retryOnEmpty: true,
+        allowEmptyReplace: true,
       });
       setNote(
         ok
@@ -705,6 +746,8 @@ export default function App() {
     try {
       const next = await api.newProject();
       setStatus(next);
+      lastGoodPreview.current = null;
+      previewGen.current += 1;
       setPreview(null);
       setTSec(0);
       setInSec(0);
@@ -842,7 +885,7 @@ export default function App() {
     },
     opts?: { quiet?: boolean },
   ) => {
-    if (!opts?.quiet) setBusy(true);
+    if (!opts?.quiet) pushBusy();
     setError(null);
     try {
       const st = await api.timelineAction({ action, ...extra });
@@ -866,12 +909,17 @@ export default function App() {
         reset_transform: "Pozíció visszaállítva (közép · 100%)",
       };
       if (!opts?.quiet) setNote(labels[action] || `Timeline: ${action}`);
-      // simple-bg3: one V1 track only — no second lane / polish
-      if (st.timeline?.clips?.length) await runPreview(t, st);
+      // Keep cutout on timeline clicks — empty Max re-polish must not blank the stage.
+      if (st.timeline?.clips?.length) {
+        await runPreview(t, st, undefined, { preferCutout: viewMode === "cutout" });
+      } else {
+        lastGoodPreview.current = null;
+        setPreview(null);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      if (!opts?.quiet) setBusy(false);
+      if (!opts?.quiet) popBusy();
     }
   };
 

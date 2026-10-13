@@ -43,7 +43,9 @@ export function ModeSwitcher({
         aria-checked={mode === "gyors"}
         disabled={disabled}
         title={`Gyors háttéreltávolítás — élő scrub, lágyabb szélek. Becsült idő: ${gEta}`}
-        onClick={() => onChange("gyors")}
+        onClick={() => {
+          if (mode !== "gyors") onChange("gyors");
+        }}
       >
         <strong>Gyors</strong>
         <span>élő scrub · lágyabb</span>
@@ -58,7 +60,10 @@ export function ModeSwitcher({
         aria-checked={mode === "max"}
         disabled={disabled}
         title={maxTitle}
-        onClick={() => onChange("max")}
+        onClick={() => {
+          // Re-clicking active Max used to clear preview (setPreview null) and stall CPU re-polish.
+          if (mode !== "max") onChange("max");
+        }}
       >
         <strong>Max</strong>
         <span>{maxSpan}</span>
