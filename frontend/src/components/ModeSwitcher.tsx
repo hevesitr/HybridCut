@@ -5,16 +5,34 @@ type Props = {
   /** Live ETA labels (Hungarian), e.g. „Kb. 12 mp”. */
   etaGyors?: string;
   etaMax?: string;
+  /** Honest path for Max ETA: CUDA EP vs CPU ORT fast-path. */
+  pathLabel?: "CUDA" | "CPU";
 };
 
-export function ModeSwitcher({ mode, disabled, onChange, etaGyors, etaMax }: Props) {
+export function ModeSwitcher({
+  mode,
+  disabled,
+  onChange,
+  etaGyors,
+  etaMax,
+  pathLabel,
+}: Props) {
   const gEta = etaGyors && etaGyors !== "Kb. —" ? etaGyors : "Kb. —";
   const mEta = etaMax && etaMax !== "Kb. —" ? etaMax : "Kb. —";
-  // Title hint: Max ETA assumes CPU fast-path when badge is CPU ORT.
+  const path = pathLabel === "CUDA" ? "CUDA" : pathLabel === "CPU" ? "CPU" : "";
+  const maxSpan =
+    path === "CPU" ? "éles · CPU~720" : path === "CUDA" ? "éles · CUDA" : "éles export · apex";
+  const maxTitle =
+    path === "CPU"
+      ? `Max — CPU ORT gyors bake (MobileNet~720). ETA: ${mEta}`
+      : path === "CUDA"
+        ? `Max — CUDA EP teljes ResNet/APEX. ETA: ${mEta}`
+        : `Max háttéreltávolítás — éles export. Becsült idő: ${mEta}`;
   return (
     <div
       className="mode-switch"
       data-mode={mode}
+      data-path={path || undefined}
       role="radiogroup"
       aria-label="Háttéreltávolítás mód"
     >
@@ -39,13 +57,14 @@ export function ModeSwitcher({ mode, disabled, onChange, etaGyors, etaMax }: Pro
         role="radio"
         aria-checked={mode === "max"}
         disabled={disabled}
-        title={`Max háttéreltávolítás — éles export, APEX polish. Becsült idő: ${mEta}`}
+        title={maxTitle}
         onClick={() => onChange("max")}
       >
         <strong>Max</strong>
-        <span>éles export · apex</span>
-        <em className="mode-eta" aria-label={`Max ETA ${mEta}`}>
+        <span>{maxSpan}</span>
+        <em className="mode-eta" aria-label={`Max ETA ${mEta}${path ? ` ${path}` : ""}`}>
           {mEta}
+          {path ? ` · ${path}` : ""}
         </em>
       </button>
     </div>

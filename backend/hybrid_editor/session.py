@@ -342,8 +342,10 @@ class EditorSession:
             # Explicit mode click: Gyors must stick; Max allows future auto once reset.
             if new_mode is EngineMode.GYORS:
                 self._suppress_auto_max = True
+                self.sharp_edges = False  # scrub soft
             else:
                 self._suppress_auto_max = False
+                self.sharp_edges = True  # Max export: apex / CPU_MAX sharp
             old = self.engine
             old.close()
             self.mode = new_mode
@@ -925,7 +927,7 @@ class EditorSession:
                     meta_extra: dict[str, Any] = {
                         "matte_empty": empty,
                         "has_alpha_clip": bool(getattr(matte_layer, "has_alpha", False)),
-                        "stamp": "2026-10-12-simple-bg6",
+                        "stamp": "2026-10-13-simple-bg7",
                         **overlay_meta,
                     }
                     if empty:

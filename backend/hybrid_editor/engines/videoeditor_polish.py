@@ -114,6 +114,27 @@ RECOMMENDED_SPEC = VideoeditorPolishSpec(
     hair_strand=0.0,
     micro_despill=0.0,
 )
+# CPU Max @~720 upscale: sharper than RECOMMENDED, lighter residual than APEX
+# (APEX residual_halo_px=11 on soft MobileNet edges reads as a thick shadow).
+CPU_MAX_SPEC = VideoeditorPolishSpec(
+    edge_feather=0.28,
+    fg_threshold=0.976,
+    bg_threshold=0.018,
+    morph_open=0,
+    morph_close=2,
+    guided_radius=6,
+    hair_boost=0.62,
+    target_long_side=0.0,
+    decontaminate=0.62,
+    despill=0.55,
+    residual_hard_thresh=0.50,
+    residual_halo_px=7,
+    unknown_hair=0.40,
+    bright_fringe=0.28,
+    edge_sharpen=0.36,
+    hair_strand=0.35,
+    micro_despill=0.12,
+)
 
 
 def _as_hw_float(alpha: np.ndarray, shape: Optional[tuple[int, int]] = None) -> np.ndarray:

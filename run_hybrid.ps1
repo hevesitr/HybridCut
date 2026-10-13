@@ -1,5 +1,5 @@
 # HybridCut one-click launcher (API + built UI on port 3847)
-# Stamp: 2026-10-12-simple-bg6 (CPU-first ORT; single V1 BG remove)
+# Stamp: 2026-10-13-simple-bg7 (CUDA cache stick; single V1 BG remove)
 # ASCII-only. Resolves root via Documents sync target or this script's folder.
 # Safe from ANY cwd - never assumes System32 or a prior cd.
 # Phase 5: skip pip upgrade; trusted-host; parent Videoeditor .venv reuse;
@@ -120,12 +120,59 @@ if (-not $env:HYBRID_RVM_ONNX) {
     }
 }
 
-# CPU-first (real person matte). Optional CUDA only after start_hybrid_cuda.ps1
-# hard probe OK. Override: $env:HYBRID_ORT_PROVIDER = "cuda"
+# CUDA stick (simple-bg7): if start_hybrid_cuda.ps1 persisted cache\ort_provider.txt=cuda,
+# re-probe once and keep CUDA when hard-OK. Never trust cache alone (rejects fake EP).
+# Override: $env:HYBRID_ORT_PROVIDER = "cuda" | "cpu"
 if (-not $env:HYBRID_ORT_PROVIDER) {
-    $env:HYBRID_ORT_PROVIDER = "cpu"
-    # ASCII-only; single quotes - em-dash in double quotes breaks PS 5.1 (mojibake ")
-    Write-Host 'HYBRID_ORT_PROVIDER=cpu (default - skip broken CUDA Conv Fallback)'
+    $providerFile = Join-Path $Root "cache\ort_provider.txt"
+    $savedProv = ""
+    if (Test-Path -LiteralPath $providerFile) {
+        $savedProv = (Get-Content -LiteralPath $providerFile -Raw -ErrorAction SilentlyContinue)
+        if ($null -ne $savedProv) { $savedProv = $savedProv.Trim().ToLowerInvariant() }
+    }
+    $useCuda = $false
+    if ($savedProv -eq "cuda") {
+        $probeScript = Join-Path $Root "scripts\probe_cuda_ep.py"
+        $venvProbePy = Join-Path $Root ".venv\Scripts\python.exe"
+        if (-not (Test-Path -LiteralPath $venvProbePy)) {
+            $venvProbePy = Join-Path (Split-Path -Parent $Root) ".venv\Scripts\python.exe"
+        }
+        if ((Test-Path -LiteralPath $probeScript) -and (Test-Path -LiteralPath $venvProbePy)) {
+            Write-Host 'cache\ort_provider.txt=cuda - re-probing CUDA EP (must hard-OK)...'
+            $env:HYBRID_ROOT = $Root
+            $env:PYTHONPATH = Join-Path $Root "backend"
+            $prevProbeEap = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                $probeOut = & $venvProbePy $probeScript 2>&1 | ForEach-Object {
+                    if ($_ -is [System.Management.Automation.ErrorRecord]) { [string]$_.ToString() }
+                    else { [string]$_ }
+                } | Out-String
+            } finally {
+                $ErrorActionPreference = $prevProbeEap
+            }
+            $pluginWarn = ($probeOut -match "No registered plugin EP")
+            $slabFail = ($probeOut -match "gray-slab|gray slab|MemcpyTransformer")
+            $okLine = ($probeOut -match "(?m)^OK=1\b") -or ($probeOut -match "OK=1")
+            $probeHardOk = $okLine -and (-not $pluginWarn) -and (-not $slabFail) -and ($probeOut -match "RESULT[=:]OK|RESULT: OK")
+            if ($probeHardOk) {
+                $useCuda = $true
+                Write-Host 'CUDA EP re-probe OK - HYBRID_ORT_PROVIDER=cuda'
+            } else {
+                Write-Host 'CUDA EP re-probe FAIL - falling back to CPU (updating cache)'
+                Set-Content -LiteralPath $providerFile -Value "cpu" -Encoding Ascii
+            }
+        } else {
+            Write-Host 'WARN: cuda cache set but probe/python missing - CPU default'
+        }
+    }
+    if ($useCuda) {
+        $env:HYBRID_ORT_PROVIDER = "cuda"
+        if (-not $env:VIDEOEDITOR_ORT_PROVIDER) { $env:VIDEOEDITOR_ORT_PROVIDER = "cuda" }
+    } else {
+        $env:HYBRID_ORT_PROVIDER = "cpu"
+        Write-Host 'HYBRID_ORT_PROVIDER=cpu (default - skip broken CUDA Conv Fallback)'
+    }
 }
 
 # Prepend pip nvidia cudnn/cublas bins to PATH (hybrid + parent CapCut venv).

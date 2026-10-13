@@ -352,8 +352,59 @@ def _add_dll_directory(folder: Path) -> None:
         pass
 
 
+def inject_ort_provider_dirs() -> list[str]:
+    """Put onnxruntime_providers_cuda.dll directory on PATH / add_dll_directory.
+
+    ORT 1.19+ loads CUDA as a **plugin EP**. Listed CUDAExecutionProvider with
+    missing ``onnxruntime_providers_cuda.dll`` → 'No registered plugin EP device'.
+    PATH/cuDNN alone is not enough — the provider DLL folder must be visible.
+    """
+    added: list[str] = []
+    try:
+        roots: list[Path] = []
+        try:
+            import onnxruntime as ort  # type: ignore
+
+            p = Path(getattr(ort, "__file__", "") or "").resolve().parent
+            if p.is_dir():
+                roots.append(p)
+                roots.append(p / "capi")
+        except Exception:
+            pass
+        for site_root in _site_package_roots():
+            for cand in (
+                site_root / "onnxruntime" / "capi",
+                site_root / "onnxruntime",
+            ):
+                if cand.is_dir():
+                    roots.append(cand)
+        seen: set[str] = set()
+        for folder in roots:
+            try:
+                key = str(folder.resolve()).lower()
+            except Exception:
+                key = str(folder).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            _prepend_env_path("PATH", folder)
+            _add_dll_directory(folder)
+            if not sys.platform.startswith("win"):
+                _prepend_env_path("LD_LIBRARY_PATH", folder)
+            added.append(str(folder))
+            try:
+                for dll in folder.glob("onnxruntime_providers_cuda*"):
+                    _prepend_env_path("PATH", dll.parent)
+                    _add_dll_directory(dll.parent)
+            except Exception:
+                pass
+    except Exception:
+        return added
+    return added
+
+
 def inject_nvidia_pip_libs() -> list[str]:
-    """Prepend pip NVIDIA CUDA/cuDNN bins to PATH + add_dll_directory. Never raises."""
+    """Prepend pip NVIDIA CUDA/cuDNN bins + ORT provider dirs. Never raises."""
     added: list[str] = []
     try:
         for folder in iter_nvidia_lib_dirs():
@@ -368,6 +419,9 @@ def inject_nvidia_pip_libs() -> list[str]:
             if not sys.platform.startswith("win"):
                 _prepend_env_path("LD_LIBRARY_PATH", dll.parent)
             s = str(dll.parent)
+            if s not in added:
+                added.append(s)
+        for s in inject_ort_provider_dirs():
             if s not in added:
                 added.append(s)
     except Exception:

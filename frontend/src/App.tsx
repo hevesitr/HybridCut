@@ -1067,11 +1067,18 @@ export default function App() {
   // ETA only: if probe missing, assume 720p — never inflate to fake 1080p.
   const etaW = mediaW > 0 ? mediaW : 1280;
   const etaH = mediaH > 0 ? mediaH : 720;
+  // Honest path: live CUDA EP wins over prefer=cpu env leftovers.
+  const liveCudaEp =
+    (status?.rvm?.cuda_ep_registered === true || status?.rvm?.cuda_ep === true) &&
+    !status?.rvm?.cuda_fallback &&
+    status?.rvm?.ort_label_hu !== "CPU ORT";
   const cpuOrt =
-    status?.rvm?.ort_label_hu === "CPU ORT" ||
-    status?.rvm?.prefer === "cpu" ||
-    (!!status?.rvm?.cuda_fallback &&
-      /CUDA→CPU|plugin EP|CPU ORT/i.test(String(status.rvm.cuda_fallback)));
+    !liveCudaEp &&
+    (status?.rvm?.ort_label_hu === "CPU ORT" ||
+      status?.rvm?.prefer === "cpu" ||
+      (!!status?.rvm?.cuda_fallback &&
+        /CUDA→CPU|plugin EP|CPU ORT/i.test(String(status.rvm.cuda_fallback))));
+  const pathLabel: "CUDA" | "CPU" = liveCudaEp ? "CUDA" : "CPU";
   const etas = bothModeEtas(bakeSpanSec, mediaFps, etaW, etaH, { cpuOrt });
   const fullEtas = bothModeEtas(fullClipSec, mediaFps, etaW, etaH, { cpuOrt });
   const selectedEta = etas[mode]?.labelHu ?? "Kb. —";
@@ -1239,6 +1246,7 @@ export default function App() {
                 onChange={onMode}
                 etaGyors={etas.gyors.labelHu}
                 etaMax={etas.max.labelHu}
+                pathLabel={pathLabel}
               />
             </div>
             <div className="hero-meta">Videoeditor · helyi · Ollama llama3</div>
@@ -1571,11 +1579,16 @@ export default function App() {
               onChange={onMode}
               etaGyors={etas.gyors.labelHu}
               etaMax={etas.max.labelHu}
+              pathLabel={pathLabel}
             />
             <p
               className="export-eta"
               aria-live="polite"
-              title="Becsült bake idő a kiválasztott Be/Ki tartományra (RTX 3060)."
+              title={
+                pathLabel === "CUDA"
+                  ? "Becsült bake idő — élő CUDA EP (RTX 3060)."
+                  : "Becsült bake idő — CPU ORT (Max = MobileNet~720 gyors path)."
+              }
             >
               Be/Ki ({rangeLabel}):{" "}
               <strong>

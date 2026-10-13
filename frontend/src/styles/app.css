@@ -1,5 +1,5 @@
 :root {
-  /* HybridCut simple-bg6 — stamp 2026-10-12-simple-bg6 · Gyors mode stick · CPU shadow crush · prior simple-bg5 */
+  /* HybridCut simple-bg7 — stamp 2026-10-13-simple-bg7 · CUDA stick · sharp Max · honest ETA · prior simple-bg6 */
   --ink: #0e0e0e;
   --ink-2: #161616;
   --ink-3: #1e1e1e;
@@ -17,7 +17,7 @@
   --max: #ff7a1a;
   --font-display: "Syne", sans-serif;
   --font-body: "Figtree", sans-serif;
-  --hc-stamp: "2026-10-12-simple-bg6";
+  --hc-stamp: "2026-10-13-simple-bg7";
   color: var(--fog);
   background: var(--ink);
   font-family: var(--font-body);

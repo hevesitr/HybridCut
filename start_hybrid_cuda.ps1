@@ -1,5 +1,6 @@
 # start_hybrid_cuda.ps1 - HybridCut CUDA prep + launch (ASCII-only)
-# Stamp: 2026-10-12-simple-bg6 (CPU-first ORT; single V1 BG remove)
+# Includes: rvm-back · cuda-restore · simple-bg7 CUDA stick
+# Stamp: 2026-10-13-simple-bg7 (CUDA probe sticks; single V1 BG remove)
 # Default: do NOT call CapCut remount_ort_gpu.ps1 (its pip upgrade can hit Windows
 # OSError access violation). Inject nvidia cudnn/cublas PATH from hybrid + parent
 # site-packages, pin onnxruntime-gpu==1.30.0 (morning-working), probe plugin EP,
@@ -59,7 +60,7 @@ if (-not ($parentRoot -and (Test-Path -LiteralPath (Join-Path $parentRoot "run_g
 Write-Host "=== HybridCut CUDA start ==="
 Write-Host ("Root: " + $Root)
 Write-Host ("Parent: " + $parentRoot)
-Write-Host ("Stamp: 2026-10-11-run-ps1 - CPU-first; pin onnxruntime-gpu==" + $OrtGpuPin + "; CUDA only after hard probe OK; ASCII PS1")
+Write-Host ("Stamp: 2026-10-13-simple-bg7 - pin onnxruntime-gpu==" + $OrtGpuPin + "; CUDA only after hard probe OK; persist cache\ort_provider.txt; ASCII PS1")
 Write-Host "CWD tip: inside hybrid_cut use .\start_hybrid_cuda.ps1  |  from Videoeditor use .\hybrid_cut\start_hybrid_cuda.ps1"
 
 # Resolve python: hybrid .venv or parent CapCut .venv
@@ -369,12 +370,18 @@ if ($venvPy -and $wantProbe) {
     $okLine = ($probeOut -match "(?m)^OK=1\b") -or ($probeOut -match "OK=1")
     $probeHardOk = $okLine -and (-not $pluginWarn) -and (-not $slabFail) -and ($probeOut -match "RESULT[=:]OK|RESULT: OK")
 
+    $cacheDir = Join-Path $Root "cache"
+    New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+    $providerFile = Join-Path $cacheDir "ort_provider.txt"
+
     if ($probeHardOk) {
         Write-Host 'RESULT: OK - CUDA EP registered (morning-like path) - upgrading from CPU default'
         Write-Host "=== CUDA EP PROBE END ==="
         Write-Host "HYBRID_ORT_PROVIDER=cuda"
         $env:HYBRID_ORT_PROVIDER = "cuda"
         $env:VIDEOEDITOR_ORT_PROVIDER = "cuda"
+        Set-Content -LiteralPath $providerFile -Value "cuda" -Encoding Ascii
+        Write-Host ("Persisted: " + $providerFile + " = cuda")
     } else {
         if ($pluginWarn) {
             Write-Host 'RESULT: FAIL - plugin EP warning in probe output (ignore false OK=1)'
@@ -394,6 +401,8 @@ if ($venvPy -and $wantProbe) {
         Write-Host '  Expect probe RESULT: OK before CUDA is used'
         $env:HYBRID_ORT_PROVIDER = "cpu"
         $env:VIDEOEDITOR_ORT_PROVIDER = "cpu"
+        Set-Content -LiteralPath $providerFile -Value "cpu" -Encoding Ascii
+        Write-Host ("Persisted: " + $providerFile + " = cpu")
     }
     Write-Host ""
 }

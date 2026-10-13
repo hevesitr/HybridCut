@@ -33,7 +33,7 @@ from hybrid_editor.engines.quality_pipeline import (
 )
 from hybrid_editor.engines.videoeditor_polish import (
     APEX_SPEC,
-    RECOMMENDED_SPEC,
+    CPU_MAX_SPEC,
     apply_color_polish,
     polish_videoeditor,
 )
@@ -315,10 +315,10 @@ class MaxQualityEngine(MattingEngine):
             a = self._seed_for(bgr, a)
         # Éles szélek (default): CapCut APEX polish — NO wide trimap fuse
         # (trimap erode/dilate was the thick halo / hair-hole source on the right side).
-        # CPU Max fast-path: lighter RECOMMENDED polish — APEX residual halo on
-        # upscaled MobileNet mattes reads as a thick shadow.
+        # CPU Max fast-path: CPU_MAX_SPEC — sharper hair than RECOMMENDED, less
+        # residual halo than APEX on upscaled MobileNet mattes.
         if self.sharp_edges:
-            spec = RECOMMENDED_SPEC if soft_cpu else APEX_SPEC
+            spec = CPU_MAX_SPEC if soft_cpu else APEX_SPEC
             polished = polish_videoeditor(a, bgr, spec=spec, seed=self._seed)
             out = self._stabilizer.update(polished)
         else:
@@ -465,7 +465,7 @@ class MaxQualityEngine(MattingEngine):
             "source_height": int(self._media.height) if self._media else int(bgr.shape[0]),
             "infer_width": int(bgr.shape[1]),
             "infer_height": int(bgr.shape[0]),
-            "stamp": "2026-10-12-simple-bg6",
+            "stamp": "2026-10-13-simple-bg7",
         }
         if empty and matte_error is None and alpha is not None:
             from hybrid_editor.media.video_io import matte_failure_reason
@@ -653,14 +653,14 @@ class MaxQualityEngine(MattingEngine):
                 cut_bgr = bgr
                 if self.sharp_edges:
                     if cpu_fast:
-                        # Light color polish — heavy APEX despill on soft edges = dark shadow.
+                        # CPU_MAX_SPEC color polish — APEX despill on soft edges = dark shadow.
                         cut_bgr = apply_color_polish(
                             bgr,
                             alpha,
-                            decontaminate=float(RECOMMENDED_SPEC.decontaminate),
-                            despill=float(RECOMMENDED_SPEC.despill),
-                            bright_fringe=0.12,
-                            micro_despill=0.0,
+                            decontaminate=float(CPU_MAX_SPEC.decontaminate),
+                            despill=float(CPU_MAX_SPEC.despill),
+                            bright_fringe=float(CPU_MAX_SPEC.bright_fringe),
+                            micro_despill=float(CPU_MAX_SPEC.micro_despill),
                         )
                     else:
                         cut_bgr = apply_color_polish(
@@ -844,7 +844,7 @@ class MaxQualityEngine(MattingEngine):
                 "frames_total_est": total_est,
                 "max_frames_cap": max_frames,
                 "mov_path": prores,
-                "stamp": "2026-10-12-simple-bg6",
+                "stamp": "2026-10-13-simple-bg7",
             },
         )
         _restore_fast()

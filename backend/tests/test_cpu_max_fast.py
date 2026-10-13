@@ -11,7 +11,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
-STAMP = "2026-10-12-simple-bg6"
+STAMP = "2026-10-13-simple-bg7"
 
 
 def test_stamp_simple_bg5():

@@ -1632,7 +1632,7 @@ class FastEngine(MattingEngine):
             "source_height": src_h,
             "infer_width": infer_w,
             "infer_height": infer_h,
-            "stamp": "2026-10-12-simple-bg6",
+            "stamp": "2026-10-13-simple-bg7",
         }
         if matte_error and empty:
             meta["matte_error"] = matte_error

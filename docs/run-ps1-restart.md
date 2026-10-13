@@ -1,4 +1,4 @@
-> **Tip is now [`simple-bg-restart.md`](simple-bg-restart.md) (`2026-10-12-simple-bg2`).**
+> **Tip is now [`simple-bg-restart.md`](simple-bg-restart.md) (`2026-10-13-simple-bg7`).**
 
 # HybridCut restart - run-ps1 (`2026-10-11-run-ps1`)
 
