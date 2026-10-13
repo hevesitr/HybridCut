@@ -1,13 +1,13 @@
-# HybridCut preview-fast one-shot (Windows)
+# HybridCut matte-safe one-shot (Windows)
 # Prefer Agent Store copy (no PAT). Fallback: git pull GitHub tip.
 # Copies -> Documents\Videoeditor\hybrid_cut, purges stale dist, downloads ResNet if missing.
 # ASCII-only (no em-dash / accented chars) so Windows PowerShell parsers do not break.
 
 $ErrorActionPreference = "Stop"
-$TipStamp = "2026-10-13-preview-fast"
+$TipStamp = "2026-10-13-matte-safe"
 $StoreId = "bc-41930eab-1501-4c19-acf3-0c9d63afbf4d"
 
-Write-Host "=== HybridCut preview-fast install ==="
+Write-Host "=== HybridCut matte-safe install ==="
 Write-Host "Prefer GitHub pull if Agent Store Context lag."
 
 Get-NetTCPConnection -LocalPort 3847 -ErrorAction SilentlyContinue |
@@ -102,7 +102,7 @@ $assets = Get-ChildItem -LiteralPath (Join-Path $ve "frontend\dist\assets") -Fil
 $js = $assets | Select-Object -First 1
 if (-not $js) { Write-Error "No frontend dist JS" }
 Write-Host ("DIST JS: " + $js.Name)
-# Tip dist for preview-fast (warn if unexpected; ban known stale hashes)
+# Tip dist for matte-safe (warn if unexpected; ban known stale hashes)
 $expectedJs = "index-DD1Dp8Q1.js"
 if ($js.Name -ne $expectedJs) {
   Write-Host ("NOTE: DIST JS is " + $js.Name + " (expected tip " + $expectedJs + " if store is fresh)")
@@ -119,11 +119,11 @@ if ($sample -match "AI [Ss].[Vv]|\+ V1 klip|\+ B-roll|tl-polish-btn") {
 Write-Host "VERIFY OK: SYNC + dist have no AI SAV / +V1 / +B-roll"
 
 Set-Location -LiteralPath $ve
-# preview-fast: probe CUDA EP (pin 1.30 + cudnn PATH). CUDA sticks only when hard-OK.
+# matte-safe: probe CUDA EP (pin 1.30 + cudnn PATH). CUDA sticks only when hard-OK.
 # Do NOT force HYBRID_ORT_PROVIDER=cpu - that blocked morning CUDA forever.
 Write-Host "Starting start_hybrid_cuda.ps1 (probe + launch) ..."
 Write-Host "Open http://127.0.0.1:3847 then Ctrl+F5"
-Write-Host "Expect: SYNC 2026-10-13-preview-fast - only V1 - Cutout person silhouette"
+Write-Host "Expect: SYNC 2026-10-13-matte-safe - only V1 - Cutout person silhouette"
 Write-Host "Full-body-fast: CapCut-class chrome + Gyors matte pop. Badge RVM CUDA when probe OK."
 if (Test-Path -LiteralPath ".\start_hybrid_cuda.ps1") {
   .\start_hybrid_cuda.ps1

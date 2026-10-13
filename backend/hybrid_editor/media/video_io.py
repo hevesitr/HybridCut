@@ -371,6 +371,40 @@ def is_matte_empty(alpha: np.ndarray) -> bool:
     return False
 
 
+def is_matte_sliver(alpha: np.ndarray, *, min_width_frac: float = 0.14) -> bool:
+    """True when FG is a thin vertical/horizontal strip — catastrophic over-erase.
+
+    matte-safe: crush that keeps only a bright MobileNet ridge produces a jagged
+    vertical sliver on checkerboard (TELE HIBÁVAL). Reject and fall back.
+    """
+    if alpha is None:
+        return False
+    a = normalize_alpha(alpha)
+    if a.size == 0:
+        return False
+    h, w = a.shape[:2]
+    mask = a > 0.15
+    if not np.any(mask):
+        return False
+    cover = float(mask.mean())
+    ys, xs = np.where(mask)
+    bw = int(xs.max() - xs.min()) + 1
+    bh = int(ys.max() - ys.min()) + 1
+    width_frac = bw / float(max(1, w))
+    height_frac = bh / float(max(1, h))
+    aspect = bh / float(max(1, bw))
+    # Thin vertical strip: tall, narrow, low cover.
+    if width_frac < float(min_width_frac) and aspect >= 2.2 and cover < 0.22:
+        return True
+    # Thin horizontal strip (rare).
+    if height_frac < float(min_width_frac) and (bw / float(max(1, bh))) >= 2.2 and cover < 0.22:
+        return True
+    # Absolute tiny bbox area vs frame.
+    if (bw * bh) < int(h * w * 0.04) and cover < 0.08:
+        return True
+    return False
+
+
 def is_matte_good_enough(alpha: np.ndarray) -> bool:
     """True when alpha is usable for Cutout — not empty, not slab, not dust speck.
 

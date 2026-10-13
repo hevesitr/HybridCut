@@ -536,6 +536,7 @@ def hard_person_alpha(bgr: np.ndarray) -> np.ndarray:
         is_matte_degenerate,
         is_matte_empty,
         is_matte_good_enough,
+        is_matte_sliver,
     )
 
     h, w = bgr.shape[:2]
@@ -558,7 +559,7 @@ def hard_person_alpha(bgr: np.ndarray) -> np.ndarray:
     for cand in candidates:
         if cand is None or cand.shape[:2] != (h, w):
             continue
-        if is_matte_empty(cand) or is_matte_degenerate(cand):
+        if is_matte_empty(cand) or is_matte_degenerate(cand) or is_matte_sliver(cand):
             continue
         cover = float((cand > 0.15).mean())
         std = float(cand.std())
@@ -580,13 +581,21 @@ def hard_person_alpha(bgr: np.ndarray) -> np.ndarray:
         try:
             from hybrid_editor.engines.videoeditor_polish import fill_person_holes
 
-            best = fill_person_holes(best, min_fg=0.16, close_px=11, fill_value=0.90)
+            filled = fill_person_holes(best, min_fg=0.16, close_px=11, fill_value=0.90)
+            # Keep fill only when it does not collapse into a strip or slab.
+            if (
+                not is_matte_empty(filled)
+                and not is_matte_degenerate(filled)
+                and not is_matte_sliver(filled)
+            ):
+                best = filled
         except Exception:  # noqa: BLE001
             pass
         # If fill bloated into a near-slab, keep pre-fill candidate.
         if is_matte_degenerate(best) or float((best > 0.15).mean()) > 0.90:
             best = candidates[0] if candidates else best
-        return np.clip(best, 0.0, 1.0).astype(np.float32)
+        if not is_matte_sliver(best):
+            return np.clip(best, 0.0, 1.0).astype(np.float32)
 
     # Absolute last resort: visible multi-lobe prior so UI always shows recognition.
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
@@ -1819,11 +1828,21 @@ class FastEngine(MattingEngine):
                 alpha_vis = alpha
             except Exception:  # noqa: BLE001
                 pass
+        # matte-safe: reject strip/sliver mattes — re-salvage fuller silhouette.
+        from hybrid_editor.media.video_io import is_matte_sliver
+
+        if (not empty) and alpha is not None and is_matte_sliver(alpha):
+            logger.warning("preview matte-safe: rejecting sliver alpha — hard salvage")
+            empty = True
         # preview-fast: final hard salvage + re-encode — never leave Előnézet empty.
         if empty or alpha is None or is_matte_empty(alpha):
             try:
                 forced = hard_person_alpha(bgr)
-                if not is_matte_empty(forced) and not is_matte_degenerate(forced):
+                if (
+                    not is_matte_empty(forced)
+                    and not is_matte_degenerate(forced)
+                    and not is_matte_sliver(forced)
+                ):
                     alpha = forced
                     alpha_vis = forced
                     jpg, png, w, h, src, empty = encode_preview_pair(bgr, forced)
@@ -1856,7 +1875,7 @@ class FastEngine(MattingEngine):
             "source_height": src_h,
             "infer_width": infer_w,
             "infer_height": infer_h,
-            "stamp": "2026-10-13-preview-fast",
+            "stamp": "2026-10-13-matte-safe",
         }
         if matte_error and empty:
             meta["matte_error"] = matte_error

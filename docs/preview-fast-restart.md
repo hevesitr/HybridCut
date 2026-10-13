@@ -1,6 +1,6 @@
 # preview-fast restart
 
-Stamp: `2026-10-13-preview-fast`
+Stamp: `2026-10-13-matte-safe`
 
 ## Root cause
 

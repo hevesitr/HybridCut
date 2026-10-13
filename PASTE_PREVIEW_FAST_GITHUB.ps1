@@ -1,12 +1,12 @@
-# HybridCut preview-fast - GitHub-only install (no Agent Store).
+# HybridCut matte-safe - GitHub-only install (no Agent Store).
 # ASCII-only. Paste into Windows PowerShell.
 
 $ErrorActionPreference = "Stop"
-$TipStamp = "2026-10-13-preview-fast"
+$TipStamp = "2026-10-13-matte-safe"
 $RepoUrl = "https://github.com/hevesitr/HybridCut.git"
 $Repo = Join-Path $env:USERPROFILE "Documents\HybridCut"
 
-Write-Host "=== HybridCut preview-fast (GitHub pull) ==="
+Write-Host "=== HybridCut matte-safe (GitHub pull) ==="
 
 Get-NetTCPConnection -LocalPort 3847 -ErrorAction SilentlyContinue |
   ForEach-Object {

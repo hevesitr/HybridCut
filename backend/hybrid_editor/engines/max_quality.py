@@ -277,69 +277,62 @@ class MaxQualityEngine(MattingEngine):
 
     @staticmethod
     def _crush_soft_shadow_alpha(alpha: np.ndarray) -> np.ndarray:
-        """Hard-ish nobg silhouette: kill milky rim/ghosts; keep filled heads.
+        """Gentle nobg cleanup — KEEP person body; never eat into a vertical sliver.
 
-        preview-fast: MobileNet CPU often peaks ~0.25–0.35 (no hard≥0.36 core).
-        Old crush zeroed the whole frame → empty Előnézet + gray-slab toast.
-        Adaptive core threshold + never-return-empty guard.
+        matte-safe: preview-fast adaptive hard-core crush treated a bright MobileNet
+        ridge as the only core and zeroed the soft body → jagged strip on checker
+        (TELE HIBÁVAL). Protect from the soft body (a>lo), only crush far fog, and
+        reject sliver results by restoring the pre-crush silhouette.
         """
         from hybrid_editor.engines.videoeditor_polish import (
             harden_foggy_halo,
             keep_person_instances_soft,
         )
-        from hybrid_editor.media.video_io import is_matte_empty
+        from hybrid_editor.media.video_io import is_matte_empty, is_matte_sliver
 
         a = np.clip(np.asarray(alpha, dtype=np.float32), 0.0, 1.0)
         if a.ndim == 3:
             a = a[..., 0]
-        # 1) Protect silhouette fill before any edge trim.
-        a = fill_person_holes(a, min_fg=0.16, close_px=13, fill_value=0.90)
+        # 1) Fill holes first; keep soft body recall.
+        a = fill_person_holes(a, min_fg=0.14, close_px=11, fill_value=0.88)
         pre = a.copy()
-        # Adaptive hard core — soft MobileNet must still form a protect halo.
-        p90 = float(np.percentile(a, 90)) if a.size else 0.0
-        hard_t = float(np.clip(max(0.22, min(0.36, p90 * 0.85)), 0.20, 0.40))
-        hard = (a >= hard_t).astype(np.uint8)
-        if int(hard.max()) < 1:
-            hard = (a >= max(0.16, hard_t * 0.7)).astype(np.uint8)
+        pre_cover = float((pre > 0.15).mean())
+        # Soft body support — NOT a hard ridge (ridge-only → strip matte).
+        soft_t = 0.14 if float(np.percentile(a, 90)) < 0.40 else 0.18
+        body = (a >= soft_t).astype(np.uint8)
         try:
-            k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-            k9 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-            core = cv2.morphologyEx(hard, cv2.MORPH_CLOSE, k5, iterations=1)
-            protect = cv2.dilate(core, k9, iterations=1)  # hair/crown reach only
+            k7 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+            k11 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+            body = cv2.morphologyEx(body, cv2.MORPH_CLOSE, k7, iterations=2)
+            protect = cv2.dilate(body, k11, iterations=2)
         except Exception:  # noqa: BLE001
-            core = hard
-            protect = hard
-        # No core at all → don't invent a wipe; gentle harden only.
+            protect = body
         if int(protect.max()) < 1:
-            out = harden_foggy_halo(pre, lo=0.22, hi=0.78)
-            return fill_person_holes(
-                np.clip(out, 0.0, 1.0), min_fg=0.14, close_px=11, fill_value=0.88
-            )
+            out = harden_foggy_halo(pre, lo=0.20, hi=0.80)
+            return np.clip(out, 0.0, 1.0).astype(np.float32)
         out = a.copy()
-        # 2) Ghost duplicates / leftover BG between subjects → hard zero.
-        out[protect == 0] = 0.0
-        # 3) Soft rim just outside solid core paints grey on checker — kill or snap.
+        # 2) Zero only far fog well outside the soft body (ghosts / BG crumbs).
+        far = (protect == 0) & (out > 0.0) & (out < 0.35)
+        out[far] = 0.0
+        # 3) Mild harden inside body — lift soft person, do not snap-kill mid-band.
+        out = harden_foggy_halo(out, lo=0.22, hi=0.78)
+        body_m = protect > 0
+        mid = body_m & (out > 0.16) & (out < 0.85)
+        out[mid] = np.clip(out[mid] * 1.15 + 0.06, 0.0, 1.0)
         try:
-            rim_zone = cv2.dilate(core, np.ones((5, 5), np.uint8), iterations=1)
-        except Exception:  # noqa: BLE001
-            rim_zone = protect
-        soft_rim = (rim_zone > 0) & (core == 0) & (out > 0.02) & (out < 0.55)
-        out[soft_rim] = np.where(out[soft_rim] < 0.40, 0.0, 1.0)
-        # 4) Collapse milky mid-band inside protect toward hard 0/1 (no foggy halo).
-        out = harden_foggy_halo(out, lo=0.28, hi=0.72)
-        # 5) Attached soft hair still readable → lift toward opaque (not milky grey).
-        hair = (protect > 0) & (out > 0.20) & (out < 0.82)
-        out[hair] = np.clip(out[hair] * 1.22 + 0.10, 0.0, 1.0)
-        try:
-            out = keep_person_instances_soft(out, min_area_frac=0.003, relative_frac=0.08)
+            out = keep_person_instances_soft(out, min_area_frac=0.004, relative_frac=0.10)
         except Exception:  # noqa: BLE001
             pass
         out = fill_person_holes(
-            np.clip(out, 0.0, 1.0), min_fg=0.14, close_px=11, fill_value=0.90
+            np.clip(out, 0.0, 1.0), min_fg=0.14, close_px=11, fill_value=0.88
         )
-        # Never ship an all-zero crush — restore pre-crush person (better than toast).
-        if is_matte_empty(out):
-            out = harden_foggy_halo(pre, lo=0.24, hi=0.76)
+        # 4) Sliver / empty / massive cover loss → restore fuller pre-crush person.
+        out_cover = float((out > 0.15).mean())
+        lost = pre_cover > 0.08 and out_cover < pre_cover * 0.45
+        if is_matte_empty(out) or is_matte_sliver(out) or lost:
+            out = harden_foggy_halo(pre, lo=0.20, hi=0.80)
+            mid2 = (out > 0.14) & (out < 0.85)
+            out[mid2] = np.clip(out[mid2] * 1.12 + 0.05, 0.0, 1.0)
             out = fill_person_holes(
                 np.clip(out, 0.0, 1.0), min_fg=0.14, close_px=11, fill_value=0.88
             )
@@ -444,7 +437,14 @@ class MaxQualityEngine(MattingEngine):
                 alpha = self._ensure_nonempty_alpha(bgr, alpha)
                 recovered = not is_matte_empty(alpha)
             if cpu_fast and alpha is not None and not is_matte_empty(alpha):
-                alpha = self._crush_soft_shadow_alpha(alpha)
+                crushed = self._crush_soft_shadow_alpha(alpha)
+                from hybrid_editor.media.video_io import is_matte_sliver
+
+                # Prefer uncrushed if crush ate the person into a strip.
+                if is_matte_empty(crushed) or is_matte_sliver(crushed):
+                    alpha = alpha
+                else:
+                    alpha = crushed
             # CapCut fringe / cyan + bright spill on cutout RGB (Éles szélek / apex)
             cut_bgr = bgr
             if self.sharp_edges and alpha is not None and not is_matte_empty(alpha):
@@ -465,7 +465,11 @@ class MaxQualityEngine(MattingEngine):
                 alpha = self._ensure_nonempty_alpha(bgr, None)
                 recovered = not is_matte_empty(alpha)
                 if cpu_fast and alpha is not None and not is_matte_empty(alpha):
-                    alpha = self._crush_soft_shadow_alpha(alpha)
+                    from hybrid_editor.media.video_io import is_matte_sliver
+
+                    crushed = self._crush_soft_shadow_alpha(alpha)
+                    if not (is_matte_empty(crushed) or is_matte_sliver(crushed)):
+                        alpha = crushed
                 cut_bgr = bgr
                 if self.sharp_edges and not is_matte_empty(alpha):
                     cut_bgr = apply_color_polish(
@@ -489,9 +493,12 @@ class MaxQualityEngine(MattingEngine):
             alpha = self._ensure_nonempty_alpha(bgr, alpha)
             if not is_matte_empty(alpha):
                 if cpu_fast:
+                    from hybrid_editor.media.video_io import is_matte_sliver
+
                     crushed = self._crush_soft_shadow_alpha(alpha)
-                    # preview-fast: keep uncrushed salvage if crush wiped soft MobileNet.
-                    alpha = crushed if not is_matte_empty(crushed) else alpha
+                    # matte-safe: keep uncrushed if crush wiped / stripped the person.
+                    if not (is_matte_empty(crushed) or is_matte_sliver(crushed)):
+                        alpha = crushed
                 cut_bgr = bgr
                 if self.sharp_edges:
                     cut_bgr = apply_color_polish(
@@ -568,7 +575,7 @@ class MaxQualityEngine(MattingEngine):
             "source_height": int(self._media.height) if self._media else int(bgr.shape[0]),
             "infer_width": int(bgr.shape[1]),
             "infer_height": int(bgr.shape[0]),
-            "stamp": "2026-10-13-preview-fast",
+            "stamp": "2026-10-13-matte-safe",
         }
         if empty and matte_error is None and alpha is not None:
             from hybrid_editor.media.video_io import matte_failure_reason
@@ -737,6 +744,7 @@ class MaxQualityEngine(MattingEngine):
                         )
                 if cpu_fast:
                     # Hole-fill + gentle fringe kill (no guided upsample — speed + hair keep).
+                    # matte-safe crush restores body if ridge-only strip would ship.
                     alpha = self._crush_soft_shadow_alpha(alpha)
                 # Mid-clip re-warmup on strong drift vs seed (rarer on CPU fast-path).
                 rewarm_every = 120 if cpu_fast else 48
@@ -973,7 +981,7 @@ class MaxQualityEngine(MattingEngine):
                 "frames_total_est": total_est,
                 "max_frames_cap": max_frames,
                 "mov_path": prores,
-                "stamp": "2026-10-13-preview-fast",
+                "stamp": "2026-10-13-matte-safe",
             },
         )
         _restore_fast()

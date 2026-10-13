@@ -13,7 +13,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
-STAMP = "2026-10-13-preview-fast"
+STAMP = "2026-10-13-matte-safe"
 
 
 def test_stamp():
@@ -53,23 +53,21 @@ def test_crush_keeps_soft_hair_band():
     assert float(out[h // 2 - 55, w // 2]) > 0.25
 
 
-def test_crush_kills_soft_rim_and_ghost():
+def test_crush_keeps_body_not_sliver():
+    """matte-safe: prefer full body over aggressive ghost kill that ate silhouettes."""
     from hybrid_editor.engines.max_quality import MaxQualityEngine
+    from hybrid_editor.media.video_io import is_matte_sliver
 
-    h, w = 240, 200
+    h, w = 240, 220
     a = np.zeros((h, w), np.float32)
     cv2.ellipse(a, (70, h // 2), (40, 70), 0, 0, 360, 0.95, -1)
-    # Milky shoulder halo (grey shadow on checker)
-    cv2.ellipse(a, (70, h // 2), (52, 82), 0, 0, 360, 0.22, 10)
-    # Detached ghost duplicate
-    cv2.ellipse(a, (160, h // 2), (28, 50), 0, 0, 360, 0.28, -1)
+    # Soft body aura (must remain part of person, not crushed to a strip)
+    cv2.ellipse(a, (70, h // 2), (55, 85), 0, 0, 360, 0.24, 8)
     out = MaxQualityEngine._crush_soft_shadow_alpha(a)
-    assert float(out[h // 2, 160]) < 0.05  # ghost gone
-    # Soft rim outside solid body crushed (not milky grey)
-    rim_x = 70 + 48
-    assert float(out[h // 2, rim_x]) < 0.15
-    # Solid body still opaque
     assert float(out[h // 2, 70]) > 0.8
+    assert not is_matte_sliver(out)
+    ys, xs = np.where(out > 0.15)
+    assert (xs.max() - xs.min() + 1) / float(w) >= 0.25
 
 
 def test_cpu_max_fast_when_env_cpu(monkeypatch: pytest.MonkeyPatch):
