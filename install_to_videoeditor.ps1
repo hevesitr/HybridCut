@@ -163,7 +163,7 @@ Write-Host ""
 Write-Host "Kovetkezo / Next:"
 Write-Host '  cd $env:USERPROFILE\Documents\Videoeditor'
 Write-Host "  Get-Content .\hybrid_cut\SYNC_VERSION.txt"
-Write-Host "  # expect: 2026-10-13-simple-bg7"
+Write-Host "  # expect: 2026-10-13-peak-cutout"
 Write-Host "  # Hard-refresh browser: Ctrl+F5 (clear old hashed JS)"
 Write-Host "  .\hybrid_cut\run_hybrid.ps1"
 Write-Host "  # or CUDA path-inject: .\hybrid_cut\start_hybrid_cuda.ps1"

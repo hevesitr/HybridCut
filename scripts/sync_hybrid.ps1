@@ -7,13 +7,13 @@
 #   & "$env:LOCALAPPDATA\Cursor\AgentStores\cursor_agent_stores\bc-41930eab-1501-4c19-acf3-0c9d63afbf4d\files\docs\capcut-features\sync_hybrid.ps1"
 #   cd $env:USERPROFILE\Documents\Videoeditor
 #   Get-Content .\hybrid_cut\SYNC_VERSION.txt
-#   # expect tip stamp: 2026-10-13-simple-bg7
+#   # expect tip stamp: 2026-10-13-peak-cutout
 #   .\run_hybrid.ps1
 
 $ErrorActionPreference = "Stop"
 
 # Tip this script MUST install. Stale AgentStores (run-ps1 / rvm-back) are rejected.
-$TipStamp = "2026-10-13-simple-bg7"
+$TipStamp = "2026-10-13-peak-cutout"
 $StaleStamps = @(
     "2026-10-11-run-ps1",
     "2026-10-11-rvm-back",

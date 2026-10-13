@@ -16,7 +16,7 @@ ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
 SYNC = ROOT / "SYNC_VERSION.txt"
-STAMP = "2026-10-13-simple-bg7"
+STAMP = "2026-10-13-peak-cutout"
 
 
 def _blue_closeup(h: int = 540, w: int = 960) -> np.ndarray:

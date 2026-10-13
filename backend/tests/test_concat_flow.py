@@ -27,7 +27,7 @@ DIST_ASSETS = ROOT / "frontend" / "dist" / "assets"
 
 
 def test_sync_stamp_concat_flow():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-simple-bg7"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-peak-cutout"
 
 
 def test_session_defines_new_project():

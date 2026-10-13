@@ -1,27 +1,26 @@
-# HybridCut restart - simple-bg7 (`2026-10-13-simple-bg7`)
+# HybridCut restart - peak-cutout (`2026-10-13-peak-cutout`)
 
-Feature stamp: **`2026-10-13-simple-bg7`**.
+Feature stamp: **`2026-10-13-peak-cutout`** (includes simple-bg7 CUDA stick).
 
 **Háttéreltávolítás** focus: Megnyitás → Előnézet Cutout → Export. **One timeline** — single **V1** only (no **AI sáv** / + V1 / + B-roll).
 
-## What simple-bg7 does
+## What peak-cutout adds
 
-| Area | Behaviour |
-|------|-----------|
-| **CUDA stick** | `start_hybrid_cuda.ps1` hard-probes EP; persists `cache/ort_provider.txt`. `run_hybrid.ps1` re-probes when cache=cuda (no fake CUDA). |
-| **Install** | `PASTE_SIMPLE_BG7_INSTALL.ps1` launches CUDA starter (does **not** force CPU). |
-| **ORT pin** | `onnxruntime-gpu==1.30.0` + cuDNN PATH + provider DLL dirs. |
-| **Cutout** | Max enables sharp edges; CPU Max uses `CPU_MAX_SPEC` + soft-alpha crush. |
-| **Gyors** | Mode sticks (no Max flip-loop); auto Max once per open. |
-| **ETA** | Max chip shows `· CUDA` or `· CPU` matching live path. |
+| Upgrade | Source idea | Behaviour |
+|---------|-------------|-----------|
+| Guided alpha upsample | RVM DGF / guided-filter (MIT family) | Edge-aware 720→native (less soft halo) |
+| Flow temporal smooth | Alpha-Flow / TemporalConsistency (reimpl) | Farneback warp + EMA flicker kill |
+| RVM downsample | PeterL1n official table | Full-body bias, stage-1 in 256–512 |
+| RVM fgr composite | PeterL1n fgr output | Cleaner edge RGB before despill |
+| Peak edge crisp | Classical unsharp mid-band | Needle silhouette |
+| CUDA stick (bg7) | onnxruntime plugin EP probe | Persist + re-probe; no forced CPU install |
 
 ## Sync + run (Windows)
 
 ```powershell
 cd $env:USERPROFILE\Documents\HybridCut
 git pull origin main
-Get-Content .\SYNC_VERSION.txt   # MUST: 2026-10-13-simple-bg7
-.\PASTE_SIMPLE_BG7_INSTALL.ps1
+Get-Content .\SYNC_VERSION.txt   # MUST: 2026-10-13-peak-cutout
+.\PASTE_PEAK_CUTOUT_INSTALL.ps1
 # http://127.0.0.1:3847 - Ctrl+F5
-# Expect badge RVM CUDA when probe OK, else honest CPU ORT
 ```

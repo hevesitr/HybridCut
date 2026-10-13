@@ -4,7 +4,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-13-simple-bg7` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-13-peak-cutout` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -44,7 +44,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-13-simple-bg7
+# expect: 2026-10-13-peak-cutout
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # Default: CPU ORT (real person matte). Optional CUDA after hard probe:
@@ -59,7 +59,7 @@ One-click from Agent Store:
 ```powershell
 & "$env:LOCALAPPDATA\Cursor\AgentStores\cursor_agent_stores\bc-41930eab-1501-4c19-acf3-0c9d63afbf4d\files\docs\capcut-features\sync_hybrid.ps1"
 cd $env:USERPROFILE\Documents\Videoeditor
-Get-Content .\hybrid_cut\SYNC_VERSION.txt   # 2026-10-13-simple-bg7
+Get-Content .\hybrid_cut\SYNC_VERSION.txt   # 2026-10-13-peak-cutout
 cd hybrid_cut
 .\run_hybrid.ps1
 ```
@@ -78,7 +78,7 @@ cd $env:USERPROFILE\Documents\Videoeditor\hybrid_cut
 ---
 
 
-## Stamp - simple-bg (`2026-10-13-simple-bg7`)
+## Stamp - simple-bg (`2026-10-13-peak-cutout`)
 
 Tip restart: [`docs/simple-bg-restart.md`](docs/simple-bg-restart.md).
 
@@ -86,7 +86,7 @@ Tip restart: [`docs/simple-bg-restart.md`](docs/simple-bg-restart.md).
 
 ## Prior - run-ps1 (superseded)
 
-## Stamp - run-ps1 (historical) (`2026-10-13-simple-bg7`)
+## Stamp - run-ps1 (historical) (`2026-10-13-peak-cutout`)
 
 Tip restart: [`docs/run-ps1-restart.md`](docs/run-ps1-restart.md).
 

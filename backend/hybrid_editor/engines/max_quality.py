@@ -31,6 +31,12 @@ from hybrid_editor.engines.quality_pipeline import (
     apply_quality_pass,
     warmup_alpha,
 )
+from hybrid_editor.engines.peak_cutout import (
+    FlowTemporalSmoother,
+    composite_with_fgr,
+    guided_upsample_alpha,
+    peak_refine_alpha,
+)
 from hybrid_editor.engines.videoeditor_polish import (
     APEX_SPEC,
     CPU_MAX_SPEC,
@@ -71,6 +77,8 @@ class MaxQualityEngine(MattingEngine):
         self._media: Optional[MediaInfo] = None
         # Apex: slightly stronger temporal prior (MatAnyone2-inspired anchor)
         self._stabilizer = AnchorMemoryStabilizer(strength=0.45, jump_threshold=0.15)
+        # peak-cutout: Farneback flow temporal (flicker kill; OpenCV only)
+        self._flow_temporal = FlowTemporalSmoother(momentum=0.32)
         self._seed: Optional[np.ndarray] = None
         self._user_seed: Optional[np.ndarray] = None  # painted / lasso first-frame mask
         # union = refine auto person (brush); replace = part-pick face-only nobg
@@ -203,6 +211,7 @@ class MaxQualityEngine(MattingEngine):
         self._fast.reset()
         self._adapter.reset()
         self._stabilizer.reset()
+        self._flow_temporal.reset()
         self._seed = None
         # Keep painted user seed across reset (tied to media, cleared on open/clear)
 
@@ -329,19 +338,33 @@ class MaxQualityEngine(MattingEngine):
                 sharp_edges=False,
                 frame_bgr=bgr,
             )
+        # peak-cutout: flow temporal + mid-band edge crisp (OpenCV only).
+        if not (is_matte_empty(out) or is_matte_degenerate(out)):
+            try:
+                out = peak_refine_alpha(
+                    out,
+                    bgr,
+                    temporal=self._flow_temporal,
+                    edge_crisp=0.28 if soft_cpu else 0.42,
+                )
+            except Exception:  # noqa: BLE001
+                pass
         # Never let polish/stabilizer turn a usable person matte into a gray slab.
         if is_matte_degenerate(out) and not is_matte_empty(a) and not is_matte_degenerate(a):
             logger.warning("Max polish produced degenerate slab — keeping base RVM/heuristic alpha")
             self._stabilizer.reset()
+            self._flow_temporal.reset()
             return np.clip(np.asarray(a, dtype=np.float32), 0.0, 1.0)
         if is_matte_empty(out) or is_matte_degenerate(out):
             # simple-bg4: MobileNet/ResNet slab after polish — recover before UI toast.
             recovered = self._ensure_nonempty_alpha(bgr, a if not is_matte_empty(a) else out)
             if not is_matte_empty(recovered) and not is_matte_degenerate(recovered):
                 self._stabilizer.reset()
+                self._flow_temporal.reset()
                 return recovered
             # Never ship gray-slab as success — zeros → UI empty path (not opaque Cutout).
             self._stabilizer.reset()
+            self._flow_temporal.reset()
             return np.zeros(bgr.shape[:2], dtype=np.float32)
         return out
 
@@ -465,7 +488,7 @@ class MaxQualityEngine(MattingEngine):
             "source_height": int(self._media.height) if self._media else int(bgr.shape[0]),
             "infer_width": int(bgr.shape[1]),
             "infer_height": int(bgr.shape[0]),
-            "stamp": "2026-10-13-simple-bg7",
+            "stamp": "2026-10-13-peak-cutout",
         }
         if empty and matte_error is None and alpha is not None:
             from hybrid_editor.media.video_io import matte_failure_reason
@@ -615,13 +638,16 @@ class MaxQualityEngine(MattingEngine):
                 cur_t = start_t + (idx / fps)
                 if cur_t > end_t + 1e-6:
                     break
-                # CPU fast: matte/polish at bake_long, alpha upscaled to native for MOV.
+                # CPU fast: matte/polish at bake_long; peak-cutout guided upsample to native.
                 bgr_m = downscale_long_side(bgr, bake_long) if cpu_fast else bgr
                 alpha = self._polish(bgr_m, warmup=(idx == 0), soft_cpu=cpu_fast)
                 if alpha.shape[:2] != bgr.shape[:2]:
-                    alpha = cv2.resize(
-                        alpha, (bgr.shape[1], bgr.shape[0]), interpolation=cv2.INTER_LINEAR
-                    )
+                    try:
+                        alpha = guided_upsample_alpha(alpha, bgr, radius=4 if cpu_fast else 3)
+                    except Exception:  # noqa: BLE001
+                        alpha = cv2.resize(
+                            alpha, (bgr.shape[1], bgr.shape[0]), interpolation=cv2.INTER_LINEAR
+                        )
                     if cpu_fast:
                         alpha = self._crush_soft_shadow_alpha(alpha)
                 # Mid-clip re-warmup on strong drift vs seed (rarer on CPU fast-path).
@@ -640,22 +666,36 @@ class MaxQualityEngine(MattingEngine):
                                 f"Max re-warmup… {written}/{total_est} frame",
                             )
                         self._fast.reset()
+                        self._flow_temporal.reset()
                         alpha = self._polish(bgr_m, warmup=True, soft_cpu=cpu_fast)
                         if alpha.shape[:2] != bgr.shape[:2]:
-                            alpha = cv2.resize(
-                                alpha,
-                                (bgr.shape[1], bgr.shape[0]),
-                                interpolation=cv2.INTER_LINEAR,
-                            )
+                            try:
+                                alpha = guided_upsample_alpha(alpha, bgr, radius=4)
+                            except Exception:  # noqa: BLE001
+                                alpha = cv2.resize(
+                                    alpha,
+                                    (bgr.shape[1], bgr.shape[0]),
+                                    interpolation=cv2.INTER_LINEAR,
+                                )
                             if cpu_fast:
                                 alpha = self._crush_soft_shadow_alpha(alpha)
                 # CapCut RGB fringe / cyan + bright spill before writing BGRA
                 cut_bgr = bgr
+                # Prefer RVM fgr near edges when the last ORT pass produced it.
+                fgr = None
+                rvm = getattr(self._fast, "_rvm", None)
+                if rvm is not None:
+                    fgr = getattr(rvm, "last_fgr_bgr", None)
+                if fgr is not None:
+                    try:
+                        cut_bgr = composite_with_fgr(bgr, alpha, fgr, mix=0.68)
+                    except Exception:  # noqa: BLE001
+                        cut_bgr = bgr
                 if self.sharp_edges:
                     if cpu_fast:
                         # CPU_MAX_SPEC color polish — APEX despill on soft edges = dark shadow.
                         cut_bgr = apply_color_polish(
-                            bgr,
+                            cut_bgr,
                             alpha,
                             decontaminate=float(CPU_MAX_SPEC.decontaminate),
                             despill=float(CPU_MAX_SPEC.despill),
@@ -664,7 +704,7 @@ class MaxQualityEngine(MattingEngine):
                         )
                     else:
                         cut_bgr = apply_color_polish(
-                            bgr,
+                            cut_bgr,
                             alpha,
                             decontaminate=float(APEX_SPEC.decontaminate),
                             despill=float(APEX_SPEC.despill),
@@ -844,7 +884,7 @@ class MaxQualityEngine(MattingEngine):
                 "frames_total_est": total_est,
                 "max_frames_cap": max_frames,
                 "mov_path": prores,
-                "stamp": "2026-10-13-simple-bg7",
+                "stamp": "2026-10-13-peak-cutout",
             },
         )
         _restore_fast()

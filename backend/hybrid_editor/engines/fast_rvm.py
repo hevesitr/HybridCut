@@ -584,6 +584,7 @@ class _OrtRvmSession:
         self.model_path = model_path
         self._r1 = self._r2 = self._r3 = self._r4 = None
         self._rec_key: Optional[tuple[int, int, float]] = None
+        self.last_fgr_bgr: Optional[np.ndarray] = None
         # Set when CUDA→CPU rebuild must drop Gyors MaskStore / sticky matte_error.
         self._masks_stale = False
         self._matte_gen = 0
@@ -781,6 +782,7 @@ class _OrtRvmSession:
     def reset(self) -> None:
         self._r1 = self._r2 = self._r3 = self._r4 = None
         self._rec_key = None
+        self.last_fgr_bgr = None
 
     def close(self) -> None:
         self.reset()
@@ -1020,6 +1022,13 @@ class _OrtRvmSession:
 
         alpha = self._extract_pha(outs, session, h, w)
         alpha = normalize_alpha(alpha)
+        # peak-cutout: keep last RVM fgr for edge color recover (no extra inference).
+        try:
+            from hybrid_editor.engines.peak_cutout import extract_fgr_bgr
+
+            self.last_fgr_bgr = extract_fgr_bgr(outs, session, h, w)
+        except Exception:  # noqa: BLE001
+            self.last_fgr_bgr = None
         # Only keep recurrent when pha looks structured — garbage state poisons the next frame.
         from hybrid_editor.media.video_io import is_matte_degenerate, is_matte_empty
 
@@ -1320,7 +1329,7 @@ class FastEngine(MattingEngine):
         return proxy
 
     def _downsample_for(self, bgr: np.ndarray) -> float:
-        """RVM downsample ratio from long-side target (CapCut-like).
+        """RVM downsample ratio — PeterL1n 256–512 guidance + full-body bias.
 
         Max bake / prefer_quality with full_res_matte → 1.0 (native).
         On CPU ORT after CUDA→CPU, prefer a higher ratio — MobileNet at 0.25
@@ -1329,12 +1338,20 @@ class FastEngine(MattingEngine):
         if getattr(self, "_full_res_matte", False):
             return 1.0
         h, w = bgr.shape[:2]
-        long = max(h, w)
-        if long <= 0:
-            ds = float(self._matte_downsample)
-        else:
+        from hybrid_editor.engines.peak_cutout import rvm_auto_downsample_ratio
+
+        # Map long-side target into PeterL1n auto ratio (full-body default).
+        try:
             target = float(self._matte_target_long)
-            ds = float(min(1.0, max(0.125, target / float(long))))
+        except Exception:
+            target = 480.0
+        if target >= 10**8:
+            return 1.0
+        # Clamp target into official 256–512 band for stage-1.
+        target_clamped = float(min(512.0, max(256.0, min(target, 512.0))))
+        if getattr(self, "_prefer_quality", False):
+            target_clamped = min(512.0, max(target_clamped, 432.0))
+        ds = rvm_auto_downsample_ratio(h, w, full_body=True, target_long=target_clamped)
         on_cpu = False
         if self._rvm is not None:
             on_cpu = (not bool(getattr(self._rvm, "_uses_cuda", False))) and (
@@ -1632,7 +1649,7 @@ class FastEngine(MattingEngine):
             "source_height": src_h,
             "infer_width": infer_w,
             "infer_height": infer_h,
-            "stamp": "2026-10-13-simple-bg7",
+            "stamp": "2026-10-13-peak-cutout",
         }
         if matte_error and empty:
             meta["matte_error"] = matte_error
