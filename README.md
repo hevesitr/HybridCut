@@ -1,6 +1,8 @@
-## Stamp - restore-rvm (`2026-10-13-restore-rvm`)
+## Stamp - restore-rvm-fast (`2026-10-14-restore-rvm-fast`)
 
-Gyors Elonezet mirrors OSS RVM/rembg: MobileNet/ResNet ONNX -> soft pha -> encode. No crush/boost/good_enough ladder that wiped soft mattes into gray-slab/strip. Crush gated to Max bake only. Install: `PASTE_RESTORE_RVM_GITHUB.ps1` (ASCII) or `PASTE_RESTORE_RVM_INSTALL.ps1`. Dist: `index-DP52nBrj.js`.
+CPU Gyors bake: MobileNet long-side ~640 (soft alpha kept). Was ~8 min/10s@1080p24 full-res CPU — now ~1 min class. See `docs/restore-rvm-fast-restart.md`. Install: `PASTE_RESTORE_RVM_FAST_GITHUB.ps1` / `PASTE_RESTORE_RVM_FAST_INSTALL.ps1` (ASCII). CUDA only when probe OK=1 (push ≠ GPU proof).
+
+Gyors Elonezet still mirrors OSS RVM/rembg soft pha (no crush wipe). Max bake crush unchanged.
 
 # HybridCut — greenfield Videoeditor
 
@@ -8,7 +10,7 @@ Modern hybrid cutout editor for **Róbert Hevesi-Tóth**: Concat-inspired host/t
 
 | | |
 |--|--|
-| SYNC | `2026-10-13-restore-rvm` (see `SYNC_VERSION.txt`) |
+| SYNC | `2026-10-14-restore-rvm-fast` (see `SYNC_VERSION.txt`) |
 | Sync target | `%USERPROFILE%\Documents\Videoeditor\hybrid_cut` |
 | CapCut root | `%USERPROFILE%\Documents\Videoeditor` + root `run_hybrid.ps1` |
 | Stack | **Python FastAPI** engines + **Vite/React** UI |
@@ -48,7 +50,7 @@ From CapCut root after install/sync:
 ```powershell
 cd $env:USERPROFILE\Documents\Videoeditor
 Get-Content .\hybrid_cut\SYNC_VERSION.txt
-# expect: 2026-10-13-restore-rvm
+# expect: 2026-10-14-restore-rvm-fast
 .\run_hybrid.ps1
 # open http://127.0.0.1:3847
 # Default: CPU ORT (real person matte). Optional CUDA after hard probe:
@@ -63,7 +65,7 @@ One-click from Agent Store:
 ```powershell
 & "$env:LOCALAPPDATA\Cursor\AgentStores\cursor_agent_stores\bc-41930eab-1501-4c19-acf3-0c9d63afbf4d\files\docs\capcut-features\sync_hybrid.ps1"
 cd $env:USERPROFILE\Documents\Videoeditor
-Get-Content .\hybrid_cut\SYNC_VERSION.txt   # 2026-10-13-restore-rvm
+Get-Content .\hybrid_cut\SYNC_VERSION.txt   # 2026-10-14-restore-rvm-fast
 cd hybrid_cut
 .\run_hybrid.ps1
 ```
@@ -83,11 +85,11 @@ cd $env:USERPROFILE\Documents\Videoeditor\hybrid_cut
 
 
 
-## Stamp - preview-fast (`2026-10-13-restore-rvm`)
+## Stamp - preview-fast (`2026-10-14-restore-rvm-fast`)
 
 Gyors Előnézet always shows a person cutout on CPU (hard salvage after soft MobileNet / gray-slab). Soft-matte crush no longer wipes peak~0.32 mattes. Proxy ~480 for fast scrub. Install: `PASTE_PREVIEW_FAST_GITHUB.ps1` (GitHub path; Agent Store Context may lag).
 
-## Stamp - full-body-fast (`2026-10-13-restore-rvm`)
+## Stamp - full-body-fast (`2026-10-14-restore-rvm-fast`)
 
 Hole-fill + hair/head protect (no checkerboard crown gaps), CPU Max bake MobileNet@~720 in-RAM (~45s for 10s@24 1080p — no guided upsample / full-HD PNG stream), hard-ish nobg crush (kill milky shoulder halo / ghost edges without reopening head holes), stronger CPU decontaminate/despill, wall-clock–aware Hátravan ETA, and **preview keep-alive** (click/mode re-matte must not blank Cutout). Includes matte-hard salvage.
 
@@ -97,15 +99,15 @@ Hole-fill + hair/head protect (no checkerboard crown gaps), CPU Max bake MobileN
 
 Dist tip after rebuild is hashed in `frontend/dist/`.
 
-## Stamp - matte-hard (`2026-10-13-restore-rvm`)
+## Stamp - matte-hard (`2026-10-14-restore-rvm-fast`)
 
 CPU ORT gray-slab toast fix on top of peak-ui: `hard_person_alpha` salvage (relaxed BG + GrabCut + multi-lobe prior) so Előnézet always shows a person matte; tighter closeup/slab rejection; auto Előnézet on Megnyitás with one retry. Install: `PASTE_MATTE_HARD_INSTALL.ps1`. Dist: `index-B9mlbaHn.js`.
 
-## Stamp - peak-ui (`2026-10-13-restore-rvm`)
+## Stamp - peak-ui (`2026-10-14-restore-rvm-fast`)
 
 CapCut-class chrome on top of peak-cutout + simple-bg7: hero **HybridCut** brand, Sora/DM Sans, dark lime/orange shell, 1·Megnyitás / 2·Előnézet / 3·Export flow, mode/preview/export motion. Gyors preview uses `preview_boost_person_alpha` so the person matte is instantly visible. Single V1 + auto person BG only. Install: `PASTE_PEAK_UI_INSTALL.ps1`. Dist: `index-DcH3y0LK.js`.
 
-## Stamp - simple-bg (`2026-10-13-restore-rvm`)
+## Stamp - simple-bg (`2026-10-14-restore-rvm-fast`)
 
 Tip restart: [`docs/simple-bg-restart.md`](docs/simple-bg-restart.md).
 
@@ -113,7 +115,7 @@ Tip restart: [`docs/simple-bg-restart.md`](docs/simple-bg-restart.md).
 
 ## Prior - run-ps1 (superseded)
 
-## Stamp - run-ps1 (historical) (`2026-10-13-restore-rvm`)
+## Stamp - run-ps1 (historical) (`2026-10-14-restore-rvm-fast`)
 
 Tip restart: [`docs/run-ps1-restart.md`](docs/run-ps1-restart.md).
 

@@ -5,6 +5,9 @@ export type BakeMode = "gyors" | "max";
 /** Calibrated sec/frame @ 1920×1080, CUDA ORT RVM on RTX 3060 8GB-class. */
 export const GYORS_SEC_PER_FRAME_1080P = 0.028;
 export const MAX_SEC_PER_FRAME_1080P = 0.165;
+/** CPU Gyors after restore-rvm-fast: MobileNet@~640 (old full-res ~2s/frame). */
+export const CPU_GYORS_SPF_MULT = 6.0;
+export const CPU_MAX_SPF_MULT = 1.15;
 const REF_PIXELS = 1920 * 1080;
 const MUX_FIXED_SEC = 2.8;
 const MUX_PER_VIDEO_SEC = 0.035;
@@ -42,9 +45,9 @@ export function secPerFrame(
 ): number {
   const base = mode === "gyors" ? GYORS_SEC_PER_FRAME_1080P : MAX_SEC_PER_FRAME_1080P;
   let spf = base * resolutionFactor(width, height, mode);
-  // CPU Max uses MobileNet@~720 fast-path (~CUDA wall clock). Gyors on CPU is slower.
+  // CPU Max → MobileNet@~720. CPU Gyors → MobileNet@~640 (honest ~1 min / 10s@24).
   if (opts?.cpuOrt) {
-    spf *= mode === "max" ? 1.15 : 2.4;
+    spf *= mode === "max" ? CPU_MAX_SPF_MULT : CPU_GYORS_SPF_MULT;
   }
   return spf;
 }

@@ -3,7 +3,7 @@
 # Mirrors OSS RVM/rembg: soft pha preview, no crush wipe.
 
 $ErrorActionPreference = "Stop"
-$TipStamp = "2026-10-13-restore-rvm"
+$TipStamp = "2026-10-14-restore-rvm-fast"
 $RepoUrl = "https://github.com/hevesitr/HybridCut.git"
 $Repo = Join-Path $env:USERPROFILE "Documents\HybridCut"
 
@@ -20,8 +20,11 @@ if (-not (Test-Path -LiteralPath (Join-Path $Repo ".git"))) {
 }
 Set-Location -LiteralPath $Repo
 git fetch origin
-git checkout main
-git pull origin main
+git checkout cursor/restore-rvm-fast-b680
+if ($LASTEXITCODE -ne 0) {
+  git checkout -B cursor/restore-rvm-fast-b680 origin/cursor/restore-rvm-fast-b680
+}
+git pull origin cursor/restore-rvm-fast-b680
 
 $stamp = ""
 $sf = Join-Path $Repo "SYNC_VERSION.txt"

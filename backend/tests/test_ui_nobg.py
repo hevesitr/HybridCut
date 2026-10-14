@@ -13,7 +13,7 @@ HTML = ROOT / "frontend" / "index.html"
 
 
 def test_sync_stamp_concat_flow():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-13-matte-safe"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast"
 
 
 def test_app_result_card_and_explorer():

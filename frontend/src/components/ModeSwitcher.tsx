@@ -22,12 +22,20 @@ export function ModeSwitcher({
   const path = pathLabel === "CUDA" ? "CUDA" : pathLabel === "CPU" ? "CPU" : "";
   const maxSpan =
     path === "CPU" ? "éles · CPU~720" : path === "CUDA" ? "éles · CUDA" : "éles export · apex";
+  const gyorsSpan =
+    path === "CPU" ? "scrub · CPU~640" : path === "CUDA" ? "scrub · CUDA" : "élő scrub · lágyabb";
   const maxTitle =
     path === "CPU"
       ? `Max — CPU ORT gyors bake (MobileNet~720). ETA: ${mEta}`
       : path === "CUDA"
         ? `Max — CUDA EP teljes ResNet/APEX. ETA: ${mEta}`
         : `Max háttéreltávolítás — éles export. Becsült idő: ${mEta}`;
+  const gyorsTitle =
+    path === "CPU"
+      ? `Gyors — CPU ORT bake (MobileNet~640, soft alpha). ETA: ${gEta}`
+      : path === "CUDA"
+        ? `Gyors — CUDA EP MobileNet scrub/bake. ETA: ${gEta}`
+        : `Gyors háttéreltávolítás — élő scrub, lágyabb szélek. Becsült idő: ${gEta}`;
   return (
     <div
       className="mode-switch"
@@ -42,13 +50,13 @@ export function ModeSwitcher({
         role="radio"
         aria-checked={mode === "gyors"}
         disabled={disabled}
-        title={`Gyors háttéreltávolítás — élő scrub, lágyabb szélek. Becsült idő: ${gEta}`}
+        title={gyorsTitle}
         onClick={() => {
           if (mode !== "gyors") onChange("gyors");
         }}
       >
         <strong>Gyors</strong>
-        <span>élő scrub · lágyabb</span>
+        <span>{gyorsSpan}</span>
         <em className="mode-eta" aria-label={`Gyors ETA ${gEta}`}>
           {gEta}
         </em>

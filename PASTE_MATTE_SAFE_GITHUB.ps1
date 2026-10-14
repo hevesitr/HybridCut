@@ -2,7 +2,7 @@
 # ASCII-only. Paste into Windows PowerShell.
 
 $ErrorActionPreference = "Stop"
-$TipStamp = "2026-10-13-matte-safe"
+$TipStamp = "2026-10-14-restore-rvm-fast"
 $RepoUrl = "https://github.com/hevesitr/HybridCut.git"
 $Repo = Join-Path $env:USERPROFILE "Documents\HybridCut"
 

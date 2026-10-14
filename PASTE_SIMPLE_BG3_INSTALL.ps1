@@ -4,7 +4,7 @@
 # ASCII-safe. Paste into PowerShell.
 
 $ErrorActionPreference = "Stop"
-$TipStamp = "2026-10-12-simple-bg3"
+$TipStamp = "2026-10-14-restore-rvm-fast"
 $StoreId = "bc-41930eab-1501-4c19-acf3-0c9d63afbf4d"
 
 Write-Host "=== HybridCut simple-bg3 install ==="
@@ -89,7 +89,7 @@ if ($banned -contains $js.Name) {
   Write-Error ("Stale dist still present: " + $js.Name + " - purge failed; delete frontend\dist and re-run.")
 }
 $sample = Get-Content -LiteralPath $js.FullName -Raw
-if ($sample -match "AI sáv|AI SÁV|\+ V1 klip|\+ B-roll|tl-polish-btn") {
+if ($sample -match "AI s-v|AI S-V|\+ V1 klip|\+ B-roll|tl-polish-btn") {
   Write-Error ("Dist still contains multi-track chrome: " + $js.Name)
 }
 Write-Host "VERIFY OK: SYNC + dist have no AI SAV / +V1 / +B-roll"
@@ -107,5 +107,5 @@ Set-Location -LiteralPath $ve
 $env:HYBRID_ORT_PROVIDER = "cpu"
 Write-Host "Starting run_hybrid.ps1 ..."
 Write-Host "Open http://127.0.0.1:3847 then Ctrl+F5"
-Write-Host "Expect: SYNC 2026-10-12-simple-bg3 · only V1 · Cutout person silhouette"
+Write-Host "Expect: SYNC 2026-10-14-restore-rvm-fast - only V1 - Cutout person silhouette"
 .\run_hybrid.ps1

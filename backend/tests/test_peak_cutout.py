@@ -12,7 +12,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
-STAMP = "2026-10-13-matte-safe"
+STAMP = "2026-10-14-restore-rvm-fast"
 SYNC = ROOT / "SYNC_VERSION.txt"
 FEATURE = ROOT / "backend" / "hybrid_editor" / "FEATURE_PEAK_CUTOUT.txt"
 PASTE = ROOT / "PASTE_PEAK_CUTOUT_INSTALL.ps1"

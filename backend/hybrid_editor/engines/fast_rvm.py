@@ -1339,6 +1339,38 @@ class FastEngine(MattingEngine):
         if was != self._full_res_matte and self._rvm is not None:
             self._rvm.reset()
 
+    def _on_cpu_ort(self) -> bool:
+        """True when live RVM session is CPU (or heuristic) — not CUDA EP."""
+        if self._rvm is None:
+            return True
+        if bool(getattr(self._rvm, "_uses_cuda", False)):
+            return False
+        return "CPU" in str(getattr(self._rvm, "provider", "CPU") or "CPU")
+
+    def _gyors_bake_proxy(self) -> tuple[bool, int]:
+        """CPU Gyors bake: downscale BGR before ORT (full-res src was ~2s/frame).
+
+        Root cause of ~8 min / 10s@1080p24: ``bake()`` fed native 1080p ``src`` into
+        CPU MobileNet every frame (downsample_ratio alone still ships a huge tensor).
+        Mirror Max CPU fast-path: long-side 480–720 (default 640), soft pha unchanged.
+
+        Opt out: ``HYBRID_GYORS_BAKE_FULLRES=1``. Tune: ``HYBRID_GYORS_BAKE_LONG``.
+        CUDA EP (probe OK) keeps native decode — GPU bandwidth handles 1080p.
+        """
+        raw = (os.environ.get("HYBRID_GYORS_BAKE_FULLRES") or "").strip().lower()
+        if raw in {"1", "true", "yes", "full", "fullres"}:
+            return False, 10**9
+        prefer = (os.environ.get("HYBRID_ORT_PROVIDER") or "cpu").strip().lower()
+        force_cpu_env = prefer in {"cpu", "cpuexecutionprovider", ""}
+        if not force_cpu_env and not self._on_cpu_ort():
+            return False, 10**9
+        try:
+            bake_long = int(os.environ.get("HYBRID_GYORS_BAKE_LONG", "640") or "640")
+        except ValueError:
+            bake_long = 640
+        bake_long = max(480, min(720, bake_long))
+        return True, bake_long
+
     def _load_rvm(self) -> None:
         prefer = "quality" if self._prefer_quality else "fast"
         model = resolve_rvm_onnx(prefer=prefer)
@@ -1877,7 +1909,7 @@ class FastEngine(MattingEngine):
             "source_height": src_h,
             "infer_width": infer_w,
             "infer_height": infer_h,
-            "stamp": "2026-10-13-restore-rvm",
+            "stamp": "2026-10-14-restore-rvm-fast",
         }
         if matte_error and empty:
             meta["matte_error"] = matte_error
@@ -1926,6 +1958,17 @@ class FastEngine(MattingEngine):
         end_t = float(out_sec) if out_sec is not None and out_sec > 0 else self._media.duration_sec
         end_t = max(start_t, end_t)
 
+        # CPU Gyors: matte at long-side ~640 (not full 1080p src). Soft pha kept.
+        cpu_fast, bake_long = self._gyors_bake_proxy()
+        if cpu_fast:
+            self.set_full_res_matte(False)
+            self._matte_target_long = bake_long
+            logger.warning(
+                "CPU Gyors bake fast-path: MobileNet long=%d (was full-res src ~2s/frame; "
+                "set HYBRID_GYORS_BAKE_FULLRES=1 to restore slow path)",
+                bake_long,
+            )
+
         cap = cv2.VideoCapture(str(path))
         if not cap.isOpened():
             raise RuntimeError(f"Cannot open {path}")
@@ -1936,6 +1979,14 @@ class FastEngine(MattingEngine):
         if limit <= 0:
             limit = 10**9
         total_est = int(max(1, round((end_t - start_t) * fps)))
+        try:
+            n_cont = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            if n_cont > 0 and fps > 1e-6:
+                i0 = int(max(0, round(start_t * fps)))
+                i1 = int(min(n_cont, max(i0 + 1, round(end_t * fps))))
+                total_est = max(1, i1 - i0)
+        except Exception:
+            pass
         if max_frames is not None:
             total_est = min(total_est, max_frames)
         frames_bgr: list[np.ndarray] = []
@@ -1951,15 +2002,23 @@ class FastEngine(MattingEngine):
                 cur_t = start_t + (idx / fps)
                 if cur_t > end_t + 1e-6:
                     break
-                alpha = self._matte(bgr)
+                # Downscale BEFORE ORT on CPU — do not feed 1080p float src.
+                if cpu_fast:
+                    bgr_m = downscale_long_side(bgr, bake_long)
+                else:
+                    bgr_m = bgr
+                # Soft RVM pha only — no apex polish / no matte-safe crush.
+                alpha = self._matte(bgr_m)
                 a8 = (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
                 if alpha_dir is not None:
                     cv2.imwrite(str(alpha_dir / f"{idx:06d}.png"), a8)
-                if self._mask_store is not None:
-                    self._mask_store.put(cur_t, alpha)
+                # Skip MaskStore PNG thrash during bake (scrub cache is for preview).
                 # Keep proxy-sized frames for preview mp4 (memory-safe)
-                proxy = downscale_long_side(bgr, 720)
-                a_p = cv2.resize(alpha, (proxy.shape[1], proxy.shape[0]), interpolation=cv2.INTER_LINEAR)
+                proxy_long = int(bake_long) if cpu_fast else 720
+                proxy = downscale_long_side(bgr_m, proxy_long)
+                a_p = cv2.resize(
+                    alpha, (proxy.shape[1], proxy.shape[0]), interpolation=cv2.INTER_LINEAR
+                )
                 frames_bgr.append(proxy)
                 frames_alpha.append(a_p)
                 a3 = (a_p * 255).astype(np.uint8)
@@ -1968,8 +2027,12 @@ class FastEngine(MattingEngine):
                 frames_bgra.append(bgra)
                 written += 1
                 idx += 1
+                if written > total_est:
+                    total_est = written
                 if progress:
-                    progress(min(0.85, written / max(total_est, 1)), f"Gyors bake {written}/{total_est}")
+                    pct = min(0.85, written / max(total_est, 1))
+                    tag = f"Gyors~{bake_long}" if cpu_fast else "Gyors bake"
+                    progress(pct, f"{tag} {written}/{total_est} frame")
         finally:
             cap.release()
         timer.mark("matte_loop")
@@ -2018,6 +2081,7 @@ class FastEngine(MattingEngine):
         audio_note = " · audio AAC" if audio_ok else ""
         mov_note = f" · {prores}" if prores else " · HIÁNYZIK: *_full_nobg.mov"
         dur_note = f" · {end_t - start_t:.2f}s / {written} frame"
+        cpu_note = f" · CPU Gyors@{bake_long}" if cpu_fast else ""
         ok = written > 0 and bool(prores)
         msg_core = (
             f"Kész: {Path(prores).name}" if prores else "SIKERTELEN: nincs *_full_nobg.mov (ffmpeg?)"
@@ -2029,6 +2093,10 @@ class FastEngine(MattingEngine):
             "duration_sec": end_t - start_t,
             "max_frames_cap": max_frames,
             "mov_path": prores,
+            "cpu_gyors_fast": bool(cpu_fast),
+            "gyors_bake_long": bake_long if cpu_fast else None,
+            "soft_alpha": True,
+            "mask_store_bake": False,
         }
         if timing:
             bake_range["diag_timing"] = timing
@@ -2039,7 +2107,7 @@ class FastEngine(MattingEngine):
             engine="FastEngine",
             backend=self._backend,
             message=(
-                f"{msg_core}{audio_note}{mov_note}{dur_note} ({self._backend})"
+                f"{msg_core}{audio_note}{mov_note}{dur_note}{cpu_note} ({self._backend})"
             ),
             alpha_preview=(
                 str(alpha_dir / "000000.png") if alpha_dir is not None and written else None

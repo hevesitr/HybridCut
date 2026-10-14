@@ -4,7 +4,7 @@
 # ASCII-only (no em-dash / accented chars) so Windows PowerShell parsers do not break.
 
 $ErrorActionPreference = "Stop"
-$TipStamp = "2026-10-13-restore-rvm"
+$TipStamp = "2026-10-14-restore-rvm-fast"
 $StoreId = "bc-41930eab-1501-4c19-acf3-0c9d63afbf4d"
 
 Write-Host "=== HybridCut restore-rvm install ==="
@@ -55,8 +55,10 @@ if (-not $src) {
   }
   Set-Location -LiteralPath $repo
   git fetch origin
-  git checkout main
-  git pull origin main
+  git fetch origin
+  git checkout cursor/restore-rvm-fast-b680
+  if ($LASTEXITCODE -ne 0) { git checkout -B cursor/restore-rvm-fast-b680 origin/cursor/restore-rvm-fast-b680 }
+  git pull origin cursor/restore-rvm-fast-b680
   $src = $repo
 }
 
@@ -123,7 +125,7 @@ Set-Location -LiteralPath $ve
 # Do NOT force HYBRID_ORT_PROVIDER=cpu - that blocked morning CUDA forever.
 Write-Host "Starting start_hybrid_cuda.ps1 (probe + launch) ..."
 Write-Host "Open http://127.0.0.1:3847 then Ctrl+F5"
-Write-Host "Expect: SYNC 2026-10-13-restore-rvm - only V1 - Cutout person silhouette"
+Write-Host "Expect: SYNC 2026-10-14-restore-rvm-fast - only V1 - Cutout person silhouette"
 Write-Host "restore-rvm: OSS RVM path - soft pha, no crush wipe on Gyors. Badge RVM CUDA when probe OK."
 if (Test-Path -LiteralPath ".\start_hybrid_cuda.ps1") {
   .\start_hybrid_cuda.ps1

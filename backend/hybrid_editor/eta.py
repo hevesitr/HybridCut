@@ -17,6 +17,10 @@ Mode = Literal["gyors", "max"]
 # Max: ResNet50 full-res + APEX polish + BGRA stream + mux.
 GYORS_SEC_PER_FRAME_1080P = 0.028
 MAX_SEC_PER_FRAME_1080P = 0.165
+# CPU Gyors after restore-rvm-fast: MobileNet@~640 (not full-res src).
+# Old full-res CPU was ~2.0 s/frame (~8 min / 240). Proxy path ~0.15–0.25 s/frame.
+CPU_GYORS_SPF_MULT = 6.0
+CPU_MAX_SPF_MULT = 1.15
 REF_PIXELS = 1920 * 1080
 MUX_FIXED_SEC = 2.8
 MUX_PER_VIDEO_SEC = 0.035
@@ -59,9 +63,9 @@ def sec_per_frame(
 ) -> float:
     base = GYORS_SEC_PER_FRAME_1080P if mode == "gyors" else MAX_SEC_PER_FRAME_1080P
     spf = base * resolution_factor(width, height, mode)
-    # CPU Max → MobileNet@~720 fast-path (~CUDA wall clock). Gyors on CPU slower.
+    # CPU Max → MobileNet@~720 (~CUDA wall). CPU Gyors → MobileNet@~640 (honest ~1 min/10s).
     if cpu_ort:
-        spf *= 1.15 if mode == "max" else 2.4
+        spf *= CPU_MAX_SPF_MULT if mode == "max" else CPU_GYORS_SPF_MULT
     return spf
 
 

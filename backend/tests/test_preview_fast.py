@@ -13,7 +13,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
-STAMP = "2026-10-13-matte-safe"
+STAMP = "2026-10-14-restore-rvm-fast"
 
 
 def test_stamp():
