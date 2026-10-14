@@ -436,15 +436,8 @@ class MaxQualityEngine(MattingEngine):
             if is_matte_empty(alpha):
                 alpha = self._ensure_nonempty_alpha(bgr, alpha)
                 recovered = not is_matte_empty(alpha)
-            if cpu_fast and alpha is not None and not is_matte_empty(alpha):
-                crushed = self._crush_soft_shadow_alpha(alpha)
-                from hybrid_editor.media.video_io import is_matte_sliver
-
-                # Prefer uncrushed if crush ate the person into a strip.
-                if is_matte_empty(crushed) or is_matte_sliver(crushed):
-                    alpha = alpha
-                else:
-                    alpha = crushed
+            # restore-rvm / OSS: never crush soft MobileNet on Max *preview*
+            # (crush reserved for bake/export). Soft pha is the product.
             # CapCut fringe / cyan + bright spill on cutout RGB (Éles szélek / apex)
             cut_bgr = bgr
             if self.sharp_edges and alpha is not None and not is_matte_empty(alpha):
@@ -464,12 +457,6 @@ class MaxQualityEngine(MattingEngine):
             try:
                 alpha = self._ensure_nonempty_alpha(bgr, None)
                 recovered = not is_matte_empty(alpha)
-                if cpu_fast and alpha is not None and not is_matte_empty(alpha):
-                    from hybrid_editor.media.video_io import is_matte_sliver
-
-                    crushed = self._crush_soft_shadow_alpha(alpha)
-                    if not (is_matte_empty(crushed) or is_matte_sliver(crushed)):
-                        alpha = crushed
                 cut_bgr = bgr
                 if self.sharp_edges and not is_matte_empty(alpha):
                     cut_bgr = apply_color_polish(
@@ -492,13 +479,6 @@ class MaxQualityEngine(MattingEngine):
             # Final hard retry before admitting empty to the UI.
             alpha = self._ensure_nonempty_alpha(bgr, alpha)
             if not is_matte_empty(alpha):
-                if cpu_fast:
-                    from hybrid_editor.media.video_io import is_matte_sliver
-
-                    crushed = self._crush_soft_shadow_alpha(alpha)
-                    # matte-safe: keep uncrushed if crush wiped / stripped the person.
-                    if not (is_matte_empty(crushed) or is_matte_sliver(crushed)):
-                        alpha = crushed
                 cut_bgr = bgr
                 if self.sharp_edges:
                     cut_bgr = apply_color_polish(
@@ -515,7 +495,7 @@ class MaxQualityEngine(MattingEngine):
                 recovered = not empty
             else:
                 empty = True
-        # preview-fast: absolute last resort — always show a person cutout on Max.
+        # Absolute last resort — always show a person cutout on Max preview.
         if empty:
             try:
                 from hybrid_editor.engines.fast_rvm import hard_person_alpha
@@ -539,7 +519,7 @@ class MaxQualityEngine(MattingEngine):
                     recovered = not empty
                     matte_error = None
             except Exception as force_exc:  # noqa: BLE001
-                logger.warning("Max preview-fast force salvage failed: %s", force_exc)
+                logger.warning("Max preview force salvage failed: %s", force_exc)
         info = self.person_matte_info()
         weights = self._fast.capabilities().weights_path
         # Status: clear empty vs live RVM person-matte label.
@@ -559,7 +539,8 @@ class MaxQualityEngine(MattingEngine):
             "seed_mode": self.seed_mode,
             "seed_part": self.seed_part,
             "manual_seed_refinement_only": False,
-            "fast_meta": frame.meta,
+            # restore-rvm: Max preview no longer calls Fast.preview_frame (2x work).
+            "fast_meta": {},
             "matte_empty": empty,
             "matte_recovered": recovered,
             "sharp_edges": self.sharp_edges,
@@ -575,12 +556,34 @@ class MaxQualityEngine(MattingEngine):
             "source_height": int(self._media.height) if self._media else int(bgr.shape[0]),
             "infer_width": int(bgr.shape[1]),
             "infer_height": int(bgr.shape[0]),
-            "stamp": "2026-10-13-matte-safe",
+            "stamp": "2026-10-13-restore-rvm",
         }
         if empty and matte_error is None and alpha is not None:
             from hybrid_editor.media.video_io import matte_failure_reason
 
             matte_error = matte_failure_reason(alpha)
+        # Optional diag (HYBRID_DIAG_MATTE / HYBRID_DIAG_ALPHA_DUMP) — off by default.
+        try:
+            from hybrid_editor.diag_matte import log_matte_trigger, maybe_dump_alpha_pair
+
+            log_matte_trigger(
+                where="MaxQualityEngine.preview_frame",
+                t_sec=t,
+                matte_error=matte_error,
+                matte_empty=bool(empty),
+                recovered=bool(recovered),
+                alpha=alpha,
+                extra={"backend": info.get("person_matte_backend")},
+            )
+            if empty or matte_error:
+                maybe_dump_alpha_pair(
+                    tag="max_preview",
+                    t_sec=t,
+                    raw_alpha=alpha,
+                    post_alpha=None,
+                )
+        except Exception:  # noqa: BLE001
+            pass
         if matte_error and empty:
             meta["matte_error"] = matte_error
             meta["source_fallback"] = True
@@ -616,11 +619,14 @@ class MaxQualityEngine(MattingEngine):
             raise RuntimeError("No media open")
         out_dir = Path(out_dir)
         from hybrid_editor.export.bgcut import alpha_dump_dir, dump_alpha_frames_enabled
+        from hybrid_editor.diag_matte import ExportStageTimer
 
         dump_alpha = dump_alpha_frames_enabled()
         alpha_dir = alpha_dump_dir(out_dir) if dump_alpha else None
         if alpha_dir is not None:
             alpha_dir.mkdir(parents=True, exist_ok=True)
+        # Timer wraps whichever bake path runs; stages marked inside pipeline.
+        self._diag_export_timer = ExportStageTimer("MaxQualityEngine.bake")
 
         if self._adapter.available:
             try:
@@ -718,6 +724,9 @@ class MaxQualityEngine(MattingEngine):
         frames_bgra_fallback: list[np.ndarray] = []
         stream_mode = bool(self.sharp_edges) and not cpu_fast
         export_long = bake_long if cpu_fast else 10**9
+        timer = getattr(self, "_diag_export_timer", None)
+        if timer is not None:
+            timer.mark("seek_open")
         try:
             idx = 0
             while written < limit:
@@ -835,6 +844,8 @@ class MaxQualityEngine(MattingEngine):
                     progress(pct, f"{tag} {written}/{total_est} frame")
         finally:
             cap.release()
+        if timer is not None:
+            timer.mark("matte_loop")
 
         preview_mp4 = None
         prores = None
@@ -861,6 +872,8 @@ class MaxQualityEngine(MattingEngine):
                     audio_duration_sec=end_t - start_t,
                 )
                 audio_ok = bool(preview_mp4) and media_has_audio(preview_mp4)
+                if timer is not None:
+                    timer.mark("preview_mp4")
                 if progress:
                     progress(0.94, f"Export *_full_nobg.mov… ({written} frame)")
                 if stream_mode and written:
@@ -937,6 +950,8 @@ class MaxQualityEngine(MattingEngine):
                     ) or preview_mp4
                 if progress:
                     progress(1.0, f"Bake kész · {written}/{written} frame")
+                if timer is not None:
+                    timer.mark("prores_mov")
         finally:
             shutil.rmtree(stream_dir, ignore_errors=True)
 
@@ -950,6 +965,7 @@ class MaxQualityEngine(MattingEngine):
         msg_core = (
             f"Kész: {Path(prores).name}" if prores else "SIKERTELEN: nincs *_full_nobg.mov (ffmpeg?)"
         )
+        timing = timer.finish() if timer is not None else {}
         result = BakeResult(
             ok=written > 0 and bool(prores),
             out_dir=str(out_dir.resolve()),
@@ -981,7 +997,8 @@ class MaxQualityEngine(MattingEngine):
                 "frames_total_est": total_est,
                 "max_frames_cap": max_frames,
                 "mov_path": prores,
-                "stamp": "2026-10-13-matte-safe",
+                "stamp": "2026-10-13-restore-rvm",
+                **({"diag_timing": timing} if timing else {}),
             },
         )
         _restore_fast()

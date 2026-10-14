@@ -1,6 +1,6 @@
 # matte-safe restart
 
-Stamp: `2026-10-13-matte-safe`
+Stamp: `2026-10-13-restore-rvm`
 
 ## Root cause
 
@@ -18,7 +18,7 @@ preview-fast crush used an adaptive hard core. Soft MobileNet often has a bright
 cd $env:USERPROFILE\Documents\HybridCut
 git pull origin main
 Get-Content .\SYNC_VERSION.txt
-# expect: 2026-10-13-matte-safe
+# expect: 2026-10-13-restore-rvm
 .\install_to_videoeditor.ps1
 cd $env:USERPROFILE\Documents\Videoeditor\hybrid_cut
 .\run_hybrid.ps1

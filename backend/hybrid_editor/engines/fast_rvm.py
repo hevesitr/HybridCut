@@ -1518,11 +1518,14 @@ class FastEngine(MattingEngine):
                 "CPU" in str(getattr(self._rvm, "provider", ""))
             )
         if on_cpu:
+            # PeterL1n: 0.25 @1080 is correct; forcing 0.5+ made CPU Gyors crawl.
+            # Allow override; default stays at official auto ratio (no floor).
             try:
-                min_ds = float(os.environ.get("HYBRID_CPU_RVM_MIN_DS", "0.5") or "0.5")
+                min_ds = float(os.environ.get("HYBRID_CPU_RVM_MIN_DS", "0") or "0")
             except ValueError:
-                min_ds = 0.5
-            ds = float(min(1.0, max(ds, min_ds)))
+                min_ds = 0.0
+            if min_ds > 0:
+                ds = float(min(1.0, max(ds, min_ds)))
         return ds
 
     def _iter_alternate_rvm_paths(self) -> list[Path]:
@@ -1585,13 +1588,12 @@ class FastEngine(MattingEngine):
         return found
 
     def _try_alternate_rvm(self, bgr: np.ndarray) -> Optional[np.ndarray]:
-        """Load next RVM ONNX on CPU; promote it if it yields a real person matte."""
-        from hybrid_editor.media.video_io import is_matte_good_enough
+        """Load next RVM ONNX on CPU; promote it if pha is non-empty (OSS trust)."""
+        from hybrid_editor.media.video_io import is_matte_degenerate
 
         ds = self._downsample_for(bgr)
-        prefer_native = bool(
-            getattr(self, "_full_res_matte", False) or getattr(self, "_prefer_quality", False)
-        )
+        # Gyors / OSS: never force native full-res on alternate (CPU cost bomb).
+        prefer_native = bool(getattr(self, "_full_res_matte", False))
         for alt in self._iter_alternate_rvm_paths():
             sess: Optional[_OrtRvmSession] = None
             try:
@@ -1606,9 +1608,10 @@ class FastEngine(MattingEngine):
                     else:
                         os.environ.pop("HYBRID_ORT_PROVIDER", None)
                 alpha = sess.matte(bgr, downsample=ds, prefer_native=prefer_native)
-                if not is_matte_good_enough(alpha):
+                # PeterL1n / rembg: soft MobileNet pha is valid — do not good_enough-gate.
+                if is_matte_empty(alpha) or is_matte_degenerate(alpha):
                     logger.warning(
-                        "Alternate RVM %s still empty/slab/speck — trying next",
+                        "Alternate RVM %s still empty/slab — trying next",
                         alt.name,
                     )
                     sess.close()
@@ -1641,26 +1644,22 @@ class FastEngine(MattingEngine):
         return None
 
     def _matte(self, bgr: np.ndarray) -> np.ndarray:
-        """Person alpha for one frame — never return an empty/degenerate matte when fallback can help.
+        """Person alpha — OSS-simple path (PeterL1n RVM / rembg default).
 
-        Max quality polish calls this directly (not preview_frame). Empty ORT / soft-fail
-        used to skip the heuristic retry that only lived in preview_frame → Max looked
-        like it found no person mask. Degenerate all-ones slabs (solid gray Maszk) are
-        also rejected so Cutout never claims success with an opaque full frame.
+        Official RVM: model(src, *rec, ds) → pha; compose fgr*pha. No crush ladder,
+        no good_enough reject of soft MobileNet, no hard_person on the happy path.
+        rembg: session.predict → naive_cutout; alpha_matting/post only if requested.
 
-        simple-bg4 ladder: primary RVM → alternate ResNet/MobileNet → solid-BG chroma
-        → GrabCut heuristic. matte-hard: never return zeros/slab — hard_person_alpha
-        always yields a visible person silhouette for Előnézet.
+        HybridCut restore-rvm: trust non-empty, non-degenerate pha. Ladder only when
+        ORT returns empty/slab. hard_person_alpha is last-resort for gray-slab UI only.
         """
         from hybrid_editor.media.video_io import (
             is_matte_degenerate,
-            is_matte_good_enough,
             matte_failure_reason,
         )
 
-        prefer_native = bool(
-            getattr(self, "_full_res_matte", False) or getattr(self, "_prefer_quality", False)
-        )
+        # Preview / Gyors: never prefer_native (full-frame CPU ORT). Max bake sets flag.
+        prefer_native = bool(getattr(self, "_full_res_matte", False))
         alpha: Optional[np.ndarray] = None
         if self._rvm is not None:
             try:
@@ -1672,28 +1671,23 @@ class FastEngine(MattingEngine):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("RVM matte failed — trying alternate / chroma / heuristic: %s", exc)
                 alpha = None
-        if alpha is not None and is_matte_good_enough(alpha):
-            # Prefer fuller recall: close hair/body holes on usable RVM mattes too.
-            try:
-                from hybrid_editor.engines.videoeditor_polish import fill_person_holes
-
-                return fill_person_holes(alpha, min_fg=0.18, close_px=11, fill_value=0.90)
-            except Exception:  # noqa: BLE001
-                return alpha
+        if alpha is not None and not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
+            # Soft pha is the product (RVM paper / rembg naive_cutout).
+            return alpha
         if alpha is not None:
-            why = matte_failure_reason(alpha) or "weak/speck"
-            kind = "degenerate slab" if is_matte_degenerate(alpha) else "empty/weak"
+            why = matte_failure_reason(alpha) or "empty"
+            kind = "degenerate slab" if is_matte_degenerate(alpha) else "empty"
             logger.warning(
-                "RVM returned %s matte on %s (%s) — alternate / chroma / hard salvage",
+                "RVM returned %s matte on %s (%s) — alternate / chroma / heuristic",
                 kind,
                 self._backend,
                 why,
             )
         alt = self._try_alternate_rvm(bgr)
-        if alt is not None and is_matte_good_enough(alt):
+        if alt is not None and not is_matte_empty(alt) and not is_matte_degenerate(alt):
             return alt
         chroma = solid_bg_person_alpha(bgr)
-        if is_matte_good_enough(chroma):
+        if not is_matte_empty(chroma) and not is_matte_degenerate(chroma):
             self._status_note = (
                 (self._status_note + " · " if self._status_note else "")
                 + "solid-BG chroma fallback (blue/green screen)"
@@ -1701,18 +1695,23 @@ class FastEngine(MattingEngine):
             logger.warning("RVM empty/slab — solid-BG chroma person matte recovered")
             return chroma
         heur = heuristic_person_alpha(bgr)
-        if is_matte_good_enough(heur):
+        if not is_matte_empty(heur) and not is_matte_degenerate(heur):
             return heur
-        # matte-hard: never ship gray-slab or empty zeros to the UI toast path.
+        # Last resort only — never run on soft MobileNet that already had a person.
         hard = hard_person_alpha(bgr)
         self._status_note = (
             (self._status_note + " · " if self._status_note else "")
             + "hard person salvage (CPU ladder)"
         )
-        logger.warning("RVM/chroma weak — hard_person_alpha salvage for visible Cutout")
+        logger.warning("RVM/chroma empty — hard_person_alpha salvage for visible Cutout")
         return hard
 
     def preview_frame(self, t_sec: float) -> PreviewFrame:
+        """Gyors Előnézet — OSS-fast: proxy decode → one RVM → encode soft pha.
+
+        Mirrors PeterL1n inference.py / rembg remove(default): no crush, no boost,
+        no sliver wipe of soft mattes. Salvage only when pha is empty/degenerate.
+        """
         if self._media is None:
             raise RuntimeError("No media open")
         fps = self._media.fps or 25.0
@@ -1721,7 +1720,7 @@ class FastEngine(MattingEngine):
         self._last_frame_idx = frame_idx
         self._prefetch.nudge(frame_idx, direction=direction, max_long=self._proxy_long)
 
-        # Prefer proxy-sized decode from HOT/WARM/COLD lanes
+        # Prefer proxy-sized decode from HOT/WARM/COLD lanes (~480 long, RVM~512 band)
         bgr = self._decode_proxy_idx(frame_idx, self._proxy_long)
         if bgr is not None and self._lanes is not None:
             self._lanes.put(frame_idx, bgr, lane=Lane.HOT)
@@ -1742,51 +1741,60 @@ class FastEngine(MattingEngine):
             self._rvm._masks_stale = False  # noqa: SLF001
             logger.info("MaskStore purged after CUDA→CPU — forcing fresh CPU/heuristic infer")
 
-        # MaskStore hit → skip ORT (but never trust an empty/useless cached matte)
         alpha = None
         from_store = False
         matte_error: Optional[str] = None
         recovered = False
-        from hybrid_editor.media.video_io import is_matte_degenerate, is_matte_good_enough
+        from hybrid_editor.media.video_io import is_matte_degenerate
 
         if self._mask_store is not None:
             cached = self._mask_store.get_alpha(t, shape=bgr.shape[:2])
-            if cached is not None and is_matte_good_enough(cached):
+            if (
+                cached is not None
+                and not is_matte_empty(cached)
+                and not is_matte_degenerate(cached)
+            ):
                 alpha = cached
                 from_store = True
-            elif cached is not None:
-                # Stale CUDA slab / speck in store — never serve; re-infer.
-                if is_matte_degenerate(cached) or is_matte_empty(cached):
-                    try:
-                        self._mask_store.purge()
-                    except Exception:  # noqa: BLE001
-                        self._mask_store.clear_memory()
+            elif cached is not None and (
+                is_matte_degenerate(cached) or is_matte_empty(cached)
+            ):
+                try:
+                    self._mask_store.purge()
+                except Exception:  # noqa: BLE001
+                    self._mask_store.clear_memory()
         if alpha is None:
             if self._rvm:
                 self._rvm.reset()  # seek: don't smear recurrent state
             try:
-                # _matte already retries alternate / chroma / hard salvage.
                 alpha = self._matte(bgr)
-                if self._mask_store is not None and is_matte_good_enough(alpha):
+                if (
+                    self._mask_store is not None
+                    and not is_matte_empty(alpha)
+                    and not is_matte_degenerate(alpha)
+                ):
                     self._mask_store.put_async(t, alpha)
             except Exception as exc:  # noqa: BLE001
-                # Soft-fail: keep source RGB visible even if RVM/ORT blows up.
                 matte_error = str(exc)[:240]
-                logger.warning("preview matte failed — hard person salvage: %s", matte_error)
+                logger.warning("preview matte failed — heuristic fallback: %s", matte_error)
                 try:
-                    alpha = hard_person_alpha(bgr)
+                    alpha = heuristic_person_alpha(bgr)
                     if not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
                         matte_error = None
                         recovered = True
-                    if self._mask_store is not None and is_matte_good_enough(alpha):
+                    if (
+                        self._mask_store is not None
+                        and not is_matte_empty(alpha)
+                        and not is_matte_degenerate(alpha)
+                    ):
                         self._mask_store.put_async(t, alpha)
                 except Exception as exc2:  # noqa: BLE001
-                    matte_error = f"{matte_error}; hard: {str(exc2)[:120]}"
+                    matte_error = f"{matte_error}; heuristic: {str(exc2)[:120]}"
                     alpha = np.zeros(bgr.shape[:2], dtype=np.float32)
 
         from hybrid_editor.media.video_io import matte_failure_reason
 
-        # matte-hard: never encode a gray slab / empty — salvage before toast.
+        # Only salvage true empty/slab — never replace soft MobileNet with GrabCut.
         if alpha is None or is_matte_empty(alpha) or is_matte_degenerate(alpha):
             try:
                 salvaged = hard_person_alpha(bgr)
@@ -1799,66 +1807,59 @@ class FastEngine(MattingEngine):
                 logger.warning("preview hard salvage failed: %s", salvage_exc)
         if alpha is not None and is_matte_empty(alpha) and matte_error is None:
             matte_error = matte_failure_reason(alpha)
-        # Annotate inference size — never claim 1080p when src was smaller.
         infer_h, infer_w = int(bgr.shape[0]), int(bgr.shape[1])
-        # peak-ui: display-boost so Gyors Cutout instantly shows recognition working.
-        # Encode the SAME alpha used for empty checks (never boost-then-empty mismatch).
-        alpha_vis = alpha
-        if alpha is not None and not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
-            try:
-                from hybrid_editor.engines.peak_cutout import preview_boost_person_alpha
-
-                boosted = preview_boost_person_alpha(alpha)
-                # Only use boost when it stays a usable person matte.
-                if not is_matte_empty(boosted) and not is_matte_degenerate(boosted):
-                    alpha_vis = boosted
-            except Exception:  # noqa: BLE001
-                alpha_vis = alpha
+        # OSS: encode soft pha as-is (no preview_boost, no crush).
         try:
-            jpg, png, w, h, src, empty = encode_preview_pair(bgr, alpha_vis)
+            jpg, png, w, h, src, empty = encode_preview_pair(bgr, alpha)
         except Exception as exc:  # noqa: BLE001
             logger.warning("preview encode failed — source-only: %s", exc)
             jpg, png, w, h, src, empty = encode_source_only_preview(bgr)
             matte_error = matte_error or str(exc)[:240]
             empty = True
-        # Empty flag follows the matte we claim — not a crushed display boost alone.
-        if empty and alpha is not None and not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
-            try:
-                jpg, png, w, h, src, empty = encode_preview_pair(bgr, alpha)
-                alpha_vis = alpha
-            except Exception:  # noqa: BLE001
-                pass
-        # matte-safe: reject strip/sliver mattes — re-salvage fuller silhouette.
-        from hybrid_editor.media.video_io import is_matte_sliver
-
-        if (not empty) and alpha is not None and is_matte_sliver(alpha):
-            logger.warning("preview matte-safe: rejecting sliver alpha — hard salvage")
-            empty = True
-        # preview-fast: final hard salvage + re-encode — never leave Előnézet empty.
         if empty or alpha is None or is_matte_empty(alpha):
             try:
                 forced = hard_person_alpha(bgr)
-                if (
-                    not is_matte_empty(forced)
-                    and not is_matte_degenerate(forced)
-                    and not is_matte_sliver(forced)
-                ):
+                if not is_matte_empty(forced) and not is_matte_degenerate(forced):
                     alpha = forced
-                    alpha_vis = forced
                     jpg, png, w, h, src, empty = encode_preview_pair(bgr, forced)
                     matte_error = None
                     recovered = True
-                    logger.warning("preview-fast: forced hard_person_alpha after empty encode")
+                    logger.warning("preview restore-rvm: forced hard_person after empty encode")
             except Exception as force_exc:  # noqa: BLE001
-                logger.warning("preview-fast force salvage failed: %s", force_exc)
+                logger.warning("preview force salvage failed: %s", force_exc)
         if empty or is_matte_empty(alpha):
             empty = True
             if matte_error is None and alpha is not None:
                 matte_error = matte_failure_reason(alpha)
         else:
-            # Good person matte on CPU/heuristic — never leave CUDA slab toast sticky.
             matte_error = None
             recovered = True
+        # Optional diag (HYBRID_DIAG_MATTE / HYBRID_DIAG_ALPHA_DUMP) — off by default.
+        try:
+            from hybrid_editor.diag_matte import log_matte_trigger, maybe_dump_alpha_pair
+
+            log_matte_trigger(
+                where="FastEngine.preview_frame",
+                t_sec=t,
+                matte_error=matte_error,
+                matte_empty=bool(empty),
+                recovered=bool(recovered and not empty),
+                alpha=alpha,
+                extra={
+                    "from_store": from_store,
+                    "backend": self._backend,
+                    "infer_wh": [infer_w, infer_h],
+                },
+            )
+            if empty or matte_error:
+                maybe_dump_alpha_pair(
+                    tag="gyors_preview",
+                    t_sec=t,
+                    raw_alpha=alpha,
+                    post_alpha=None,
+                )
+        except Exception:  # noqa: BLE001
+            pass
         lane_meta = self._lanes.status() if self._lanes else {}
         src_w = int(self._media.width) if self._media else infer_w
         src_h = int(self._media.height) if self._media else infer_h
@@ -1870,12 +1871,13 @@ class FastEngine(MattingEngine):
             "proxy_lanes": lane_meta,
             "matte_empty": empty,
             "matte_recovered": bool(recovered and not empty),
-            "preview_boost": bool(not empty and alpha_vis is not alpha),
+            "preview_boost": False,
+            "oss_fast_matte": True,
             "source_width": src_w,
             "source_height": src_h,
             "infer_width": infer_w,
             "infer_height": infer_h,
-            "stamp": "2026-10-13-matte-safe",
+            "stamp": "2026-10-13-restore-rvm",
         }
         if matte_error and empty:
             meta["matte_error"] = matte_error
@@ -1910,11 +1912,13 @@ class FastEngine(MattingEngine):
             raise RuntimeError("No media open")
         out_dir = Path(out_dir)
         from hybrid_editor.export.bgcut import alpha_dump_dir, dump_alpha_frames_enabled
+        from hybrid_editor.diag_matte import ExportStageTimer
 
         dump_alpha = dump_alpha_frames_enabled()
         alpha_dir = alpha_dump_dir(out_dir) if dump_alpha else None
         if alpha_dir is not None:
             alpha_dir.mkdir(parents=True, exist_ok=True)
+        timer = ExportStageTimer("FastEngine.bake")
         self.reset()
         path = Path(self._media.path)
         fps = self._media.fps or 25.0
@@ -1937,6 +1941,7 @@ class FastEngine(MattingEngine):
         frames_bgr: list[np.ndarray] = []
         frames_alpha: list[np.ndarray] = []
         frames_bgra: list[np.ndarray] = []
+        timer.mark("seek_open")
         try:
             idx = 0
             while written < limit:
@@ -1967,6 +1972,7 @@ class FastEngine(MattingEngine):
                     progress(min(0.85, written / max(total_est, 1)), f"Gyors bake {written}/{total_est}")
         finally:
             cap.release()
+        timer.mark("matte_loop")
 
         preview_mp4 = None
         prores = None
@@ -1991,6 +1997,7 @@ class FastEngine(MattingEngine):
                 audio_duration_sec=end_t - start_t,
             )
             audio_ok = bool(preview_mp4) and media_has_audio(preview_mp4)
+            timer.mark("preview_mp4")
             if progress:
                 progress(0.95, "Export C:\\bgcut *_full_nobg.mov…")
             # Always write Videoeditor-style alpha MOV (ProRes → qtrle fallback).
@@ -2001,10 +2008,12 @@ class FastEngine(MattingEngine):
                 frames_bgra=frames_bgra,
                 fps=fps,
             )
+            timer.mark("prores_mov")
             if companion:
                 preview_mp4 = companion
             if progress:
                 progress(1.0, "Bake kész")
+        timing = timer.finish()
 
         audio_note = " · audio AAC" if audio_ok else ""
         mov_note = f" · {prores}" if prores else " · HIÁNYZIK: *_full_nobg.mov"
@@ -2013,6 +2022,16 @@ class FastEngine(MattingEngine):
         msg_core = (
             f"Kész: {Path(prores).name}" if prores else "SIKERTELEN: nincs *_full_nobg.mov (ffmpeg?)"
         )
+        bake_range = {
+            "in_sec": start_t,
+            "out_sec": end_t,
+            "audio": audio_ok,
+            "duration_sec": end_t - start_t,
+            "max_frames_cap": max_frames,
+            "mov_path": prores,
+        }
+        if timing:
+            bake_range["diag_timing"] = timing
         return BakeResult(
             ok=ok,
             out_dir=str(out_dir.resolve()),
@@ -2027,12 +2046,5 @@ class FastEngine(MattingEngine):
             ),
             preview_mp4=preview_mp4,
             prores_mov=prores,
-            bake_range={
-                "in_sec": start_t,
-                "out_sec": end_t,
-                "audio": audio_ok,
-                "duration_sec": end_t - start_t,
-                "max_frames_cap": max_frames,
-                "mov_path": prores,
-            },
+            bake_range=bake_range,
         )
