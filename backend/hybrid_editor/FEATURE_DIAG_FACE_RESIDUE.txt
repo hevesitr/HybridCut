@@ -1,8 +1,11 @@
 HybridCut diag_face_residue
-Base stamp: 2026-10-14-fix-shadow-fringe-fast2
-Branch: cursor/diag-face-residue-5ffd
+Stamp: 2026-10-14-fix-shadow-fringe-fast2 (soft Gyors unchanged)
+Feature: diag-face-auto-roi
+Branch: cursor/diag-face-auto-roi-6533
 
-Ships Windows diagnostic pack for face-front / under-chin grey-green BG fog
-(acceptance failure of prior fringe fix). Does not blind-tweak crush/erosion.
+Auto face/chin ROI from person hard cores + BG-residue blob centroids
+(no manual Paint ROI). Optional light time probe when global residue is
+near-zero at requested -T. Does not blind-tweak crush/erosion.
+Not a "javitva" matte claim without local GPU acceptance.
 
 Also: FastEngine.last_raw_pha + _maybe_diag_shadow raw vs post (instrumentation).

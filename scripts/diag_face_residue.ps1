@@ -3,6 +3,8 @@
 # Cloud Agent cannot run this on your RTX 3060 - you must execute locally.
 #
 # Prerequisite stamp: 2026-10-14-fix-shadow-fringe-fast2
+# Feature: diag-face-auto-roi (person+residue auto ROI; soft Gyors unchanged).
+# Auto ROI uses person cores + residue blobs - no manual Paint ROI required.
 #
 # One-liner:
 #   cd $env:USERPROFILE\Documents\Videoeditor\hybrid_cut

@@ -55,13 +55,64 @@ def test_high_alpha_face_fog_blocked_by_core():
 
 
 def test_default_rois_and_stamp_constant():
-    from hybrid_editor.diag_face_residue import STAMP_REQUIRED, default_face_rois
+    from hybrid_editor.diag_face_residue import (
+        STAMP_LINEAGE_BASE,
+        STAMP_REQUIRED,
+        default_face_rois,
+    )
 
     assert STAMP_REQUIRED == "2026-10-14-fix-shadow-fringe-fast2"
+    assert STAMP_LINEAGE_BASE == "2026-10-14-fix-shadow-fringe-fast2"
     rois = default_face_rois(1080, 1920)
     assert "face_front" in rois and "under_chin" in rois
     x0, y0, x1, y1 = rois["face_front"]
     assert x1 > x0 and y1 > y0
+
+
+def test_auto_rois_prefer_residue_blob_over_empty_center_right():
+    """Synthetic: blotch on LEFT person; fixed center-right is empty of mid-BG."""
+    from hybrid_editor.diag_face_residue import auto_face_rois, default_face_rois, roi_stats
+
+    h, w = 360, 640
+    bg = (168, 175, 162)
+    bgr = np.full((h, w, 3), bg, np.uint8)
+    a = np.zeros((h, w), np.float32)
+    # Left + right people (two hard cores)
+    for cx, cy, rx, ry, skin in (
+        (int(w * 0.28), int(h * 0.55), 40, 70, (210, 190, 160)),
+        (int(w * 0.72), int(h * 0.55), 42, 72, (90, 70, 50)),
+    ):
+        cv2.ellipse(bgr, (cx, cy), (rx, ry), 0, 0, 360, skin, -1)
+        cv2.ellipse(a, (cx, cy), (rx, ry), 0, 0, 360, 1.0, -1)
+    a = cv2.GaussianBlur(a, (0, 0), sigmaX=1.5)
+    # Large grey-green fog in FRONT of LEFT face (outside legacy center-right)
+    blotch = (int(w * 0.28), int(h * 0.38))
+    cv2.ellipse(bgr, blotch, (28, 22), 0, 0, 360, bg, -1)
+    cv2.ellipse(a, blotch, (28, 22), 0, 0, 360, 0.42, -1)
+
+    legacy = default_face_rois(h, w)
+    legacy_stats = roi_stats(a, bgr, legacy["face_front"])
+    rois, meta = auto_face_rois(h, w, alpha=a, src_bgr=bgr)
+    auto_stats = roi_stats(a, bgr, rois["face_front"])
+
+    assert meta["method"] != "default_center_right" or auto_stats[
+        "frac_residue_eligible"
+    ] >= legacy_stats["frac_residue_eligible"]
+    # Auto face box must overlap the left blotch center more than legacy does
+    fx0, fy0, fx1, fy1 = rois["face_front"]
+    assert fx0 <= blotch[0] <= fx1 and fy0 <= blotch[1] <= fy1
+    lx0, ly0, lx1, ly1 = legacy["face_front"]
+    legacy_contains = lx0 <= blotch[0] <= lx1 and ly0 <= blotch[1] <= ly1
+    assert not legacy_contains
+    assert auto_stats["mean_alpha"] > legacy_stats["mean_alpha"]
+
+
+def test_auto_rois_fallback_without_alpha():
+    from hybrid_editor.diag_face_residue import auto_face_rois, default_face_rois
+
+    rois, meta = auto_face_rois(1080, 1920)
+    assert rois == default_face_rois(1080, 1920)
+    assert meta["method"] == "default_center_right"
 
 
 def test_purge_does_not_touch_media(tmp_path: Path):
