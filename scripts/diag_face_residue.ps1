@@ -1,6 +1,6 @@
 # HybridCut face-front / under-chin BG residue diagnostic (Windows / RTX local).
 # ASCII-only. Does NOT tweak crush/threshold/erosion. Does NOT claim "javitva".
-# Cloud Agent cannot run this on your RTX 3060 — you must execute locally.
+# Cloud Agent cannot run this on your RTX 3060 - you must execute locally.
 #
 # Prerequisite stamp: 2026-10-14-fix-shadow-fringe-fast2
 #
@@ -93,5 +93,5 @@ if ($LASTEXITCODE -ne 0) {
   Write-Host ("diag_face_residue FAILED exit=" + $LASTEXITCODE) -ForegroundColor Red
   exit $LASTEXITCODE
 }
-Write-Host "OK — see cache\diag_face_residue\<timestamp>\report.json + PNGs"
+Write-Host "OK - see cache\diag_face_residue\<timestamp>\report.json + PNGs"
 Write-Host "Docs: docs\DIAG_FACE_RESIDUE.md"

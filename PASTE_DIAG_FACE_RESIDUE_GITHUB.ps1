@@ -1,4 +1,4 @@
-# HybridCut diag-face-residue — GitHub checkout + paste into Videoeditor\hybrid_cut
+# HybridCut diag-face-residue - GitHub checkout + paste into Videoeditor\hybrid_cut
 # Stamp base: 2026-10-14-fix-shadow-fringe-fast2
 # Branch: cursor/diag-face-residue-5ffd
 # ASCII-only. Does not claim local RTX proof.
@@ -29,7 +29,7 @@ try {
 $stamp = (Get-Content -LiteralPath (Join-Path $Hybrid "SYNC_VERSION.txt") -Raw).Trim()
 Write-Host ("SYNC_VERSION=" + $stamp)
 if ($stamp -ne $TipStamp) {
-  Write-Host ("NOTE: base fringe stamp is " + $TipStamp + " — diagnose fringe failure only on that lineage.") -ForegroundColor Yellow
+  Write-Host ("NOTE: base fringe stamp is " + $TipStamp + " - diagnose fringe failure only on that lineage.") -ForegroundColor Yellow
 }
 
 if (-not (Test-Path -LiteralPath $Dest)) {
@@ -42,7 +42,7 @@ if (Test-Path -LiteralPath $inst) {
   Push-Location $Hybrid
   try { & $inst } finally { Pop-Location }
 } else {
-  Write-Host "Copy backend/scripts/docs manually — install_to_videoeditor.ps1 missing"
+  Write-Host "Copy backend/scripts/docs manually - install_to_videoeditor.ps1 missing"
 }
 
 Write-Host ""
