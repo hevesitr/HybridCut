@@ -1,0 +1,8 @@
+HybridCut diag_face_residue
+Base stamp: 2026-10-14-fix-shadow-fringe-fast2
+Branch: cursor/diag-face-residue-5ffd
+
+Ships Windows diagnostic pack for face-front / under-chin grey-green BG fog
+(acceptance failure of prior fringe fix). Does not blind-tweak crush/erosion.
+
+Also: FastEngine.last_raw_pha + _maybe_diag_shadow raw vs post (instrumentation).

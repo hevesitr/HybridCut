@@ -1297,6 +1297,7 @@ class FastEngine(MattingEngine):
         self._backend = "heuristic"
         self._status_note: Optional[str] = None
         self._mask_store: Optional[MaskStore] = None
+        self.last_raw_pha: Optional[np.ndarray] = None  # pre-_soft_bg_residue (diag)
         self._frame_cache = FrameCache(48)
         self._prefetch = ScrubPrefetcher(ahead=8)
         self._lanes: Optional[ProxyLaneCache] = None
@@ -1706,12 +1707,15 @@ class FastEngine(MattingEngine):
             from hybrid_editor.diag_shadow_fringe import dump_shadow_fringe_frame
 
             fgr = getattr(self._rvm, "last_fgr_bgr", None) if self._rvm else None
+            # Proven instrumentation fix: ``alpha`` here is post-_soft_bg_residue
+            # (or MaskStore). True RVM pha is stashed on ``last_raw_pha`` by ``_matte``.
+            raw = getattr(self, "last_raw_pha", None)
             dump_shadow_fringe_frame(
                 tag=tag,
                 t_sec=float(t_sec),
                 src_bgr=src_bgr,
-                raw_alpha=alpha,
-                post_alpha=None,
+                raw_alpha=raw if raw is not None else alpha,
+                post_alpha=alpha if raw is not None else None,
                 fgr_bgr=fgr,
                 fg_used_bgr=fg_used,
                 extra=extra,
@@ -1737,6 +1741,7 @@ class FastEngine(MattingEngine):
         # Preview / Gyors: never prefer_native (full-frame CPU ORT). Max bake sets flag.
         prefer_native = bool(getattr(self, "_full_res_matte", False))
         alpha: Optional[np.ndarray] = None
+        self.last_raw_pha = None  # true RVM/heuristic pha before soft BG residue
         if self._rvm is not None:
             try:
                 alpha = self._rvm.matte(
@@ -1749,6 +1754,7 @@ class FastEngine(MattingEngine):
                 alpha = None
         if alpha is not None and not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
             # Soft pha kept — only damp BG-colored mid-α leftovers (hair strip / blotch).
+            self.last_raw_pha = np.asarray(alpha, dtype=np.float32).copy()
             return self._soft_bg_residue(bgr, alpha)
         if alpha is not None:
             why = matte_failure_reason(alpha) or "empty"
@@ -1761,6 +1767,7 @@ class FastEngine(MattingEngine):
             )
         alt = self._try_alternate_rvm(bgr)
         if alt is not None and not is_matte_empty(alt) and not is_matte_degenerate(alt):
+            self.last_raw_pha = np.asarray(alt, dtype=np.float32).copy()
             return self._soft_bg_residue(bgr, alt)
         chroma = solid_bg_person_alpha(bgr)
         if not is_matte_empty(chroma) and not is_matte_degenerate(chroma):
@@ -1769,9 +1776,11 @@ class FastEngine(MattingEngine):
                 + "solid-BG chroma fallback (blue/green screen)"
             )
             logger.warning("RVM empty/slab — solid-BG chroma person matte recovered")
+            self.last_raw_pha = np.asarray(chroma, dtype=np.float32).copy()
             return self._soft_bg_residue(bgr, chroma)
         heur = heuristic_person_alpha(bgr)
         if not is_matte_empty(heur) and not is_matte_degenerate(heur):
+            self.last_raw_pha = np.asarray(heur, dtype=np.float32).copy()
             return self._soft_bg_residue(bgr, heur)
         # Last resort only — never run on soft MobileNet that already had a person.
         hard = hard_person_alpha(bgr)
