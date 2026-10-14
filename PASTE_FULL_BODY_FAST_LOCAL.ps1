@@ -3,7 +3,7 @@
 # Paste into Windows PowerShell.
 
 $ErrorActionPreference = "Stop"
-$TipStamp = "2026-10-14-restore-rvm-fast"
+$TipStamp = "2026-10-14-restore-rvm-fast2"
 $StoreId = "bc-41930eab-1501-4c19-acf3-0c9d63afbf4d"
 
 Write-Host "=== HybridCut full-body-fast (local finder) ==="

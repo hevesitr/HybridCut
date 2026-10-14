@@ -1,4 +1,4 @@
-# HybridCut restart — restore-rvm-fast (`2026-10-14-restore-rvm-fast`)
+# HybridCut restart — restore-rvm-fast (`2026-10-14-restore-rvm-fast2`)
 
 Branch: `cursor/restore-rvm-fast-b680` (from `cursor/restore-rvm-diag-20261014`).
 Keeps soft person alpha (OSS / restore-rvm). Speeds **Gyors bake on CPU ORT**.
@@ -50,7 +50,7 @@ cd $env:USERPROFILE\Documents\HybridCut
 git fetch origin
 git checkout cursor/restore-rvm-fast-b680
 git pull origin cursor/restore-rvm-fast-b680
-Get-Content .\SYNC_VERSION.txt   # 2026-10-14-restore-rvm-fast
+Get-Content .\SYNC_VERSION.txt   # 2026-10-14-restore-rvm-fast2
 .\install_to_videoeditor.ps1
 cd $env:USERPROFILE\Documents\Videoeditor
 .\hybrid_cut\start_hybrid_cuda.ps1

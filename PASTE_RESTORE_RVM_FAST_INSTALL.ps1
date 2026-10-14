@@ -3,7 +3,7 @@
 # CPU Gyors bake: MobileNet long-side ~640 (soft alpha). ASCII-only.
 
 $ErrorActionPreference = "Stop"
-$TipStamp = "2026-10-14-restore-rvm-fast"
+$TipStamp = "2026-10-14-restore-rvm-fast2"
 $Branch = "cursor/restore-rvm-fast-b680"
 $StoreId = "bc-41930eab-1501-4c19-acf3-0c9d63afbf4d"
 
@@ -73,7 +73,7 @@ if ($stamp -ne $TipStamp) {
 $ve = Join-Path $env:USERPROFILE "Documents\Videoeditor\hybrid_cut"
 Write-Host ("INSTALLED: " + (Get-Content -LiteralPath (Join-Path $ve "SYNC_VERSION.txt") -Raw).Trim())
 Write-Host "Open http://127.0.0.1:3847 then Ctrl+F5"
-Write-Host "Expect: SYNC 2026-10-14-restore-rvm-fast - Gyors bake~640 on CPU - soft alpha"
+Write-Host "Expect: SYNC 2026-10-14-restore-rvm-fast2 - Gyors bake~640 on CPU - soft alpha"
 Write-Host "Tune: `$env:HYBRID_GYORS_BAKE_LONG='480' (faster) or '720' (sharper)"
 Write-Host "Full-res slow path: `$env:HYBRID_GYORS_BAKE_FULLRES='1'"
 Write-Host "CUDA: .\start_hybrid_cuda.ps1 - trust chip only when probe OK=1"

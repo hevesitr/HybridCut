@@ -1,7 +1,7 @@
 # restore-rvm diagnostics — Maszk gyenge / empty preview / slow export
 
 Minimal, **opt-in**, reversible. Does not change the soft Gyors alpha path
-(`2026-10-14-restore-rvm-fast`). Default install (PASTE / `install_to_videoeditor.ps1`)
+(`2026-10-14-restore-rvm-fast2`). Default install (PASTE / `install_to_videoeditor.ps1`)
 leaves diagnostics **off**.
 
 ## What it covers

@@ -952,7 +952,7 @@ class EditorSession:
                     meta_extra: dict[str, Any] = {
                         "matte_empty": empty,
                         "has_alpha_clip": bool(getattr(matte_layer, "has_alpha", False)),
-                        "stamp": "2026-10-14-restore-rvm-fast",
+                        "stamp": "2026-10-14-restore-rvm-fast2",
                         **overlay_meta,
                     }
                     if empty:

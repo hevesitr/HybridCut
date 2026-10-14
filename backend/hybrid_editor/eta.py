@@ -20,7 +20,10 @@ MAX_SEC_PER_FRAME_1080P = 0.165
 # CPU Gyors after restore-rvm-fast: MobileNet@~640 (not full-res src).
 # Old full-res CPU was ~2.0 s/frame (~8 min / 240). Proxy path ~0.15–0.25 s/frame.
 CPU_GYORS_SPF_MULT = 6.0
-CPU_MAX_SPF_MULT = 1.15
+# CPU Max: measured ~1.0 s/frame with polish+crush@720 (chip lied at 1.15× CUDA ≈49s).
+# restore-rvm-fast2 light path (MobileNet@~640, skip heavy polish/crush) ≈0.45–0.65 s/frame
+# → ~2–2.5 perc / 10s@24. Mult vs CUDA Max base 0.165.
+CPU_MAX_SPF_MULT = 3.5
 REF_PIXELS = 1920 * 1080
 MUX_FIXED_SEC = 2.8
 MUX_PER_VIDEO_SEC = 0.035
@@ -63,7 +66,7 @@ def sec_per_frame(
 ) -> float:
     base = GYORS_SEC_PER_FRAME_1080P if mode == "gyors" else MAX_SEC_PER_FRAME_1080P
     spf = base * resolution_factor(width, height, mode)
-    # CPU Max → MobileNet@~720 (~CUDA wall). CPU Gyors → MobileNet@~640 (honest ~1 min/10s).
+    # CPU Max → light MobileNet@~640 (honest ~2 perc/10s). CPU Gyors → ~640 (~1 perc).
     if cpu_ort:
         spf *= CPU_MAX_SPF_MULT if mode == "max" else CPU_GYORS_SPF_MULT
     return spf
@@ -153,13 +156,13 @@ def remaining_bake_sec(
                 return 0.0
             return mux * max(0.05, 1.0 - prog)
         el = float(elapsed_sec or 0.0)
-        if done >= 8 and el > 1.5:
+        # Trust wall-clock early (done>=3) — Max CPU polish lied for minutes at 1.15x.
+        if done >= 3 and el > 1.0:
             observed = el / float(done)
-            # Trust wall-clock once it clearly diverges from the model (slow path).
-            if observed > spf * 1.35:
-                spf = 0.25 * spf + 0.75 * observed
+            if observed > spf * 1.25:
+                spf = 0.15 * spf + 0.85 * observed
             else:
-                spf = 0.65 * spf + 0.35 * observed
+                spf = 0.45 * spf + 0.55 * observed
         return left * spf + mux * 0.85
 
     prog = max(0.0, min(1.0, float(bake_progress or 0.0)))

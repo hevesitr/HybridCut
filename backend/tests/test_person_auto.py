@@ -24,7 +24,7 @@ RESTART = ROOT / "docs" / "seed-crash-restart.md"
 
 
 def test_sync_stamp_auto_person():
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast2"
 
 
 def test_default_seed_is_union_full_person():

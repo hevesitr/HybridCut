@@ -21,12 +21,12 @@ export function ModeSwitcher({
   const mEta = etaMax && etaMax !== "Kb. —" ? etaMax : "Kb. —";
   const path = pathLabel === "CUDA" ? "CUDA" : pathLabel === "CPU" ? "CPU" : "";
   const maxSpan =
-    path === "CPU" ? "éles · CPU~720" : path === "CUDA" ? "éles · CUDA" : "éles export · apex";
+    path === "CPU" ? "éles · CPU~640" : path === "CUDA" ? "éles · CUDA" : "éles export · apex";
   const gyorsSpan =
     path === "CPU" ? "scrub · CPU~640" : path === "CUDA" ? "scrub · CUDA" : "élő scrub · lágyabb";
   const maxTitle =
     path === "CPU"
-      ? `Max — CPU ORT gyors bake (MobileNet~720). ETA: ${mEta}`
+      ? `Max — CPU ORT light bake (MobileNet~640). ETA: ${mEta}`
       : path === "CUDA"
         ? `Max — CUDA EP teljes ResNet/APEX. ETA: ${mEta}`
         : `Max háttéreltávolítás — éles export. Becsült idő: ${mEta}`;

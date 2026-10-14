@@ -65,7 +65,7 @@ def _first_onnx() -> Path | None:
 
 def test_stamp_and_docs():
     tip = SYNC.read_text(encoding="utf-8").strip()
-    assert tip == "2026-10-14-restore-rvm-fast"
+    assert tip == "2026-10-14-restore-rvm-fast2"
     # Historical rvm-matte feature file may still say cuda-restore / rvm-matte.
     feat = FEATURE.read_text(encoding="utf-8").strip()
     assert feat in {

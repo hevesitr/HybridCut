@@ -49,9 +49,9 @@ def _write_person_clip(path: Path, n: int = 8) -> None:
 
 
 def test_stamp_and_docs():
-    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast"
-    assert FEATURE_RESTORE.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast"
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast"
+    assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast2"
+    assert FEATURE_RESTORE.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast2"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast2"
     assert RESTART.is_file()
     restart = RESTART.read_text(encoding="utf-8")
     assert "2026-10-11-cuda-restore" in restart

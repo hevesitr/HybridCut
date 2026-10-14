@@ -16,7 +16,7 @@ ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
 SYNC = ROOT / "SYNC_VERSION.txt"
-STAMP = "2026-10-14-restore-rvm-fast"
+STAMP = "2026-10-14-restore-rvm-fast2"
 
 
 def _blue_closeup(h: int = 540, w: int = 960) -> np.ndarray:

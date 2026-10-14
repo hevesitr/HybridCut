@@ -107,7 +107,7 @@ class MaxQualityEngine(MattingEngine):
         return "CPU" in str(getattr(rvm, "provider", "CPU") or "CPU")
 
     def _cpu_max_fast_enabled(self) -> bool:
-        """CPU Max bake uses MobileNet@~720 so wall-clock matches CUDA ETA (~43s/10s).
+        """CPU Max bake uses MobileNet@long-side (default ~640) — not full-res ResNet.
 
         Opt out: HYBRID_CPU_MAX_FULLRES=1 (slow full-res ResNet on CPU).
         full-body-fast: also force when HYBRID_ORT_PROVIDER prefers cpu — UI can
@@ -121,6 +121,25 @@ class MaxQualityEngine(MattingEngine):
         if prefer in {"cpu", "cpuexecutionprovider", ""}:
             return True
         return self._on_cpu_ort()
+
+    @staticmethod
+    def _cpu_max_bake_long() -> int:
+        """CPU Max infer long-side. Default 640 (was 720 — polish@720 ≈1s/frame / ~4 min)."""
+        try:
+            bake_long = int(os.environ.get("HYBRID_CPU_MAX_LONG", "640") or "640")
+        except ValueError:
+            bake_long = 640
+        return max(480, min(1080, bake_long))
+
+    @staticmethod
+    def _cpu_max_heavy_polish() -> bool:
+        """Heavy polish_videoeditor + full crush on CPU Max bake.
+
+        Default OFF (restore-rvm-fast2): soft RVM + light hole-fill only.
+        Opt in: HYBRID_CPU_MAX_HEAVY_POLISH=1 (old ~4 min / 10s path).
+        """
+        raw = (os.environ.get("HYBRID_CPU_MAX_HEAVY_POLISH") or "").strip().lower()
+        return raw in {"1", "true", "yes", "on", "heavy"}
 
     def person_matte_label(self) -> str:
         """Clear HU status: MatAnyone2 active vs RVM person-matte fallback."""
@@ -352,9 +371,25 @@ class MaxQualityEngine(MattingEngine):
         # Soft-boost painted FG on the live alpha too (same union rule).
         if self._user_seed is not None:
             a = self._seed_for(bgr, a)
+        # restore-rvm-fast2: CPU Max light path — soft RVM + hole-fill + light temporal.
+        # Heavy polish_videoeditor+crush was ~1s/frame (~4 min/10s) while ETA claimed ~49s.
+        light_cpu = bool(soft_cpu) and not self._cpu_max_heavy_polish()
+        if light_cpu:
+            out = self._stabilizer.update(np.clip(np.asarray(a, dtype=np.float32), 0.0, 1.0))
+            if is_matte_degenerate(out) and not is_matte_empty(a) and not is_matte_degenerate(a):
+                self._stabilizer.reset()
+                out = np.clip(np.asarray(a, dtype=np.float32), 0.0, 1.0)
+            if is_matte_empty(out) or is_matte_degenerate(out):
+                recovered = self._ensure_nonempty_alpha(bgr, a if not is_matte_empty(a) else out)
+                self._stabilizer.reset()
+                if not is_matte_empty(recovered) and not is_matte_degenerate(recovered):
+                    return fill_person_holes(recovered, min_fg=0.16, close_px=9, fill_value=0.88)
+                return np.zeros(bgr.shape[:2], dtype=np.float32)
+            # Soft alpha kept — light hole-fill only (no apex crush).
+            return fill_person_holes(out, min_fg=0.16, close_px=9, fill_value=0.88)
         # Éles szélek (default): CapCut APEX polish — NO wide trimap fuse
         # (trimap erode/dilate was the thick halo / hair-hole source on the right side).
-        # CPU Max fast-path: CPU_MAX_SPEC — sharper hair than RECOMMENDED, less
+        # CPU Max heavy: CPU_MAX_SPEC — sharper hair than RECOMMENDED, less
         # residual halo than APEX on upscaled MobileNet mattes.
         if self.sharp_edges:
             spec = CPU_MAX_SPEC if soft_cpu else APEX_SPEC
@@ -418,17 +453,18 @@ class MaxQualityEngine(MattingEngine):
         src_long = max(int(bgr.shape[0]), int(bgr.shape[1]))
         cpu_fast = self._cpu_max_fast_enabled()
         if cpu_fast:
-            preview_long = int(os.environ.get("HYBRID_CPU_MAX_PREVIEW_LONG", "720") or "720")
+            preview_long = int(os.environ.get("HYBRID_CPU_MAX_PREVIEW_LONG", "640") or "640")
         else:
             preview_long = int(os.environ.get("HYBRID_MAX_PREVIEW_LONG", "1440") or "1440")
         if not self.sharp_edges:
-            preview_long = 720
+            preview_long = 640 if cpu_fast else 720
         preview_long = max(64, min(preview_long, src_long))
         bgr = downscale_long_side(bgr, preview_long)
         self._stabilizer.reset()
         self._seed = None
         matte_error = None
         recovered = False
+        heavy_preview = self._cpu_max_heavy_polish() if cpu_fast else True
         polish_spec_decon = CPU_MAX_SPEC if cpu_fast else APEX_SPEC
         try:
             alpha = self._polish(bgr, warmup=True, soft_cpu=cpu_fast)
@@ -440,7 +476,12 @@ class MaxQualityEngine(MattingEngine):
             # (crush reserved for bake/export). Soft pha is the product.
             # CapCut fringe / cyan + bright spill on cutout RGB (Éles szélek / apex)
             cut_bgr = bgr
-            if self.sharp_edges and alpha is not None and not is_matte_empty(alpha):
+            if (
+                self.sharp_edges
+                and heavy_preview
+                and alpha is not None
+                and not is_matte_empty(alpha)
+            ):
                 cut_bgr = apply_color_polish(
                     bgr,
                     alpha,
@@ -556,7 +597,7 @@ class MaxQualityEngine(MattingEngine):
             "source_height": int(self._media.height) if self._media else int(bgr.shape[0]),
             "infer_width": int(bgr.shape[1]),
             "infer_height": int(bgr.shape[0]),
-            "stamp": "2026-10-14-restore-rvm-fast",
+            "stamp": "2026-10-14-restore-rvm-fast2",
         }
         if empty and matte_error is None and alpha is not None:
             from hybrid_editor.media.video_io import matte_failure_reason
@@ -656,14 +697,11 @@ class MaxQualityEngine(MattingEngine):
     ) -> BakeResult:
         assert self._media is not None
         self.reset()
-        # CUDA Max: full-res ResNet. CPU Max: MobileNet@~720 so ~43s ETA is real
-        # (full-res ResNet on CPU was ~15 min for 10s@24fps).
+        # CUDA Max: full-res ResNet. CPU Max: MobileNet@~640 light path (honest ETA).
+        # Heavy polish@720 was ~1s/frame (~4 min) while chip claimed ~49s.
         cpu_fast = self._cpu_max_fast_enabled()
-        try:
-            bake_long = int(os.environ.get("HYBRID_CPU_MAX_LONG", "720") or "720")
-        except ValueError:
-            bake_long = 720
-        bake_long = max(480, min(1080, bake_long))
+        bake_long = self._cpu_max_bake_long()
+        heavy = self._cpu_max_heavy_polish() if cpu_fast else True
         own_fast: Optional[FastEngine] = None
         old_fast = self._fast
         if cpu_fast:
@@ -673,9 +711,10 @@ class MaxQualityEngine(MattingEngine):
             own_fast.open_media(Path(self._media.path))
             self._fast = own_fast
             logger.warning(
-                "CPU Max bake fast-path: MobileNet long=%d (target ~CUDA ETA; "
-                "set HYBRID_CPU_MAX_FULLRES=1 for slow full-res)",
+                "CPU Max bake fast-path: MobileNet long=%d light=%s "
+                "(HYBRID_CPU_MAX_HEAVY_POLISH=1 / HYBRID_CPU_MAX_FULLRES=1 for slow)",
                 bake_long,
+                not heavy,
             )
         else:
             self._fast.set_full_res_matte(True)
@@ -736,7 +775,7 @@ class MaxQualityEngine(MattingEngine):
                 cur_t = start_t + (idx / fps)
                 if cur_t > end_t + 1e-6:
                     break
-                # CPU fast: matte/polish/export at bake_long (~720) — real ~45s path.
+                # CPU fast: matte/export at bake_long (~640 light) — soft RVM kept.
                 if cpu_fast:
                     bgr_m = downscale_long_side(bgr, bake_long)
                     cut_base = bgr_m
@@ -751,12 +790,11 @@ class MaxQualityEngine(MattingEngine):
                         alpha = cv2.resize(
                             alpha, (bgr.shape[1], bgr.shape[0]), interpolation=cv2.INTER_LINEAR
                         )
-                if cpu_fast:
-                    # Hole-fill + gentle fringe kill (no guided upsample — speed + hair keep).
-                    # matte-safe crush restores body if ridge-only strip would ship.
+                if cpu_fast and heavy:
+                    # Heavy only: hole-fill + fringe kill (matte-safe crush).
                     alpha = self._crush_soft_shadow_alpha(alpha)
                 # Mid-clip re-warmup on strong drift vs seed (rarer on CPU fast-path).
-                rewarm_every = 120 if cpu_fast else 48
+                rewarm_every = 180 if cpu_fast else 48
                 if idx > 0 and idx % rewarm_every == 0 and self._seed is not None:
                     seed_u = self._seed
                     if seed_u.shape[:2] != alpha.shape[:2]:
@@ -773,9 +811,9 @@ class MaxQualityEngine(MattingEngine):
                         self._fast.reset()
                         self._flow_temporal.reset()
                         alpha = self._polish(bgr_m, warmup=True, soft_cpu=cpu_fast)
-                        if cpu_fast:
+                        if cpu_fast and heavy:
                             alpha = self._crush_soft_shadow_alpha(alpha)
-                        elif alpha.shape[:2] != bgr.shape[:2]:
+                        elif (not cpu_fast) and alpha.shape[:2] != bgr.shape[:2]:
                             try:
                                 alpha = guided_upsample_alpha(alpha, bgr, radius=3)
                             except Exception:  # noqa: BLE001
@@ -796,9 +834,9 @@ class MaxQualityEngine(MattingEngine):
                         cut_bgr = composite_with_fgr(cut_base, alpha, fgr, mix=0.68)
                     except Exception:  # noqa: BLE001
                         cut_bgr = cut_base
-                if self.sharp_edges:
+                if self.sharp_edges and not (cpu_fast and not heavy):
+                    # Skip per-frame color polish on CPU light path (soft alpha speed).
                     if cpu_fast:
-                        # CPU_MAX_SPEC color polish — APEX despill on soft edges = dark shadow.
                         cut_bgr = apply_color_polish(
                             cut_bgr,
                             alpha,
@@ -817,6 +855,7 @@ class MaxQualityEngine(MattingEngine):
                             micro_despill=float(APEX_SPEC.micro_despill),
                         )
                 a8 = (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
+                # Alpha PNG dump only when HYBRID_DUMP_ALPHA / diag enabled (alpha_dir set).
                 if alpha_dir is not None:
                     cv2.imwrite(str(alpha_dir / f"{idx:06d}.png"), a8)
                 # preview.mp4 proxy; CPU fast exports BGRA at bake_long (in-RAM, no PNG stream).
@@ -840,7 +879,7 @@ class MaxQualityEngine(MattingEngine):
                     total_est = written
                 if progress:
                     pct = min(0.85, written / max(total_est, 1))
-                    tag = "CPU Max~720" if cpu_fast else "Max bake"
+                    tag = f"CPU Max~{bake_long}" if cpu_fast else "Max bake"
                     progress(pct, f"{tag} {written}/{total_est} frame")
         finally:
             cap.release()
@@ -957,7 +996,10 @@ class MaxQualityEngine(MattingEngine):
 
         audio_note = " · audio AAC" if audio_ok else ""
         sharp_note = " · éles szélek · apex" if self.sharp_edges else ""
-        cpu_note = f" · CPU gyors Max@{bake_long}" if cpu_fast else " · full-res"
+        light_note = "light" if (cpu_fast and not heavy) else ("heavy" if cpu_fast else "")
+        cpu_note = (
+            f" · CPU Max@{bake_long}/{light_note}" if cpu_fast else " · full-res"
+        )
         mov_note = f" · {prores}" if prores else " · HIÁNYZIK: *_full_nobg.mov"
         dur_note = f" · {end_t - start_t:.2f}s / {written} frame"
         weights = self._fast.capabilities().weights_path
@@ -988,16 +1030,18 @@ class MaxQualityEngine(MattingEngine):
                 "full_res_rvm": bool(getattr(self._fast, "_full_res_matte", False)) and not cpu_fast,
                 "cpu_max_fast": bool(cpu_fast),
                 "cpu_max_long": bake_long if cpu_fast else None,
-                "color_polish": bool(self.sharp_edges),
-                "peak_spec": bool(self.sharp_edges),
-                "apex_spec": bool(self.sharp_edges),
+                "cpu_max_light": bool(cpu_fast and not heavy),
+                "soft_alpha": bool(cpu_fast and not heavy),
+                "color_polish": bool(self.sharp_edges) and not (cpu_fast and not heavy),
+                "peak_spec": bool(self.sharp_edges) and not cpu_fast,
+                "apex_spec": bool(self.sharp_edges) and not cpu_fast,
                 "stream_bgra": stream_mode,
                 "duration_sec": end_t - start_t,
                 "frames_written": written,
                 "frames_total_est": total_est,
                 "max_frames_cap": max_frames,
                 "mov_path": prores,
-                "stamp": "2026-10-14-restore-rvm-fast",
+                "stamp": "2026-10-14-restore-rvm-fast2",
                 **({"diag_timing": timing} if timing else {}),
             },
         )

@@ -4,7 +4,7 @@
 # ASCII-only (no em-dash / accented chars) so Windows PowerShell parsers do not break.
 
 $ErrorActionPreference = "Stop"
-$TipStamp = "2026-10-14-restore-rvm-fast"
+$TipStamp = "2026-10-14-restore-rvm-fast2"
 $StoreId = "bc-41930eab-1501-4c19-acf3-0c9d63afbf4d"
 
 Write-Host "=== HybridCut simple-bg4 install ==="
@@ -116,6 +116,6 @@ Set-Location -LiteralPath $ve
 $env:HYBRID_ORT_PROVIDER = "cpu"
 Write-Host "Starting run_hybrid.ps1 ..."
 Write-Host "Open http://127.0.0.1:3847 then Ctrl+F5"
-Write-Host "Expect: SYNC 2026-10-14-restore-rvm-fast - only V1 - Cutout person silhouette"
+Write-Host "Expect: SYNC 2026-10-14-restore-rvm-fast2 - only V1 - Cutout person silhouette"
 Write-Host "Gyors auto-retries Max on gray-slab - no need to click Max first."
 .\run_hybrid.ps1

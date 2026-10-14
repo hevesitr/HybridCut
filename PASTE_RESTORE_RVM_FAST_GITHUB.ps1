@@ -3,7 +3,7 @@
 # Soft alpha kept. CUDA only if probe OK (push != GPU proof).
 
 $ErrorActionPreference = "Stop"
-$TipStamp = "2026-10-14-restore-rvm-fast"
+$TipStamp = "2026-10-14-restore-rvm-fast2"
 $Branch = "cursor/restore-rvm-fast-b680"
 $RepoUrl = "https://github.com/hevesitr/HybridCut.git"
 $Repo = Join-Path $env:USERPROFILE "Documents\HybridCut"

@@ -3,7 +3,7 @@
 # Mirrors OSS RVM/rembg: soft pha preview, no crush wipe.
 
 $ErrorActionPreference = "Stop"
-$TipStamp = "2026-10-14-restore-rvm-fast"
+$TipStamp = "2026-10-14-restore-rvm-fast2"
 $RepoUrl = "https://github.com/hevesitr/HybridCut.git"
 $Repo = Join-Path $env:USERPROFILE "Documents\HybridCut"
 

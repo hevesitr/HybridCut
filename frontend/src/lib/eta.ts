@@ -7,7 +7,8 @@ export const GYORS_SEC_PER_FRAME_1080P = 0.028;
 export const MAX_SEC_PER_FRAME_1080P = 0.165;
 /** CPU Gyors after restore-rvm-fast: MobileNet@~640 (old full-res ~2s/frame). */
 export const CPU_GYORS_SPF_MULT = 6.0;
-export const CPU_MAX_SPF_MULT = 1.15;
+/** CPU Max light path ~0.55s/frame (old polish+crush@720 ~1s → chip lied at 49s). */
+export const CPU_MAX_SPF_MULT = 3.5;
 const REF_PIXELS = 1920 * 1080;
 const MUX_FIXED_SEC = 2.8;
 const MUX_PER_VIDEO_SEC = 0.035;
@@ -45,7 +46,7 @@ export function secPerFrame(
 ): number {
   const base = mode === "gyors" ? GYORS_SEC_PER_FRAME_1080P : MAX_SEC_PER_FRAME_1080P;
   let spf = base * resolutionFactor(width, height, mode);
-  // CPU Max → MobileNet@~720. CPU Gyors → MobileNet@~640 (honest ~1 min / 10s@24).
+  // CPU Max → light MobileNet@~640 (~2 perc/10s). CPU Gyors → ~640 (~1 perc).
   if (opts?.cpuOrt) {
     spf *= mode === "max" ? CPU_MAX_SPF_MULT : CPU_GYORS_SPF_MULT;
   }
@@ -128,12 +129,13 @@ export function remainingBakeSec(opts: {
       return mux * Math.max(0.05, 1 - prog);
     }
     const el = Number(opts.elapsedSec) || 0;
-    if (parsed.done >= 8 && el > 1.5) {
+    // Trust wall-clock early — Max CPU polish lied for minutes at 1.15x CUDA.
+    if (parsed.done >= 3 && el > 1.0) {
       const observed = el / parsed.done;
       spf =
-        observed > spf * 1.35
-          ? 0.25 * spf + 0.75 * observed
-          : 0.65 * spf + 0.35 * observed;
+        observed > spf * 1.25
+          ? 0.15 * spf + 0.85 * observed
+          : 0.45 * spf + 0.55 * observed;
     }
     return left * spf + mux * 0.85;
   }

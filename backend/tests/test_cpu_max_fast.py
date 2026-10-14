@@ -1,4 +1,4 @@
-"""simple-bg6 — CPU Max bake uses MobileNet@~720 so ETA ~43s is real."""
+"""CPU Max bake MobileNet@long — restore-rvm-fast2 light path + honest ETA."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
-STAMP = "2026-10-14-restore-rvm-fast"
+STAMP = "2026-10-14-restore-rvm-fast2"
 
 
 def test_stamp_simple_bg5():
@@ -30,16 +30,15 @@ def test_cpu_max_fast_flag(monkeypatch: pytest.MonkeyPatch):
     assert not eng._cpu_max_fast_enabled()
 
 
-def test_eta_cpu_max_near_cuda_not_15min():
+def test_eta_cpu_max_honest_light_not_15min():
     from hybrid_editor.eta import estimate_bake_sec
 
-    # 10s @ 24fps 1080p — CUDA Max ~43s; CPU Max fast-path ~1.15x (not ~15 min)
+    # 10s @ 24fps 1080p — CUDA Max ~43s; CPU Max light ~2–3 perc (not fake 49s)
     cuda = estimate_bake_sec(10.0, 24.0, 1920, 1080, "max", cpu_ort=False)
     cpu = estimate_bake_sec(10.0, 24.0, 1920, 1080, "max", cpu_ort=True)
     assert 35 <= cuda <= 55
-    assert cpu < 90
-    assert cpu / cuda < 1.4
-    # Old broken expectation: full-res CPU ~15 min
+    assert 90 <= cpu <= 240
+    assert cpu / cuda >= 2.0
     assert cpu < 600
 
 

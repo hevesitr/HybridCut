@@ -13,7 +13,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 ROOT = BACKEND.parent
 sys.path.insert(0, str(BACKEND))
 
-STAMP = "2026-10-14-restore-rvm-fast"
+STAMP = "2026-10-14-restore-rvm-fast2"
 
 
 def test_stamp():
@@ -85,11 +85,12 @@ def test_cpu_max_fast_when_env_cpu(monkeypatch: pytest.MonkeyPatch):
     assert eng._cpu_max_fast_enabled() is True
 
 
-def test_eta_cpu_max_still_near_45s():
+def test_eta_cpu_max_honest_light_band():
     from hybrid_editor.eta import estimate_bake_sec
 
+    # restore-rvm-fast2: CPU Max light ~2–3 perc (not fake ~45–49s)
     cpu = estimate_bake_sec(10.0, 24.0, 1920, 1080, "max", cpu_ort=True)
-    assert 35 <= cpu <= 90
+    assert 90 <= cpu <= 240
 
 
 def test_ui_keeps_preview_on_mode_reclick():
