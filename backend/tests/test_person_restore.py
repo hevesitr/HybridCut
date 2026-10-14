@@ -54,7 +54,7 @@ def _write_person_clip(path: Path, n: int = 8) -> None:
 def test_stamp_and_docs():
     assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast2"
     assert FEATURE_AUTO.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast2"
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast2"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-14-fix-shadow-fringe-fast2"
     assert RESTART.is_file() and RESTART_PRIOR.is_file()
     prior = RESTART_PRIOR.read_text(encoding="utf-8")
     assert "MaskStore" in prior or "cache" in prior.lower()

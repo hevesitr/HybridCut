@@ -48,7 +48,7 @@ def _first_onnx() -> Path | None:
 def test_stamp_rvm_back():
     assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast2"
     assert FEATURE2.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast2"
-    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast2"
+    assert SYNC.read_text(encoding="utf-8").strip() == "2026-10-14-fix-shadow-fringe-fast2"
     text = RESTART.read_text(encoding="utf-8")
     assert "2026-10-11-rvm-back" in text
     assert "CPU-first" in text or "cpu-first" in text.lower()

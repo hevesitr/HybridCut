@@ -288,6 +288,97 @@ def keep_largest_person_soft(alpha: np.ndarray, min_area_frac: float = 0.005) ->
     return keep_person_instances_soft(alpha, min_area_frac=min_area_frac)
 
 
+def suppress_bg_color_residue(
+    alpha: np.ndarray,
+    frame_bgr: np.ndarray,
+    *,
+    color_thr: float = 30.0,
+    strength: float = 0.82,
+    hard_thresh: float = 0.55,
+    halo_px: int = 12,
+    min_area_frac: float = 0.004,
+    relative_frac: float = 0.10,
+) -> np.ndarray:
+    """Damp mid-α pixels that still match the plate BG color (hair-edge strip / face blotch).
+
+    User visual: checkerboard OK elsewhere; light greenish-grey BG leftovers on soft
+    edges. Not a global thresh/erosion — only BG-colored soft band outside a
+    multi-person hair halo is reduced. Soft hair near cores (non-BG chroma) kept.
+    """
+    a = _as_hw_float(alpha, frame_bgr.shape[:2])
+    h, w = a.shape
+    s = float(np.clip(strength, 0.0, 1.0))
+    if s < 0.01 or float(a.max()) < 0.05:
+        return a
+
+    hard_t = float(np.clip(hard_thresh, 0.40, 0.85))
+    hard = (a >= hard_t).astype(np.uint8) * 255
+    if int(hard.max()) < 1:
+        hard = (a >= max(0.35, hard_t - 0.12)).astype(np.uint8) * 255
+    if int(hard.max()) < 1:
+        return a
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(hard, connectivity=8)
+    min_area = max(32, int(h * w * float(min_area_frac)))
+    keep_ids = _person_instance_ids(
+        labels, stats, n, min_area=min_area, relative_frac=relative_frac
+    )
+    if not keep_ids:
+        # Never collapse to keep-largest alone when CCs are ambiguous — leave α.
+        return a
+
+    core = np.zeros((h, w), dtype=np.uint8)
+    for i in keep_ids:
+        core = cv2.bitwise_or(core, (labels == i).astype(np.uint8) * 255)
+    px = max(5, int(halo_px))
+    if px % 2 == 0:
+        px += 1
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (px, px))
+    # Wide hair halo — protect soft strands; only far BG-colored fog is eligible.
+    hair_halo = cv2.dilate(core, k, iterations=2)
+
+    # BG plate from low-α / border
+    b = max(2, min(h, w) // 20)
+    samples = [
+        frame_bgr[:b, :].reshape(-1, 3),
+        frame_bgr[-b:, :].reshape(-1, 3),
+        frame_bgr[:, :b].reshape(-1, 3),
+        frame_bgr[:, -b:].reshape(-1, 3),
+    ]
+    low = a < 0.08
+    if float(low.mean()) > 0.02:
+        samples.append(frame_bgr[low].reshape(-1, 3))
+    bg = np.median(np.concatenate(samples, axis=0).astype(np.float32), axis=0)
+    dist = np.sqrt(((frame_bgr.astype(np.float32) - bg) ** 2).sum(axis=2))
+
+    # Mid-α + BG-colored. Inside hair_halo: only the *most* BG-like strip (tight thr).
+    # Outside halo: any soft BG fog / face-side blotch.
+    mid = (a > 0.10) & (a < 0.90)
+    thr_in = float(color_thr) * 0.72
+    thr_out = float(color_thr)
+    in_halo = hair_halo > 0
+    residue = mid & (
+        ((in_halo) & (dist <= thr_in)) | ((~in_halo) & (dist <= thr_out))
+    )
+    # Never touch solid FG cores.
+    residue = residue & (a < 0.92) & (core == 0)
+    if not residue.any():
+        return a
+
+    # Soft damp (keep a little hair transparency) — not hard zero.
+    damp = np.ones_like(a, dtype=np.float32)
+    # Stronger damp farther from core / more BG-like.
+    near = cv2.dilate(core, k, iterations=1) > 0
+    damp[residue & near] = 1.0 - 0.55 * s
+    damp[residue & ~near] = 1.0 - 0.92 * s
+    damp = cv2.GaussianBlur(damp, (0, 0), sigmaX=0.7)
+    out = a * damp
+    # Far residue outside halo: hard-zero the weakest fog so checker stays clean.
+    far_fog = residue & (~in_halo) & (a < 0.45)
+    out = np.where(far_fog, out * (1.0 - 0.85 * s), out)
+    return np.clip(out, 0.0, 1.0).astype(np.float32)
+
+
 def suppress_residual_bg(
     alpha: np.ndarray,
     *,

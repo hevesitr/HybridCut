@@ -117,30 +117,88 @@ def peak_edge_crisp(alpha: np.ndarray, *, strength: float = 0.42) -> np.ndarray:
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
+def _fgr_as_u8(fgr_bgr: np.ndarray, shape_hw: tuple[int, int]) -> np.ndarray:
+    """Normalize RVM ``fgr`` to BGR uint8 at ``shape_hw`` (float 0–1 or 0–255)."""
+    fgr = np.asarray(fgr_bgr)
+    h, w = int(shape_hw[0]), int(shape_hw[1])
+    if fgr.shape[:2] != (h, w):
+        fgr = cv2.resize(fgr, (w, h), interpolation=cv2.INTER_LINEAR)
+    if fgr.dtype == np.uint8:
+        return fgr
+    ff = fgr.astype(np.float32)
+    if float(np.max(ff)) <= 1.5:
+        ff = ff * 255.0
+    return np.clip(ff, 0, 255).astype(np.uint8)
+
+
+def ensure_straight_fgr_bgr(
+    fgr_bgr: np.ndarray,
+    alpha: np.ndarray,
+    *,
+    premul_score_gate: float = 0.55,
+) -> np.ndarray:
+    """If ``fgr`` looks black-premultiplied in the soft band, un-premultiply once.
+
+    PeterL1n RVM ``fgr`` is straight RGB; some ORT exports / prior composites may
+    already be associated. Un-premultiply only when the soft band is clearly dark
+    vs solid FG and recovers after /α — never invent a second multiply.
+    """
+    fgr = _fgr_as_u8(fgr_bgr, alpha.shape[:2] if alpha.ndim >= 2 else fgr_bgr.shape[:2])
+    a = _as_hw_float(alpha, fgr.shape[:2])
+    soft = (a > 0.20) & (a < 0.80)
+    solid = a >= 0.97
+    if not soft.any() or not solid.any():
+        return fgr
+    luma = (
+        0.114 * fgr[:, :, 0].astype(np.float32)
+        + 0.587 * fgr[:, :, 1].astype(np.float32)
+        + 0.299 * fgr[:, :, 2].astype(np.float32)
+    )
+    soft_l = float(luma[soft].mean())
+    solid_l = float(luma[solid].mean())
+    if solid_l < 1.0:
+        return fgr
+    score = (solid_l - soft_l) / solid_l
+    a_soft = np.maximum(a[soft], 1e-3)
+    unpre_l = float((luma[soft] / a_soft).mean())
+    if score < float(premul_score_gate) or unpre_l < soft_l * 1.2:
+        return fgr
+    # Un-premultiply in soft + mid band only; solid FG stays as-is.
+    out = fgr.astype(np.float32)
+    band = (a > 0.05) & (a < 0.98)
+    aa = np.maximum(a, 1e-3)[..., None]
+    unpre = np.clip(out / aa, 0, 255)
+    out = np.where(band[..., None], unpre, out)
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
 def composite_with_fgr(
     frame_bgr: np.ndarray,
     alpha: np.ndarray,
     fgr_bgr: Optional[np.ndarray],
     *,
     mix: float = 0.72,
+    ensure_straight: bool = True,
 ) -> np.ndarray:
     """Prefer RVM foreground RGB near edges (cleaner than source*alpha alone).
 
     PeterL1n RVM emits ``fgr`` already decontaminated; blend it into the cutout
     RGB inside the person / fringe band when available.
+
+    Soft hair α is unchanged — only the **RGB** under soft α is repaired. Using
+    source RGB here leaves original BG color in the soft band → dark rim / residue
+    on white/checker (classic shadow fringe birth site).
     """
     a = _as_hw_float(alpha, frame_bgr.shape[:2])
     base = np.asarray(frame_bgr, dtype=np.uint8)
     if fgr_bgr is None:
         return base
-    fgr = np.asarray(fgr_bgr)
-    if fgr.shape[:2] != base.shape[:2]:
-        fgr = cv2.resize(fgr, (base.shape[1], base.shape[0]), interpolation=cv2.INTER_LINEAR)
-    if fgr.dtype != np.uint8:
-        fgr_u8 = np.clip(fgr, 0, 255).astype(np.uint8)
-        if fgr_u8.max() <= 1:
-            fgr_u8 = (np.clip(fgr.astype(np.float32), 0, 1) * 255.0).astype(np.uint8)
-        fgr = fgr_u8
+    fgr = _fgr_as_u8(fgr_bgr, base.shape[:2])
+    if ensure_straight:
+        try:
+            fgr = ensure_straight_fgr_bgr(fgr, a)
+        except Exception:  # noqa: BLE001
+            pass
     m = float(np.clip(mix, 0.0, 1.0))
     # Stronger fgr near soft edge; solid FG can keep source texture.
     w = np.clip(a, 0.0, 1.0)
@@ -149,6 +207,41 @@ def composite_with_fgr(
     blend = (m * (0.45 + 0.55 * edge))[..., None]
     out = base.astype(np.float32) * (1.0 - blend) + fgr.astype(np.float32) * blend
     return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def cutout_rgb_for_alpha(
+    frame_bgr: np.ndarray,
+    alpha: np.ndarray,
+    fgr_bgr: Optional[np.ndarray],
+    *,
+    mix: float = 0.82,
+    decontaminate: float = 0.55,
+) -> np.ndarray:
+    """Straight FG RGB for checker / BGRA — RVM ``fgr`` when present, else source.
+
+    Does **not** multiply by α (no premultiply). Caller composites with straight α.
+    Light CapCut fringe decontam after fgr kills greenish-grey BG color in soft hair
+    without changing α (two-person silhouettes stay intact).
+    """
+    base = np.asarray(frame_bgr, dtype=np.uint8)
+    if fgr_bgr is not None:
+        out = composite_with_fgr(
+            base, alpha, fgr_bgr, mix=float(mix), ensure_straight=True
+        )
+    else:
+        out = base
+    if float(decontaminate) > 0.01:
+        try:
+            from hybrid_editor.engines.videoeditor_polish import (
+                decontaminate_fringe,
+                suppress_color_spill,
+            )
+
+            out = decontaminate_fringe(out, alpha, strength=float(decontaminate))
+            out = suppress_color_spill(out, alpha, strength=float(decontaminate) * 0.85)
+        except Exception:  # noqa: BLE001
+            pass
+    return out
 
 
 @dataclass

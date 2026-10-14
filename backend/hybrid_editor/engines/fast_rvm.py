@@ -1675,6 +1675,50 @@ class FastEngine(MattingEngine):
                         pass
         return None
 
+    def _cutout_bgr(self, bgr: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+        """Straight FG RGB for preview/export — prefer RVM ``fgr`` on soft edges.
+
+        Birth site of dark rim / BG residue: compositing **source** RGB × soft α
+        leaves original background color in the fringe. Official RVM compose is
+        ``fgr * pha + bg * (1-pha)``. Soft α is unchanged (no crush/threshold).
+        """
+        fgr = None
+        if self._rvm is not None:
+            fgr = getattr(self._rvm, "last_fgr_bgr", None)
+        try:
+            from hybrid_editor.engines.peak_cutout import cutout_rgb_for_alpha
+
+            return cutout_rgb_for_alpha(bgr, alpha, fgr, mix=0.82)
+        except Exception:  # noqa: BLE001
+            return np.asarray(bgr, dtype=np.uint8)
+
+    def _maybe_diag_shadow(
+        self,
+        *,
+        tag: str,
+        t_sec: float,
+        src_bgr: np.ndarray,
+        alpha: np.ndarray,
+        fg_used: np.ndarray,
+        extra: Optional[dict[str, Any]] = None,
+    ) -> None:
+        try:
+            from hybrid_editor.diag_shadow_fringe import dump_shadow_fringe_frame
+
+            fgr = getattr(self._rvm, "last_fgr_bgr", None) if self._rvm else None
+            dump_shadow_fringe_frame(
+                tag=tag,
+                t_sec=float(t_sec),
+                src_bgr=src_bgr,
+                raw_alpha=alpha,
+                post_alpha=None,
+                fgr_bgr=fgr,
+                fg_used_bgr=fg_used,
+                extra=extra,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     def _matte(self, bgr: np.ndarray) -> np.ndarray:
         """Person alpha — OSS-simple path (PeterL1n RVM / rembg default).
 
@@ -1704,8 +1748,8 @@ class FastEngine(MattingEngine):
                 logger.warning("RVM matte failed — trying alternate / chroma / heuristic: %s", exc)
                 alpha = None
         if alpha is not None and not is_matte_empty(alpha) and not is_matte_degenerate(alpha):
-            # Soft pha is the product (RVM paper / rembg naive_cutout).
-            return alpha
+            # Soft pha kept — only damp BG-colored mid-α leftovers (hair strip / blotch).
+            return self._soft_bg_residue(bgr, alpha)
         if alpha is not None:
             why = matte_failure_reason(alpha) or "empty"
             kind = "degenerate slab" if is_matte_degenerate(alpha) else "empty"
@@ -1717,7 +1761,7 @@ class FastEngine(MattingEngine):
             )
         alt = self._try_alternate_rvm(bgr)
         if alt is not None and not is_matte_empty(alt) and not is_matte_degenerate(alt):
-            return alt
+            return self._soft_bg_residue(bgr, alt)
         chroma = solid_bg_person_alpha(bgr)
         if not is_matte_empty(chroma) and not is_matte_degenerate(chroma):
             self._status_note = (
@@ -1725,10 +1769,10 @@ class FastEngine(MattingEngine):
                 + "solid-BG chroma fallback (blue/green screen)"
             )
             logger.warning("RVM empty/slab — solid-BG chroma person matte recovered")
-            return chroma
+            return self._soft_bg_residue(bgr, chroma)
         heur = heuristic_person_alpha(bgr)
         if not is_matte_empty(heur) and not is_matte_degenerate(heur):
-            return heur
+            return self._soft_bg_residue(bgr, heur)
         # Last resort only — never run on soft MobileNet that already had a person.
         hard = hard_person_alpha(bgr)
         self._status_note = (
@@ -1737,6 +1781,31 @@ class FastEngine(MattingEngine):
         )
         logger.warning("RVM/chroma empty — hard_person_alpha salvage for visible Cutout")
         return hard
+
+    def _soft_bg_residue(self, bgr: np.ndarray, alpha: np.ndarray) -> np.ndarray:
+        """Light color-aware BG residue damp — keeps soft hair + ALL person instances.
+
+        Targets light greenish-grey strips/blotches (mid-α ≈ plate BG). No global
+        crush/threshold/erosion. Opt out: ``HYBRID_SOFT_BG_RESIDUE=0``.
+        """
+        raw = (os.environ.get("HYBRID_SOFT_BG_RESIDUE") or "1").strip().lower()
+        if raw in {"0", "false", "no", "off"}:
+            return alpha
+        try:
+            from hybrid_editor.engines.videoeditor_polish import suppress_bg_color_residue
+
+            return suppress_bg_color_residue(
+                alpha,
+                bgr,
+                color_thr=30.0,
+                strength=0.82,
+                hard_thresh=0.55,
+                halo_px=12,
+                min_area_frac=0.004,
+                relative_frac=0.10,
+            )
+        except Exception:  # noqa: BLE001
+            return alpha
 
     def preview_frame(self, t_sec: float) -> PreviewFrame:
         """Gyors Előnézet — OSS-fast: proxy decode → one RVM → encode soft pha.
@@ -1840,9 +1909,12 @@ class FastEngine(MattingEngine):
         if alpha is not None and is_matte_empty(alpha) and matte_error is None:
             matte_error = matte_failure_reason(alpha)
         infer_h, infer_w = int(bgr.shape[0]), int(bgr.shape[1])
-        # OSS: encode soft pha as-is (no preview_boost, no crush).
+        # OSS: soft pha unchanged; repair FG RGB via RVM fgr (not source×α spill).
+        cut_bgr = self._cutout_bgr(bgr, alpha) if alpha is not None else bgr
         try:
-            jpg, png, w, h, src, empty = encode_preview_pair(bgr, alpha)
+            jpg, png, w, h, src, empty = encode_preview_pair(
+                bgr, alpha, cutout_bgr=cut_bgr
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("preview encode failed — source-only: %s", exc)
             jpg, png, w, h, src, empty = encode_source_only_preview(bgr)
@@ -1853,12 +1925,24 @@ class FastEngine(MattingEngine):
                 forced = hard_person_alpha(bgr)
                 if not is_matte_empty(forced) and not is_matte_degenerate(forced):
                     alpha = forced
-                    jpg, png, w, h, src, empty = encode_preview_pair(bgr, forced)
+                    cut_bgr = self._cutout_bgr(bgr, forced)
+                    jpg, png, w, h, src, empty = encode_preview_pair(
+                        bgr, forced, cutout_bgr=cut_bgr
+                    )
                     matte_error = None
                     recovered = True
                     logger.warning("preview restore-rvm: forced hard_person after empty encode")
             except Exception as force_exc:  # noqa: BLE001
                 logger.warning("preview force salvage failed: %s", force_exc)
+        else:
+            self._maybe_diag_shadow(
+                tag="gyors_preview",
+                t_sec=t,
+                src_bgr=bgr,
+                alpha=alpha,
+                fg_used=cut_bgr,
+                extra={"backend": self._backend, "from_store": from_store},
+            )
         if empty or is_matte_empty(alpha):
             empty = True
             if matte_error is None and alpha is not None:
@@ -1909,7 +1993,10 @@ class FastEngine(MattingEngine):
             "source_height": src_h,
             "infer_width": infer_w,
             "infer_height": infer_h,
-            "stamp": "2026-10-14-restore-rvm-fast2",
+            "stamp": "2026-10-14-fix-shadow-fringe-fast2",
+            "fgr_cutout_rgb": bool(
+                self._rvm is not None and getattr(self._rvm, "last_fgr_bgr", None) is not None
+            ),
         }
         if matte_error and empty:
             meta["matte_error"] = matte_error
@@ -2008,20 +2095,36 @@ class FastEngine(MattingEngine):
                 else:
                     bgr_m = bgr
                 # Soft RVM pha only — no apex polish / no matte-safe crush.
+                # FG RGB: RVM fgr on soft edges (source RGB left BG residue / dark rim).
                 alpha = self._matte(bgr_m)
+                cut_bgr = self._cutout_bgr(bgr_m, alpha)
+                if idx == 0:
+                    self._maybe_diag_shadow(
+                        tag="gyors_bake",
+                        t_sec=cur_t,
+                        src_bgr=bgr_m,
+                        alpha=alpha,
+                        fg_used=cut_bgr,
+                        extra={
+                            "backend": self._backend,
+                            "cpu_gyors_fast": bool(cpu_fast),
+                            "bake_long": int(bake_long) if cpu_fast else None,
+                        },
+                    )
                 a8 = (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
                 if alpha_dir is not None:
                     cv2.imwrite(str(alpha_dir / f"{idx:06d}.png"), a8)
                 # Skip MaskStore PNG thrash during bake (scrub cache is for preview).
                 # Keep proxy-sized frames for preview mp4 (memory-safe)
                 proxy_long = int(bake_long) if cpu_fast else 720
-                proxy = downscale_long_side(bgr_m, proxy_long)
+                proxy = downscale_long_side(cut_bgr, proxy_long)
                 a_p = cv2.resize(
                     alpha, (proxy.shape[1], proxy.shape[0]), interpolation=cv2.INTER_LINEAR
                 )
                 frames_bgr.append(proxy)
                 frames_alpha.append(a_p)
                 a3 = (a_p * 255).astype(np.uint8)
+                # Straight α + decontaminated FG RGB (not black-premultiplied).
                 bgra = cv2.cvtColor(proxy, cv2.COLOR_BGR2BGRA)
                 bgra[:, :, 3] = a3
                 frames_bgra.append(bgra)

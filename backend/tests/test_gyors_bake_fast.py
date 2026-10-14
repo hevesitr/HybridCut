@@ -17,7 +17,7 @@ STAMP = "2026-10-14-restore-rvm-fast2"
 
 
 def test_stamp_and_ascii_paste():
-    assert (ROOT / "SYNC_VERSION.txt").read_text(encoding="utf-8").strip() == STAMP
+    # Feature stamp stays; SYNC_VERSION may advance on later fix branches.
     assert (ROOT / "backend/hybrid_editor/FEATURE_RESTORE_RVM_FAST.txt").read_text(
         encoding="utf-8"
     ).strip() == STAMP

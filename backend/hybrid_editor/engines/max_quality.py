@@ -474,8 +474,17 @@ class MaxQualityEngine(MattingEngine):
                 recovered = not is_matte_empty(alpha)
             # restore-rvm / OSS: never crush soft MobileNet on Max *preview*
             # (crush reserved for bake/export). Soft pha is the product.
-            # CapCut fringe / cyan + bright spill on cutout RGB (Éles szélek / apex)
+            # Prefer RVM fgr on soft edges (source RGB = dark rim / BG residue).
             cut_bgr = bgr
+            fgr = None
+            rvm = getattr(self._fast, "_rvm", None)
+            if rvm is not None:
+                fgr = getattr(rvm, "last_fgr_bgr", None)
+            if fgr is not None and alpha is not None and not is_matte_empty(alpha):
+                try:
+                    cut_bgr = composite_with_fgr(bgr, alpha, fgr, mix=0.82)
+                except Exception:  # noqa: BLE001
+                    cut_bgr = bgr
             if (
                 self.sharp_edges
                 and heavy_preview
@@ -483,7 +492,7 @@ class MaxQualityEngine(MattingEngine):
                 and not is_matte_empty(alpha)
             ):
                 cut_bgr = apply_color_polish(
-                    bgr,
+                    cut_bgr,
                     alpha,
                     decontaminate=float(polish_spec_decon.decontaminate),
                     despill=float(polish_spec_decon.despill),
@@ -491,7 +500,11 @@ class MaxQualityEngine(MattingEngine):
                     micro_despill=float(polish_spec_decon.micro_despill),
                 )
             jpg, png, w, h, src, empty = encode_preview_pair(
-                cut_bgr, alpha, max_side=preview_long, sharp_cutout=self.sharp_edges
+                bgr,
+                alpha,
+                max_side=preview_long,
+                sharp_cutout=self.sharp_edges,
+                cutout_bgr=cut_bgr,
             )
         except Exception as exc:  # noqa: BLE001
             matte_error = str(exc)[:240]
@@ -597,7 +610,7 @@ class MaxQualityEngine(MattingEngine):
             "source_height": int(self._media.height) if self._media else int(bgr.shape[0]),
             "infer_width": int(bgr.shape[1]),
             "infer_height": int(bgr.shape[0]),
-            "stamp": "2026-10-14-restore-rvm-fast2",
+            "stamp": "2026-10-14-fix-shadow-fringe-fast2",
         }
         if empty and matte_error is None and alpha is not None:
             from hybrid_editor.media.video_io import matte_failure_reason
@@ -829,9 +842,10 @@ class MaxQualityEngine(MattingEngine):
                 rvm = getattr(self._fast, "_rvm", None)
                 if rvm is not None:
                     fgr = getattr(rvm, "last_fgr_bgr", None)
-                if fgr is not None and not cpu_fast:
+                # Always prefer RVM fgr on soft edges (CPU fast used to skip → dark rim).
+                if fgr is not None:
                     try:
-                        cut_bgr = composite_with_fgr(cut_base, alpha, fgr, mix=0.68)
+                        cut_bgr = composite_with_fgr(cut_base, alpha, fgr, mix=0.82 if cpu_fast else 0.68)
                     except Exception:  # noqa: BLE001
                         cut_bgr = cut_base
                 if self.sharp_edges and not (cpu_fast and not heavy):
@@ -1041,7 +1055,7 @@ class MaxQualityEngine(MattingEngine):
                 "frames_total_est": total_est,
                 "max_frames_cap": max_frames,
                 "mov_path": prores,
-                "stamp": "2026-10-14-restore-rvm-fast2",
+                "stamp": "2026-10-14-fix-shadow-fringe-fast2",
                 **({"diag_timing": timing} if timing else {}),
             },
         )

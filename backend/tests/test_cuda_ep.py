@@ -29,7 +29,7 @@ APP = ROOT / "frontend" / "src" / "App.tsx"
 
 def test_stamp_and_docs():
     tip = SYNC.read_text(encoding="utf-8").strip()
-    assert tip == "2026-10-14-restore-rvm-fast2"
+    assert tip == "2026-10-14-fix-shadow-fringe-fast2"
     assert FEATURE.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast2"
     assert FEATURE_EP.read_text(encoding="utf-8").strip() == "2026-10-14-restore-rvm-fast2"
     text = RESTART.read_text(encoding="utf-8")

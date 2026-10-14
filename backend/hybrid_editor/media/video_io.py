@@ -700,28 +700,37 @@ def encode_preview_pair(
     *,
     max_side: int = 960,
     sharp_cutout: bool = False,
+    cutout_bgr: Optional[np.ndarray] = None,
 ) -> tuple[str, str, int, int, str, bool]:
     """Return (cutout_b64, alpha_vis_png_b64, w, h, source_jpeg_b64, matte_empty).
 
     - cutout: subject RGB × alpha over subtle checker; empty matte → full source RGB
       sharp_cutout=True → PNG (no JPEG halo soft); else high-quality JPEG
+      Optional ``cutout_bgr`` = decontaminated / RVM ``fgr`` RGB (straight α);
+      source underlay jpeg always comes from ``bgr``.
     - alpha png: soft matte vis; empty → source + 'nincs maszk'
     - source jpeg: original video frame for seed / paint underlay
     - matte_empty: True when no useful alpha yet
     """
     h, w = bgr.shape[:2]
+    cut_rgb = bgr if cutout_bgr is None else cutout_bgr
     if max(h, w) > max_side:
         scale = max_side / float(max(h, w))
-        bgr = cv2.resize(bgr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+        nw, nh = int(w * scale), int(h * scale)
+        bgr = cv2.resize(bgr, (nw, nh), interpolation=cv2.INTER_AREA)
+        if cutout_bgr is not None:
+            cut_rgb = cv2.resize(np.asarray(cut_rgb), (nw, nh), interpolation=cv2.INTER_AREA)
+        else:
+            cut_rgb = bgr
         alpha = cv2.resize(
             np.asarray(alpha),
-            (int(w * scale), int(h * scale)),
+            (nw, nh),
             interpolation=cv2.INTER_LINEAR,
         )
         h, w = bgr.shape[:2]
 
     empty = is_matte_empty(alpha)
-    cutout = composite_cutout_over_checker(bgr, alpha)
+    cutout = composite_cutout_over_checker(cut_rgb, alpha)
     alpha_vis = visualize_alpha_matte(bgr, alpha)
 
     if sharp_cutout:
